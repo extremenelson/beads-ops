@@ -60,4 +60,4 @@ Bindings for other harnesses (Aider, Cursor, Codex, OpenCode, Gemini CLI…) are
 
 ## License and attribution
 
-MIT © Alex Nelson. Developed and maintained with support from [ArchWise](https://archwise.io) — solution architecture for mid-market teams adopting agentic development. Upstream beads is MIT © Steve Yegge; see `vendor/beads-skill/SOURCE.md`.
+MIT © Alex Nelson. Developed and maintained with support from [ArchWise](https://archwise.cloud) — solution architecture for mid-market teams adopting agentic development. Upstream beads is MIT © Steve Yegge; see `vendor/beads-skill/SOURCE.md`.
