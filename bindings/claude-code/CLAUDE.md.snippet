@@ -1,0 +1,14 @@
+## Work tracking (beads)
+
+This project uses bd (beads). Run `bd prime` for commands; `docs/PROCESS.md` is the policy.
+These rules override general guidance:
+
+- Session start: report in_progress + ready before acting. in_progress beats ready.
+- Claim before editing. One claimed bead per session. Claim via `scripts/bd-lint-claim.sh <id> && bd update <id> --claim`; if the lint fails, fix the bead or pick another — do not claim anyway.
+- Notes use `COMPLETED / IN PROGRESS / NEXT / BLOCKER / KEY DECISION`. `NEXT` is one concrete step a stranger could execute.
+- File discovered work immediately: `bd create "..." --deps discovered-from:<current-id>`. Decide blocker-or-defer; move on.
+- Only `blocks` for hard prerequisites. Validate with `bd blocked`. Name beads by WHAT, never "Phase N".
+- Irreversible or money-spending actions: `bd gate create --type human --blocks <id> --reason "..."`, label `needs-human`, stop.
+- Close only when every acceptance criterion is verified; cite the verification in `--reason`. Never close epics. Never resolve a human gate.
+- Before stopping or when context is getting long: write the handoff note, then `bd sync` if online.
+- Never create markdown TODO/PLAN files. Never `bd import issues.jsonl` as sync. Never `export BEADS_DIR`.

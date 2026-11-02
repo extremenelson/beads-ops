@@ -1,0 +1,13 @@
+[Unit]
+Description=bd sync for %I
+Documentation=https://github.com/extremenelson/beads-ops/blob/main/docs/MULTI-DEV-PLAN.md
+
+[Service]
+Type=oneshot
+# %I is the repo directory name under $HOME/src; override with a drop-in if yours differ:
+#   systemctl --user edit beads-sync@myrepo  →  [Service] WorkingDirectory=%h/code/myrepo
+WorkingDirectory=%h/src/%i
+ExecStart=/usr/bin/env bd sync --json
+# exit 3 = push race / busy writer: transient, next tick retries → not a failure
+# exit 2 = merge conflict, exit 4 = stuck dirty working set → stay failed, visible in `systemctl --user --failed`
+SuccessExitStatus=0 3

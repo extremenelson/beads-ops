@@ -1,0 +1,11 @@
+[Unit]
+Description=bd sync timer for %I
+
+[Timer]
+OnBootSec=2m
+OnUnitActiveSec=15m
+RandomizedDelaySec=2m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

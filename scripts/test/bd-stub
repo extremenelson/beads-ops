@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# stub bd: shapes per docs/reference/json-schema.md + internal/types/types.go
+case "$1 $2" in
+  "sync --json") exit 0 ;;
+  "ready --json") echo '[{"id":"bd-good","title":"x"},{"id":"bd-bad","title":"y"}]' ;;
+  "config get") echo "night-crew" ;;
+  "list --parent") echo '[]' ;;
+  "show bd-good") cat <<'J'
+[{"id":"bd-good","title":"Add rate limit to token refresh endpoint","status":"open","priority":2,"issue_type":"task",
+ "description":"Refresh endpoint currently accepts unlimited requests, which allows brute-force token rotation. Needed because security review flagged it.",
+ "acceptance_criteria":"- POST /refresh returns 429 after 5 attempts in 15 min\n- Legitimate single refresh still succeeds",
+ "design":"token bucket in redis","notes":"COMPLETED: endpoint wired\nIN PROGRESS: bucket config\nNEXT: add 429 handler in auth.go then run make test-auth\nBLOCKER: none",
+ "labels":["security"],"dependencies":[{"issue_id":"bd-good","depends_on_id":"bd-epic","type":"parent-child"}],"parent":"bd-epic"}]
+J
+  ;;
+  "show bd-epic") echo '[{"id":"bd-epic","status":"open","dependencies":[]}]' ;;
+  "show bd-bad") cat <<'J'
+[{"id":"bd-bad","title":"Auth bug","status":"open","priority":1,"issue_type":"task","description":"fix it",
+ "acceptance_criteria":"- use batchUpdate approach","notes":"Working on it. More to do later.",
+ "labels":["gpu-3090","needs-human"],"assignee":"someone-else","dependencies":[]}]
+J
+  ;;
+  *) echo "stub: unhandled $*" >&2; exit 1 ;;
+esac
