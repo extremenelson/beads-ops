@@ -1,0 +1,17 @@
+name: bops
+on:
+  push: { paths: ["bops/**", "SPEC.md", ".github/workflows/bops.yml"] }
+  pull_request: { paths: ["bops/**", "SPEC.md"] }
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: bops } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: bops/go.mod }
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test ./...
+      - name: docs/COMMANDS.md is in sync with the manifest
+        run: go run ./cmd/bops gen docs | diff - ../docs/COMMANDS.md
