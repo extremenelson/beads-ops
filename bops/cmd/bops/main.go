@@ -58,6 +58,16 @@ func run(args []string, stdout, stderr *os.File) int {
 	case "help", "-h", "--help":
 		usage(stdout, m)
 		return exitVerdict
+	case "next":
+		return cmdNext(ctx, m, rest, wantJSON, stdout, stderr)
+	case "claim":
+		return cmdClaim(ctx, m, rest, wantJSON, stdout, stderr)
+	case "release":
+		return cmdRelease(ctx, m, rest, wantJSON, stdout, stderr)
+	case "sync":
+		return cmdSync(ctx, m, rest, wantJSON, stdout, stderr)
+	case "lint":
+		return cmdLint(ctx, m, rest, wantJSON, stdout, stderr)
 	}
 	if _, ok := m.Lookup(name); ok {
 		fmt.Fprintf(stderr, "bops %s: specified in contract %d but not yet implemented (did NOT run)\n", name, m.Contract)

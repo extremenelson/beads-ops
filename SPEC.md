@@ -19,7 +19,7 @@ Non-goals: `bops` is not a tracker, not a sync protocol, not a merge tool, and n
 4. **Writes only via `bd`.** Including the Go library or `bd serve` HTTP as sanctioned surfaces. Never direct SQL writes, never custom tables.
 5. **Comments, not notes, for events.** Comments merge across Dolt sync; the `notes` field conflicts. Notes are reserved for human-authored content.
 6. **Per-machine state stays off the ledger.** Lease caches, watermarks, journal cursors live in `$XDG_STATE_HOME/bops/<repo-hash>/`.
-7. **Text never on the command line.** Bodies, comments, and reasons arrive via stdin or `--file`; arguments are IDs, flags, enums.
+7. **Text never on the command line.** Bodies, comments, and reasons arrive via stdin or `--file`; arguments are IDs, flags, enums. The one exception is the generated, fixed-vocabulary event line (`bops:claimed run=… actor=… machine=…`), which contains no user- or bead-authored text.
 8. **Fail closed on writes, fail open on reads.** A write that cannot verify its precondition does nothing and exits 1. A read that cannot reach the ledger says so and exits 1; it never fabricates.
 9. **Contract-versioned.** `bops version` prints `contract=<n>`; any change to output shape, exit semantics, or state conventions bumps `n`. Bindings pin a contract.
 
@@ -190,6 +190,12 @@ Each rule has an id, a severity (`fail`|`warn`), and a one-line rationale; `--st
 | W09 | warn | last `bops:note` ends with a `NEXT:` paragraph (resume readability) |
 | W10 | warn | no sibling bead with the same title (duplicate smell) |
 | W11 | fail | no dependency cycle reachable (delegates to `bd dep cycles`) |
+| W12 | fail | not labelled `bops:hold` (cooling off after a scope/stale release) |
+| W13 | fail | in this run's pool: a run serves exactly one pool; unlabelled beads are the default pool, and a pooled run never takes default-pool beads |
+
+`W06s` is the stale variant of W06: the bead carries a claim, but its last heartbeat/update is older than `stale_minutes` (default 120). It is a *warn*, so a stale claim is a candidate again; `claim` on it still requires `--force`, which records the takeover in the event comment.
+
+Rules the bead alone cannot answer (W09 needs comments, W10 needs the whole list, W11 needs bd) are evaluated by the commands that have that data; `bops lint <id>` reports them as not evaluated rather than passed.
 
 ## 7. Forge adapter
 
