@@ -1,0 +1,169 @@
+{
+  "$comment": "bops command manifest. Normative; see SPEC.md §4. Changing output shapes, exit semantics, or state conventions bumps `contract`.",
+  "contract": 1,
+  "common": {
+    "flags": {
+      "json": { "type": "bool", "doc": "Emit one JSON document on stdout. Default when stdout is not a TTY." },
+      "idempotency-key": { "type": "string?", "doc": "Write commands only: a repeat with the same key is a no-op returning the original result." }
+    },
+    "exit": { "0": "verdict produced (may be negative)", "1": "could not run: ledger unreachable, precondition unverifiable, bd error", "2": "usage" },
+    "envelope": { "contract": "int", "command": "string", "ok": "bool" }
+  },
+  "commands": [
+    {
+      "name": "next",
+      "intent": "What should I work on?",
+      "kind": "read",
+      "args": {
+        "pool": { "type": "string?", "doc": "Serve only beads labelled pool:<pool>." },
+        "caps": { "type": "string[]?", "doc": "Capabilities this run offers; beads with unmet needs:<cap> are excluded." },
+        "n": { "type": "int", "default": 3 },
+        "include-unworkable": { "type": "bool", "default": false, "doc": "Also return excluded candidates with why_not." }
+      },
+      "wraps": ["bd ready --json", "bd show --json", "bd gate list --json"],
+      "output": {
+        "candidates": [
+          {
+            "id": "string", "title": "string", "priority": "int", "type": "string",
+            "workable": "bool", "why": "string[]", "why_not": "string[]",
+            "blocked_by_gates": "string[]", "parent": "string?"
+          }
+        ],
+        "excluded_count": "int",
+        "ledger_revision": "string"
+      },
+      "surfaces": { "cc": ["skill", "hook:SessionStart"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": true } }
+    },
+    {
+      "name": "claim",
+      "intent": "Take this bead for this run",
+      "kind": "write",
+      "args": { "id": { "type": "string" }, "force": { "type": "bool", "default": false } },
+      "preconditions": ["assignee is empty OR --force", "status in (open, ready)", "no run: label"],
+      "wraps": ["bd update <id> --claim --if-assignee ''", "bd label add <id> run:<ulid>", "bd comments add <id>", "bd dolt push"],
+      "output": { "id": "string", "run": "string", "claimed_at": "string", "readback_ok": "bool" },
+      "surfaces": { "cc": ["skill"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": false } }
+    },
+    {
+      "name": "note",
+      "intent": "Record where I am, keep the claim",
+      "kind": "write",
+      "args": { "id": { "type": "string" }, "text": { "type": "stdin|file", "doc": "Never on the command line." } },
+      "preconditions": ["run: label matches current run"],
+      "lint": ["last paragraph starts with NEXT:|BLOCKER:|KEY DECISION:|REF: (warn)"],
+      "wraps": ["bd comments add <id>", "bd heartbeat <id>"],
+      "output": { "id": "string", "comment_id": "string", "warnings": "string[]" },
+      "surfaces": { "cc": ["skill", "hook:PreCompact"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": false } }
+    },
+    {
+      "name": "release",
+      "intent": "Give the claim back",
+      "kind": "write",
+      "args": {
+        "id": { "type": "string" },
+        "reason": { "type": "enum", "values": ["done", "blocked", "scope", "stale", "human"] },
+        "text": { "type": "stdin|file?" }
+      },
+      "effects": { "blocked": "status→blocked", "human": "+needs:human", "scope": "+bops:hold", "stale": "+bops:hold", "done": "none; await land/sweep" },
+      "wraps": ["bd update <id> --assignee ''", "bd label remove <id> run:*", "bd comments add <id>", "bd dolt push"],
+      "output": { "id": "string", "reason": "string" },
+      "surfaces": { "cc": ["skill"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": false } }
+    },
+    {
+      "name": "land",
+      "intent": "Record that work reached its destination",
+      "kind": "write",
+      "args": { "id": { "type": "string" }, "ref": { "type": "url" }, "sha": { "type": "string" } },
+      "never": ["merge", "push a branch", "close"],
+      "wraps": ["bd comments add <id>", "bd update <id> --metadata (merge bops.landed)", "bd dolt push"],
+      "output": { "id": "string", "landed": { "ref": "string", "sha": "string", "run": "string", "at": "string" } },
+      "surfaces": { "cc": ["skill"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": false } }
+    },
+    {
+      "name": "sweep",
+      "intent": "Close landed beads whose refs are merged",
+      "kind": "write",
+      "args": {
+        "dry-run": { "type": "bool", "default": true },
+        "forge": { "type": "enum", "values": ["auto", "github", "gitlab", "none"], "default": "auto" }
+      },
+      "wraps": ["forge.is_merged(ref)", "bd close <id> --reason 'merged via <ref> (<sha>)'"],
+      "output": { "closed": "string[]", "pending": "string[]", "unknown": "string[]" },
+      "surfaces": { "cc": ["skill"], "clj": "fn", "mcp": { "readOnly": false } }
+    },
+    {
+      "name": "stale",
+      "intent": "Claims nobody is working",
+      "kind": "read",
+      "args": { "older-than": { "type": "duration", "default": "2h" }, "all-machines": { "type": "bool", "default": true } },
+      "wraps": ["bd list --status in_progress --json", "bd comments list <id> --json"],
+      "output": { "stale": [ { "id": "string", "run": "string", "last_event_at": "string", "age_minutes": "int", "same_machine": "bool" } ] },
+      "surfaces": { "cc": ["skill", "hook:SessionStart"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": true } }
+    },
+    {
+      "name": "lint",
+      "intent": "Is this bead workable?",
+      "kind": "read",
+      "args": { "id": { "type": "string" }, "strict": { "type": "bool", "default": false } },
+      "wraps": ["bd show <id> --json", "bd gate list --json", "bd dep cycles --json"],
+      "output": {
+        "id": "string", "workable": "bool",
+        "fails": [ { "id": "string", "rule": "string" } ],
+        "warns": [ { "id": "string", "rule": "string" } ],
+        "passes": "string[]"
+      },
+      "surfaces": { "cc": ["skill"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": true } }
+    },
+    {
+      "name": "sync",
+      "intent": "Pull, heartbeat, push — with the one retry",
+      "kind": "write",
+      "args": { "no-push": { "type": "bool", "default": false } },
+      "wraps": ["bd dolt pull", "bd heartbeat <id> (held claims)", "bd dolt push"],
+      "retry": { "on": "dolt lock", "times": 1, "after_ms": 5000 },
+      "output": { "pulled": "bool", "pushed": "bool", "revision": "string", "unpublished": "int" },
+      "surfaces": { "cc": ["skill", "hook:Stop"], "codex": ["skill"], "clj": "fn" }
+    },
+    {
+      "name": "session-start",
+      "intent": "Orient a fresh agent session",
+      "kind": "read+sync",
+      "args": {},
+      "wraps": ["sync", "bd prime", "stale --older-than 2h", "bd list --assignee <me> --status in_progress --json"],
+      "output": { "mine": "string[]", "stale": "int", "ready_count": "int", "prime": "string" },
+      "surfaces": { "cc": ["hook:SessionStart"], "codex": ["hook:SessionStart"], "clj": "fn" }
+    },
+    {
+      "name": "gates",
+      "intent": "What is blocking this bead's path?",
+      "kind": "read",
+      "args": { "id": { "type": "string" } },
+      "wraps": ["bd gate list --json", "bd dep list <id> --json"],
+      "output": { "gates": [ { "id": "string", "type": "string", "on": "string", "satisfied": "bool" } ], "blocking_deps": "string[]" },
+      "surfaces": { "cc": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": true } }
+    },
+    {
+      "name": "deps",
+      "intent": "Blockers, dependents, longest path",
+      "kind": "read",
+      "args": {
+        "id": { "type": "string" },
+        "transitive": { "type": "bool", "default": false },
+        "path": { "type": "bool", "default": false },
+        "engine": { "type": "enum", "values": ["bd", "cte", "graph"], "default": "bd" }
+      },
+      "wraps": ["bd dep list <id> --json", "bd sql (engine=cte)"],
+      "output": { "blocks": "string[]", "blocked_by": "string[]", "critical_path": "string[]?", "depth": "int" },
+      "surfaces": { "cc": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": true } }
+    },
+    {
+      "name": "version",
+      "intent": "Report bops, contract, and detected bd",
+      "kind": "read",
+      "args": {},
+      "wraps": ["bd version --json"],
+      "output": { "bops": "string", "contract": "int", "bd": "string", "backend": "string" },
+      "surfaces": { "cc": ["skill"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": true } }
+    }
+  ]
+}
