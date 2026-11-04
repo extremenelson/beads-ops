@@ -41,7 +41,16 @@ func (e Exec) Run(ctx context.Context, args ...string) ([]byte, error) {
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
-		return out.Bytes(), fmt.Errorf("bd %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(errb.String()))
+		msg := strings.TrimSpace(errb.String())
+		// bd reports failures as {"error": ...} on stdout in --json mode.
+		var e struct{ Error, Hint string }
+		if json.Unmarshal(out.Bytes(), &e) == nil && e.Error != "" {
+			msg = e.Error
+			if e.Hint != "" {
+				msg += " (" + e.Hint + ")"
+			}
+		}
+		return out.Bytes(), fmt.Errorf("bd %s: %w: %s", strings.Join(args, " "), err, msg)
 	}
 	return out.Bytes(), nil
 }
@@ -50,13 +59,28 @@ func (e Exec) Run(ctx context.Context, args ...string) ([]byte, error) {
 // Tests use it so no suite needs Dolt.
 type Fake struct {
 	Responses map[string][]byte
+	// Sequences wins over Responses: successive calls with the same key
+	// consume successive entries (the last one repeats). Use it when a
+	// readback must differ from the read before a write.
+	Sequences map[string][][]byte
 	Calls     [][]string
+	seqPos    map[string]int
 }
 
 // Run implements Runner.
 func (f *Fake) Run(_ context.Context, args ...string) ([]byte, error) {
 	f.Calls = append(f.Calls, args)
 	key := strings.Join(args, " ")
+	if seq, ok := f.Sequences[key]; ok && len(seq) > 0 {
+		if f.seqPos == nil {
+			f.seqPos = map[string]int{}
+		}
+		i := f.seqPos[key]
+		if i < len(seq)-1 {
+			f.seqPos[key] = i + 1
+		}
+		return seq[i], nil
+	}
 	if b, ok := f.Responses[key]; ok {
 		return b, nil
 	}
