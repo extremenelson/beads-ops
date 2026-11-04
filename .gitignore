@@ -3,3 +3,5 @@
 .beads/push-state.json
 .beads-wisp/
 .worktrees/
+*.patch
+*:Zone.Identifier

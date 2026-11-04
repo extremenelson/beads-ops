@@ -4,12 +4,17 @@
 
 Beads gives agents a dependency-aware, git-synced task memory. It deliberately stops at the mechanics (`bd ready`, `bd prime`, Dolt sync) and leaves the *policy* open: who closes epics, what a handoff note must contain, when a bead is actually workable, how sync runs on a laptop that's sometimes offline. This repo fills that gap with opinionated, tested defaults you can adopt wholesale or cherry-pick.
 
-> Status: **v0.2, early.** Used daily by the maintainer across Claude Code, Hermes, and a Clojure orchestrator. Field names and `bd` behaviors are verified against upstream at the commit pinned in [`vendor/beads-skill/SOURCE.md`](vendor/beads-skill/SOURCE.md). Expect churn while `bd` is pre-1.0.
+> Status: **v0.2, early.** Used daily by the maintainer across Claude Code, Hermes, and a Clojure orchestrator. Field names and `bd` behaviors are verified against upstream at the commit pinned in [`vendor/beads-skill/SOURCE.md`](vendor/beads-skill/SOURCE.md). Requires `bd` ≥ 1.3 (leases, heartbeats, compare-and-set); pin one `bd` version per shared ledger.
 
 ## What's here
 
 | Path | What it is |
 |---|---|
+| [`SPEC.md`](SPEC.md) | **`bops` contract 1** — the intent-level command layer over `bd`: glossary, ledger state conventions, 13-command manifest, `next` ordering, lint rules, forge adapter, generated bindings |
+| [`bops/`](bops/) | Go reference implementation of `SPEC.md` (`next claim release sync lint` so far); `bops/commands.json` is the manifest every binding is generated from; [`docs/COMMANDS.md`](docs/COMMANDS.md) is its generated reference |
+| [`docs/adr/`](docs/adr/) | Architecture decisions with ranked options and switching conditions: [0001](docs/adr/0001-derived-read-model-not-write-path.md) derived read model, never a write path; [0002](docs/adr/0002-go-reference-implementation.md) manifest-driven CLI, Go reference implementation |
+| [`docs/plan/`](docs/plan/) | One file per milestone; [`v0.1.0.md`](docs/plan/v0.1.0.md) is the epic + 14 tasks that [`scripts/plan/v0.1.0-beads.sh`](scripts/plan/v0.1.0-beads.sh) creates in the ledger |
+| [`docs/research/`](docs/research/) | Dated research snapshots behind the ADRs; each carries a "status as of" header |
 | [`docs/PROCESS.md`](docs/PROCESS.md) | The operating process: invariants, roles, session protocol, handoff-note contract, decomposition rules, gates, formulas, offline/multi-machine rules, and a 21-row **workability checklist** for beads |
 | [`docs/MULTI-DEV-PLAN.md`](docs/MULTI-DEV-PLAN.md) | Topology decision (hub-and-spoke on your git remote, embedded Dolt, `bd sync`) with ranked alternatives and exact switching conditions; five-phase rollout; conflict and recovery runbooks; upgrade procedure |
 | [`scripts/bd-lint-claim.sh`](scripts/bd-lint-claim.sh) | Pre-claim lint. Exit 0 = workable, 1 = fix the bead, 2 = tool error. `--json` for agents |
@@ -21,7 +26,7 @@ Beads gives agents a dependency-aware, git-synced task memory. It deliberately s
 ## Quickstart (one developer, one repo)
 
 ```bash
-# 0. bd ≥ 0.60 installed; project has a git origin
+# 0. bd ≥ 1.3 installed; project has a git origin
 cd your-project
 bd init                                   # or: bd dolt remote list  (verify origin is wired)
 bd setup claude                           # upstream hooks + CLAUDE.md section
