@@ -410,9 +410,54 @@ func (s *Store) IntendDelete(id string) error {
 	})
 }
 
+// SetLedgerPending records whether the ledger display still needs writing.
+func (s *Store) SetLedgerPending(id string, pending bool) error {
+	return s.update(func() {
+		r := s.holder(id)
+		if e, ok := r.Held[id]; ok {
+			e.LedgerPending = pending
+			r.Held[id] = e
+		}
+	})
+}
+
 // Drop forgets id for every run in this clone.
 func (s *Store) Drop(id string) error {
 	return s.update(func() { s.DropHold(id) })
+}
+
+// Event is one line of events.jsonl, the local record of what bops did (D21).
+type Event struct {
+	At      time.Time `json:"at"`
+	Run     string    `json:"run"`
+	Command string    `json:"command"`
+	Bead    string    `json:"bead"`
+	Step    string    `json:"step"`
+	Outcome string    `json:"outcome"`
+	Code    string    `json:"code,omitempty"`
+	SHA     string    `json:"sha,omitempty"`
+	Detail  string    `json:"detail,omitempty"`
+}
+
+// eventsMax is the size at which events.jsonl is rotated to one old copy.
+const eventsMax = 1 << 20
+
+// Log appends an event. Losing one must never fail the command it describes.
+func (s *Store) Log(ev Event) {
+	path := filepath.Join(s.dir, "events.jsonl")
+	if info, err := os.Stat(path); err == nil && info.Size() >= eventsMax {
+		_ = os.Rename(path, path+".1")
+	}
+	b, err := json.Marshal(ev)
+	if err != nil {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(append(b, '\n'))
 }
 
 // Run returns the run for this worktree.

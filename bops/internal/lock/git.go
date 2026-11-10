@@ -46,7 +46,7 @@ func (e Exec) Run(ctx context.Context, c Cmd) (Output, error) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", c.Args...)
 	cmd.Dir = e.Dir
-	cmd.Env = append(os.Environ(), e.env(ctx)...)
+	cmd.Env = append(os.Environ(), e.env(ctx, c)...)
 	cmd.Stdin = strings.NewReader(c.Stdin)
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
@@ -56,11 +56,14 @@ func (e Exec) Run(ctx context.Context, c Cmd) (Output, error) {
 
 // env fixes the commit identity, so user.email is never published and a machine
 // with no git identity still works, and keeps git from prompting.
-func (e Exec) env(ctx context.Context) []string {
+func (e Exec) env(ctx context.Context, c Cmd) []string {
 	vars := []string{
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_AUTHOR_NAME=bops", "GIT_AUTHOR_EMAIL=bops@invalid",
 		"GIT_COMMITTER_NAME=bops", "GIT_COMMITTER_EMAIL=bops@invalid",
+	}
+	if len(c.Args) == 0 || (c.Args[0] != "push" && c.Args[0] != "fetch" && c.Args[0] != "ls-remote") {
+		return vars // only these reach the network
 	}
 	cmd := exec.CommandContext(ctx, "git", "config", "--get", "core.sshCommand")
 	cmd.Dir = e.Dir

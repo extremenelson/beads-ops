@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"flag"
 	"io"
 	"os"
@@ -8,7 +10,87 @@ import (
 	"runtime/debug"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/extremenelson/beads-ops/bops"
+	"github.com/extremenelson/beads-ops/bops/internal/intent"
+	"github.com/extremenelson/beads-ops/bops/internal/lock"
+	"github.com/extremenelson/beads-ops/bops/internal/manifest"
 )
+
+func emitted(t *testing.T, result any, err error) (int, map[string]any) {
+	t.Helper()
+	m, perr := manifest.Parse(bops.ManifestJSON)
+	if perr != nil {
+		t.Fatal(perr)
+	}
+	out, cerr := os.CreateTemp(t.TempDir(), "out")
+	if cerr != nil {
+		t.Fatal(cerr)
+	}
+	stderr, cerr := os.CreateTemp(t.TempDir(), "err")
+	if cerr != nil {
+		t.Fatal(cerr)
+	}
+	code := emit(m, "claim", true, result, err, out, stderr)
+	b, rerr := os.ReadFile(out.Name())
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	got := map[string]any{}
+	if jerr := json.Unmarshal(b, &got); jerr != nil {
+		t.Fatalf("%v: %s", jerr, b)
+	}
+	return code, got
+}
+
+func TestEmitExitCodes(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		result  any
+		err     error
+		code    int
+		ok      bool
+		errCode string
+	}{
+		{"claimed", &intent.ClaimOut{Outcome: intent.OutcomeClaimed}, nil, exitVerdict, true, ""},
+		{"held", &intent.ClaimOut{Outcome: intent.OutcomeHeld}, nil, exitVerdict, true, ""},
+		{"lost", &intent.ClaimOut{Outcome: intent.OutcomeLost}, nil, exitNegative, false, ""},
+		{"refused", &intent.ClaimOut{Outcome: intent.OutcomeRefused}, nil, exitNegative, false, ""},
+		{"released", &intent.ReleaseOut{Outcome: intent.OutcomeReleased}, nil, exitVerdict, true, ""},
+		{"release lost", &intent.ReleaseOut{Outcome: intent.OutcomeLost}, nil, exitNegative, false, ""},
+		{"unreachable", &intent.ClaimOut{Outcome: intent.OutcomeUnreachable}, &lock.Error{Code: lock.CodeUnreachable, Err: errors.New("no")}, exitCantRun, false, lock.CodeUnreachable},
+		{"nil result with error", (*intent.ClaimOut)(nil), errors.New("bad"), exitCantRun, false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, got := emitted(t, tc.result, tc.err)
+			if code != tc.code || got["ok"] != tc.ok {
+				t.Errorf("code=%d ok=%v, want %d %v", code, got["ok"], tc.code, tc.ok)
+			}
+			if c, _ := got["code"].(string); c != tc.errCode {
+				t.Errorf("code field = %q, want %q", c, tc.errCode)
+			}
+		})
+	}
+}
+
+func TestEmitScrubsCredentials(t *testing.T) {
+	_, got := emitted(t, (*intent.ClaimOut)(nil), errors.New("fatal: unable to access 'https://user:s3cret@example.invalid/r'"))
+	if strings.Contains(got["error"].(string), "s3cret") {
+		t.Errorf("error = %v", got["error"])
+	}
+}
+
+func TestBudgets(t *testing.T) {
+	for name, min := range map[string]time.Duration{"claim": time.Minute, "release": time.Minute, "note": time.Minute, "sync": 2 * time.Minute, "sweep": 5 * time.Minute} {
+		if budget(name) < min {
+			t.Errorf("%s budget = %v", name, budget(name))
+		}
+	}
+	if budget("next") != 30*time.Second {
+		t.Errorf("next budget = %v", budget("next"))
+	}
+}
 
 func TestNoteTextFromStdin(t *testing.T) {
 	got, err := noteText("", strings.NewReader("from stdin\n\nNEXT: x"), false)

@@ -17,6 +17,7 @@ import (
 	"github.com/extremenelson/beads-ops/bops/internal/bdx"
 	"github.com/extremenelson/beads-ops/bops/internal/forge"
 	"github.com/extremenelson/beads-ops/bops/internal/ledger"
+	"github.com/extremenelson/beads-ops/bops/internal/lock"
 	"github.com/extremenelson/beads-ops/bops/internal/runstate"
 )
 
@@ -26,6 +27,8 @@ type Env struct {
 	Run *runstate.Run
 	// Store is the clone's hold state across worktrees. Nil means only Run.
 	Store HoldStore
+	// Lock decides who holds a bead. Next works without it; writes need it.
+	Lock  *lock.Lock
 	Now   func() time.Time
 	Sleep func(time.Duration) // injectable for the sync retry
 	// StaleAfter is how long a claim may go without a heartbeat/update
@@ -36,7 +39,8 @@ type Env struct {
 // HoldStore is the part of the clone's state that spans worktrees.
 type HoldStore interface {
 	Holds() []runstate.Hold
-	DropHold(id string)
+	SetLedgerPending(id string, pending bool) error
+	Log(ev runstate.Event)
 }
 
 func (e *Env) now() time.Time {
@@ -85,6 +89,7 @@ type NextOut struct {
 	Candidates     []Candidate `json:"candidates"`
 	ExcludedCount  int         `json:"excluded_count"`
 	LedgerRevision string      `json:"ledger_revision"`
+	Warnings       []string    `json:"warnings,omitempty"`
 }
 
 // NextOpts are the `next` arguments.
@@ -119,6 +124,16 @@ func Next(ctx context.Context, env *Env, o NextOpts) (*NextOut, error) {
 	}
 	lenv := LintEnv{Pool: env.Run.Pool, Caps: env.caps(), Now: env.now(), StaleAfter: env.staleAfter()}
 	out := &NextOut{Candidates: []Candidate{}}
+	claims := map[string]lock.Ref{}
+	if env.Lock != nil {
+		seen, err := env.Lock.Seen(ctx)
+		if err != nil {
+			out.Warnings = append(out.Warnings, "could not read local claims: "+err.Error())
+		}
+		for _, r := range seen {
+			claims[r.ID] = r
+		}
+	}
 	type scored struct {
 		c Candidate
 		i ledger.Issue
@@ -146,6 +161,10 @@ func Next(ctx context.Context, env *Env, o NextOpts) (*NextOut, error) {
 		}
 		for _, w := range lr.Warns {
 			c.Why = append(c.Why, w.ID+" (warn): "+w.Rule)
+		}
+		if r, ok := claims[i.ID]; ok && r.Run != env.Run.ID {
+			c.Workable = false
+			c.WhyNot = append(c.WhyNot, fmt.Sprintf("W14: claimed by %s", r.Actor))
 		}
 		if !c.Workable {
 			if i.IssueType != "epic" {
@@ -179,72 +198,6 @@ func Next(ctx context.Context, env *Env, o NextOpts) (*NextOut, error) {
 			break
 		}
 		out.Candidates = append(out.Candidates, s.c)
-	}
-	return out, nil
-}
-
-// --------------------------------------------------------------- claim
-
-// ClaimOut is the `claim` output.
-type ClaimOut struct {
-	ID         string    `json:"id"`
-	Run        string    `json:"run"`
-	ClaimedAt  time.Time `json:"claimed_at"`
-	ReadbackOK bool      `json:"readback_ok"`
-}
-
-// Claim takes a bead for this run: CAS on empty assignee, run label,
-// typed comment, readback, push. Any failure before the push leaves the
-// ledger as it was except where noted in the returned error.
-func Claim(ctx context.Context, env *Env, id string, force bool) (*ClaimOut, error) {
-	showRaw, err := env.BD.Run(ctx, "show", id, "--json")
-	if err != nil {
-		return nil, err
-	}
-	cur, err := ledger.DecodeIssue(showRaw)
-	if err != nil {
-		return nil, err
-	}
-	if !force {
-		if cur.Assignee != "" {
-			return nil, fmt.Errorf("%w: %s is assigned to %q", ErrPrecondition, id, cur.Assignee)
-		}
-		if runs := cur.LabelsWithPrefix("run:"); len(runs) > 0 {
-			return nil, fmt.Errorf("%w: %s carries run:%s", ErrPrecondition, id, runs[0])
-		}
-		if cur.Status != "open" && cur.Status != "ready" {
-			return nil, fmt.Errorf("%w: %s is %s", ErrPrecondition, id, cur.Status)
-		}
-	}
-	// --claim is bd's own compare-and-set; bd refuses --if-assignee beside it.
-	if _, err := env.BD.Run(ctx, "update", id, "--claim"); err != nil {
-		return nil, err
-	}
-	run := env.Run.ID
-	if _, err := env.BD.Run(ctx, "label", "add", id, "run:"+run); err != nil {
-		return nil, fmt.Errorf("claimed but could not add run label: %w", err)
-	}
-	if cur.HasLabel("bops:hold") {
-		if _, err := env.BD.Run(ctx, "label", "remove", id, "bops:hold"); err != nil {
-			return nil, fmt.Errorf("claimed but could not clear bops:hold: %w", err)
-		}
-	}
-	ev := fmt.Sprintf("bops:claimed run=%s actor=%s machine=%s", run, env.Run.Actor, env.Run.Machine)
-	if _, err := env.BD.Run(ctx, "comments", "add", id, ev); err != nil {
-		return nil, fmt.Errorf("claimed but could not record event: %w", err)
-	}
-	out := &ClaimOut{ID: id, Run: run, ClaimedAt: env.now()}
-	if rb, err := env.BD.Run(ctx, "show", id, "--json"); err == nil {
-		if got, err := ledger.DecodeIssue(rb); err == nil {
-			out.ReadbackOK = got.Assignee != "" && got.HasLabel("run:"+run)
-		}
-	}
-	if !out.ReadbackOK {
-		return out, fmt.Errorf("%w: readback after claim did not show assignee + run label", ErrPrecondition)
-	}
-	env.Run.Hold(id)
-	if _, err := env.BD.Run(ctx, "dolt", "push"); err != nil {
-		return out, fmt.Errorf("claimed locally; push failed: %w", err)
 	}
 	return out, nil
 }
@@ -472,129 +425,6 @@ func Sweep(ctx context.Context, env *Env, f forge.Forge, dryRun bool) (*SweepOut
 		}
 	}
 	return out, errors.Join(failures...)
-}
-
-// ------------------------------------------------------------- release
-
-// ReleaseReasons are the allowed `--reason` values.
-var ReleaseReasons = []string{"done", "blocked", "scope", "stale", "human"}
-
-// ReleaseOut is the `release` output.
-type ReleaseOut struct {
-	ID     string `json:"id"`
-	Reason string `json:"reason"`
-}
-
-// Release gives a claim back with a classified reason (SPEC §4 effects).
-func Release(ctx context.Context, env *Env, id, reason string) (*ReleaseOut, error) {
-	if !contains(ReleaseReasons, reason) {
-		return nil, fmt.Errorf("release: reason must be one of %s", strings.Join(ReleaseReasons, "|"))
-	}
-	showRaw, err := env.BD.Run(ctx, "show", id, "--json")
-	if err != nil {
-		return nil, err
-	}
-	cur, err := ledger.DecodeIssue(showRaw)
-	if err != nil {
-		return nil, err
-	}
-	runs := cur.LabelsWithPrefix("run:")
-	if len(runs) > 0 && !contains(runs, env.Run.ID) && reason != "stale" {
-		return nil, fmt.Errorf("%w: %s is held by run %s, not this run (use --reason stale to reclaim)", ErrPrecondition, id, runs[0])
-	}
-	// done stays in_progress until sweep closes it; every other reason
-	// returns the bead to a status bd ready understands.
-	update := []string{"update", id, "--assignee", ""}
-	switch reason {
-	case "blocked":
-		update = append(update, "--status", "blocked")
-	case "human", "scope", "stale":
-		update = append(update, "--status", "open")
-	}
-	if _, err := env.BD.Run(ctx, update...); err != nil {
-		return nil, err
-	}
-	for _, r := range runs {
-		if _, err := env.BD.Run(ctx, "label", "remove", id, "run:"+r); err != nil {
-			return nil, fmt.Errorf("unassigned but could not remove run label: %w", err)
-		}
-	}
-	label := map[string]string{"human": "needs:human", "scope": "bops:hold", "stale": "bops:hold", "done": "bops:landing"}[reason]
-	if label != "" {
-		if _, err := env.BD.Run(ctx, "label", "add", id, label); err != nil {
-			return nil, err
-		}
-	}
-	ev := fmt.Sprintf("bops:released run=%s reason=%s", env.Run.ID, reason)
-	if _, err := env.BD.Run(ctx, "comments", "add", id, ev); err != nil {
-		return nil, fmt.Errorf("released but could not record event: %w", err)
-	}
-	env.Run.Drop(id)
-	if env.Store != nil {
-		env.Store.DropHold(id) // the hold may belong to a removed worktree's run
-	}
-	if _, err := env.BD.Run(ctx, "dolt", "push"); err != nil {
-		return &ReleaseOut{id, reason}, fmt.Errorf("released locally; push failed: %w", err)
-	}
-	return &ReleaseOut{id, reason}, nil
-}
-
-// ---------------------------------------------------------------- sync
-
-// SyncOut is the `sync` output.
-type SyncOut struct {
-	Pulled      bool   `json:"pulled"`
-	Pushed      bool   `json:"pushed"`
-	Revision    string `json:"revision"`
-	Unpublished int    `json:"unpublished"`
-	// StrandedHolds are beads held by a worktree that no longer exists.
-	// `bops release <id> --reason stale` from any checkout clears one.
-	StrandedHolds []string `json:"stranded_holds"`
-}
-
-// Sync pulls, heartbeats every claim held in this clone, and pushes,
-// retrying once after a Dolt lock error (SPEC §4 retry policy).
-func Sync(ctx context.Context, env *Env, noPush bool) (*SyncOut, error) {
-	held, stranded := env.holds()
-	out := &SyncOut{StrandedHolds: stranded}
-	if _, err := withLockRetry(ctx, env, "dolt", "pull"); err != nil {
-		return out, err
-	}
-	out.Pulled = true
-	for _, id := range held {
-		_, _ = env.BD.Run(ctx, "heartbeat", id) // best effort; lease is advisory
-	}
-	if noPush {
-		return out, nil
-	}
-	if _, err := withLockRetry(ctx, env, "dolt", "push"); err != nil {
-		return out, err
-	}
-	out.Pushed = true
-	return out, nil
-}
-
-// holds returns every bead held in this clone, and which of them are stranded.
-func (e *Env) holds() (held, stranded []string) {
-	stranded = []string{}
-	seen := map[string]bool{}
-	for _, id := range e.Run.HeldIDs() {
-		seen[id] = true
-		held = append(held, id)
-	}
-	if e.Store == nil {
-		return held, stranded
-	}
-	for _, h := range e.Store.Holds() {
-		if !seen[h.ID] {
-			seen[h.ID] = true
-			held = append(held, h.ID)
-		}
-		if h.Stranded {
-			stranded = append(stranded, h.ID)
-		}
-	}
-	return held, stranded
 }
 
 func withLockRetry(ctx context.Context, env *Env, args ...string) ([]byte, error) {

@@ -2,7 +2,7 @@
 
 Generated from `bops/commands.json` by `bops gen docs`. Do not edit by hand.
 
-Exit codes: **0** = verdict produced (may be negative); **1** = could not run: ledger unreachable, precondition unverifiable, bd error; **2** = usage.
+Exit codes: **0** = done, or a read's verdict; **1** = could not run: remote or ledger unreachable, precondition unverifiable, bd error; **2** = usage; **3** = negative verdict on a write: lost or refused, ok:false.
 
 | Command | Intent | Kind |
 |---|---|---|
@@ -64,9 +64,9 @@ Take this bead for this run
 | `--force` | bool | `false` |  |
 | `--id` | string |  |  |
 
-Preconditions: assignee is empty OR --force; status in (open, ready); no run: label.
+Preconditions: assignee is empty OR --force; status in (open, ready); no run: label; origin matches the Dolt remote.
 
-Wraps: `bd update <id> --claim`, `bd label add <id> run:<ulid>`, `bd comments add <id>`, `bd dolt push`.
+Wraps: `git push refs/bops/claims/<id> (create-only)`, `bd dolt pull`, `bd update <id> --claim`, `bd label add <id> run:<ulid>`, `bd comments add <id>`, `bd dolt push`.
 
 Output:
 
@@ -74,8 +74,16 @@ Output:
 {
   "id": "string",
   "run": "string",
-  "claimed_at": "string",
-  "readback_ok": "bool"
+  "outcome": "string",
+  "claimed_at": "string?",
+  "readback_ok": "bool?",
+  "ledger_pending": "bool?",
+  "ref_pending": "bool?",
+  "holder": "object?",
+  "reason": "string?",
+  "retry": "string?",
+  "side_effects": "string?",
+  "warnings": "string[]?"
 }
 ```
 
@@ -114,14 +122,20 @@ Give the claim back
 
 Effects by reason: `blocked` → status→blocked; `done` → none; await land/sweep; `human` → +needs:human; `scope` → +bops:hold; `stale` → +bops:hold.
 
-Wraps: `bd update <id> --assignee ''`, `bd label remove <id> run:*`, `bd comments add <id>`, `bd dolt push`.
+Wraps: `git fetch refs/bops/claims/<id>`, `git push (lease): state=landing on done, delete otherwise`, `bd update <id> --assignee ''`, `bd label remove <id> run:*`, `bd comments add <id>`, `bd dolt push`.
 
 Output:
 
 ```json
 {
   "id": "string",
-  "reason": "string"
+  "reason": "string",
+  "outcome": "string",
+  "ledger_pending": "bool?",
+  "ref_pending": "bool?",
+  "holder": "object?",
+  "detail": "string?",
+  "warnings": "string[]?"
 }
 ```
 
@@ -250,7 +264,7 @@ Pull, heartbeat, push — with the one retry
 
 Retry: on dolt lock, 1 time(s), after 5000 ms.
 
-Wraps: `bd dolt pull`, `bd heartbeat <id> (held claims)`, `bd dolt push`.
+Wraps: `git fetch --prune refs/bops/claims/*`, `bd dolt pull`, `bd heartbeat <id> (held claims)`, `bd dolt push`.
 
 Output:
 
@@ -260,7 +274,9 @@ Output:
   "pushed": "bool",
   "revision": "string",
   "unpublished": "int",
-  "stranded_holds": "string[]"
+  "stranded_holds": "string[]",
+  "lost_claims": "string[]",
+  "warnings": "string[]?"
 }
 ```
 

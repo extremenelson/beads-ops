@@ -644,6 +644,32 @@ func TestParsePorcelain(t *testing.T) {
 	}
 }
 
+func TestSameRemote(t *testing.T) {
+	same := [][2]string{
+		{"https://github.com/o/r.git", "git+https://github.com/o/r.git"},
+		{"git@github.com:o/r.git", "https://github.com/o/r"},
+		{"ssh://git@github.com/o/r.git", "git+https://GitHub.com/o/r.git"},
+		{"ssh://git@github.com:22/o/r", "git@github.com:o/r.git"},
+		{"https://token@github.com/o/r.git", "https://github.com/o/r.git/"},
+		{"/srv/git/r.git", "git+file:///srv/git/r.git"},
+	}
+	for _, c := range same {
+		if !SameRemote(c[0], c[1]) {
+			t.Errorf("%q and %q should match", c[0], c[1])
+		}
+	}
+	differ := [][2]string{
+		{"https://github.com/o/r.git", "https://github.com/o/other.git"},
+		{"https://github.com/o/r.git", "https://gitlab.com/o/r.git"},
+		{"/srv/git/r.git", "/srv/git/s.git"},
+	}
+	for _, c := range differ {
+		if SameRemote(c[0], c[1]) {
+			t.Errorf("%q and %q should differ", c[0], c[1])
+		}
+	}
+}
+
 func TestStoreSatisfiesJournal(t *testing.T) {
 	var _ Journal = (*runstate.Store)(nil)
 }

@@ -52,6 +52,8 @@ const (
 	CodeJournal         = "state_write_failed"
 	CodeHoldNotRecorded = "hold_not_recorded"
 	CodeGit             = "git_failed"
+	CodeNoOrigin        = "no_origin"
+	CodeRemoteMismatch  = "remote_mismatch"
 )
 
 // Error carries a stable code. SHA is set when a ref may remain on the remote
@@ -448,6 +450,38 @@ func localFailure(out Output, err error) error {
 	}
 	return failure(out, err)
 }
+
+// RemoteURL returns the URL the lock pushes to.
+func (l *Lock) RemoteURL(ctx context.Context) (string, error) {
+	out, err := l.Git.Run(ctx, Cmd{Args: []string{"remote", "get-url", remote}})
+	if err != nil {
+		return "", &Error{Code: CodeNoOrigin, Err: fmt.Errorf("the lock needs a git remote named %s: %s", remote, Scrub(out.Stderr))}
+	}
+	return strings.TrimSpace(out.Stdout), nil
+}
+
+var scpURL = regexp.MustCompile(`^(?:[^@/]+@)?([^/:]+):(.+)$`)
+var schemeURL = regexp.MustCompile(`^[a-z][a-z0-9+.-]*://(?:[^@/]+@)?([^/:]+)(?::\d+)?(/.*)$`)
+
+// normalizeRemote reduces a URL to host/path, so https and ssh spellings of one
+// repository compare equal. Dolt writes the same URL with a git+ prefix.
+func normalizeRemote(u string) string {
+	u = strings.TrimPrefix(strings.TrimSpace(u), "git+")
+	switch {
+	case strings.HasPrefix(u, "file://"):
+		u = strings.TrimPrefix(u, "file://")
+	case schemeURL.MatchString(u):
+		m := schemeURL.FindStringSubmatch(u)
+		u = strings.ToLower(m[1]) + "/" + strings.TrimLeft(m[2], "/")
+	case !strings.HasPrefix(u, "/") && scpURL.MatchString(u):
+		m := scpURL.FindStringSubmatch(u)
+		u = strings.ToLower(m[1]) + "/" + strings.TrimLeft(m[2], "/")
+	}
+	return strings.TrimSuffix(strings.TrimRight(u, "/"), ".git")
+}
+
+// SameRemote reports whether two URLs name one repository.
+func SameRemote(a, b string) bool { return normalizeRemote(a) == normalizeRemote(b) }
 
 var urlCredentials = regexp.MustCompile(`://[^/@\s]+@`)
 

@@ -3,11 +3,10 @@
   "contract": 1,
   "common": {
     "flags": {
-      "json": { "type": "bool", "doc": "Emit one JSON document on stdout. Default when stdout is not a TTY." },
-      "idempotency-key": { "type": "string?", "doc": "Write commands only: a repeat with the same key is a no-op returning the original result." }
+      "json": { "type": "bool", "doc": "Emit one JSON document on stdout. Default when stdout is not a TTY." }
     },
-    "exit": { "0": "verdict produced (may be negative)", "1": "could not run: ledger unreachable, precondition unverifiable, bd error", "2": "usage" },
-    "envelope": { "contract": "int", "command": "string", "ok": "bool" }
+    "exit": { "0": "done, or a read's verdict", "1": "could not run: remote or ledger unreachable, precondition unverifiable, bd error", "2": "usage", "3": "negative verdict on a write: lost or refused, ok:false" },
+    "envelope": { "contract": "int", "command": "string", "ok": "bool", "error": "string?", "code": "string?" }
   },
   "commands": [
     {
@@ -39,9 +38,10 @@
       "intent": "Take this bead for this run",
       "kind": "write",
       "args": { "id": { "type": "string" }, "force": { "type": "bool", "default": false } },
-      "preconditions": ["assignee is empty OR --force", "status in (open, ready)", "no run: label"],
-      "wraps": ["bd update <id> --claim", "bd label add <id> run:<ulid>", "bd comments add <id>", "bd dolt push"],
-      "output": { "id": "string", "run": "string", "claimed_at": "string", "readback_ok": "bool" },
+      "preconditions": ["assignee is empty OR --force", "status in (open, ready)", "no run: label", "origin matches the Dolt remote"],
+      "wraps": ["git push refs/bops/claims/<id> (create-only)", "bd dolt pull", "bd update <id> --claim", "bd label add <id> run:<ulid>", "bd comments add <id>", "bd dolt push"],
+      "outcomes": { "claimed": 0, "held": 0, "lost": 3, "refused": 3, "unreachable": 1 },
+      "output": { "id": "string", "run": "string", "outcome": "string", "claimed_at": "string?", "readback_ok": "bool?", "ledger_pending": "bool?", "ref_pending": "bool?", "holder": "object?", "reason": "string?", "retry": "string?", "side_effects": "string?", "warnings": "string[]?" },
       "surfaces": { "cc": ["skill"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": false } }
     },
     {
@@ -65,8 +65,9 @@
         "text": { "type": "stdin|file?" }
       },
       "effects": { "blocked": "status→blocked", "human": "+needs:human", "scope": "+bops:hold", "stale": "+bops:hold", "done": "none; await land/sweep" },
-      "wraps": ["bd update <id> --assignee ''", "bd label remove <id> run:*", "bd comments add <id>", "bd dolt push"],
-      "output": { "id": "string", "reason": "string" },
+      "wraps": ["git fetch refs/bops/claims/<id>", "git push (lease): state=landing on done, delete otherwise", "bd update <id> --assignee ''", "bd label remove <id> run:*", "bd comments add <id>", "bd dolt push"],
+      "outcomes": { "released": 0, "lost": 3, "refused": 3, "unreachable": 1 },
+      "output": { "id": "string", "reason": "string", "outcome": "string", "ledger_pending": "bool?", "ref_pending": "bool?", "holder": "object?", "detail": "string?", "warnings": "string[]?" },
       "surfaces": { "cc": ["skill"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": false } }
     },
     {
@@ -126,9 +127,9 @@
       "intent": "Pull, heartbeat, push — with the one retry",
       "kind": "write",
       "args": { "no-push": { "type": "bool", "default": false } },
-      "wraps": ["bd dolt pull", "bd heartbeat <id> (held claims)", "bd dolt push"],
+      "wraps": ["git fetch --prune refs/bops/claims/*", "bd dolt pull", "bd heartbeat <id> (held claims)", "bd dolt push"],
       "retry": { "on": "dolt lock", "times": 1, "after_ms": 5000 },
-      "output": { "pulled": "bool", "pushed": "bool", "revision": "string", "unpublished": "int", "stranded_holds": "string[]" },
+      "output": { "pulled": "bool", "pushed": "bool", "revision": "string", "unpublished": "int", "stranded_holds": "string[]", "lost_claims": "string[]", "warnings": "string[]?" },
       "surfaces": { "cc": ["skill", "hook:Stop"], "codex": ["skill"], "clj": "fn" }
     },
     {

@@ -24,6 +24,9 @@ const (
 	exitVerdict = 0
 	exitCantRun = 1
 	exitUsage   = 2
+	// exitNegative means bops ran and the answer was no: the bead is someone
+	// else's or a precondition failed. `bops claim x && work` must not proceed.
+	exitNegative = 3
 )
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
@@ -45,11 +48,7 @@ func run(args []string, stdout, stderr *os.File) int {
 			wantJSON = true
 		}
 	}
-	timeout := 30 * time.Second
-	if name == "sweep" { // one forge call per landed bead
-		timeout = 5 * time.Minute
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), budget(name))
 	defer cancel()
 
 	switch name {
@@ -87,6 +86,21 @@ func run(args []string, stdout, stderr *os.File) int {
 	fmt.Fprintf(stderr, "bops: unknown command %q\n", name)
 	usage(stderr, m)
 	return exitUsage
+}
+
+// budget bounds a whole command. Each git and bd call has its own, shorter
+// limit, so a command that uses the network has room to finish. Cancelling a
+// push partway would leave its outcome unknown.
+func budget(name string) time.Duration {
+	switch name {
+	case "sweep": // one forge call per landed bead
+		return 5 * time.Minute
+	case "sync":
+		return 2 * time.Minute
+	case "claim", "release", "note":
+		return time.Minute
+	}
+	return 30 * time.Second
 }
 
 // isTerminal reports whether f is a character device (stdlib-only; SPEC §11a).

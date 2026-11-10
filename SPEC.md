@@ -88,9 +88,8 @@ bops:heartbeat run=<ulid>            (only if lease heartbeats are configured to
 Normative shape of `commands.json`; the generator in §8 consumes it. Common to every command:
 
 - `--json` (default when stdout is not a TTY) → one JSON document on stdout. Human mode prints the same facts as `key=value` lines.
-- Exit codes: **0** verdict produced (even a negative one), **1** could not run (ledger unreachable, precondition unverifiable, `bd` error), **2** usage. Diagnostics on stderr only.
+- Exit codes: **0** done, or a read's verdict; **1** could not run (remote or ledger unreachable, precondition unverifiable, `bd` error); **2** usage; **3** a write's negative verdict (`lost`, `refused`), with `ok:false`, so `bops claim x && work` cannot proceed. Diagnostics on stderr only.
 - Every JSON result carries `{"contract":1,"command":"<name>","ok":<bool>, ...}`.
-- Idempotency: writes accept `--idempotency-key <k>`; a repeat with the same key is a no-op returning the original result.
 
 ```json
 {

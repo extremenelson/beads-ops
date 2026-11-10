@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/extremenelson/beads-ops/bops/internal/bdx"
 	"github.com/extremenelson/beads-ops/bops/internal/intent"
 	"github.com/extremenelson/beads-ops/bops/internal/ledger"
+	"github.com/extremenelson/beads-ops/bops/internal/lock"
 	"github.com/extremenelson/beads-ops/bops/internal/runstate"
 )
 
@@ -45,13 +47,34 @@ func liveLedger(t *testing.T) (*intent.Env, func(title string) string) {
 	sh("git", "init", "-q")
 	sh("git", "config", "user.email", "it@example.invalid")
 	sh("git", "config", "user.name", itActor)
+	sh("git", "init", "-q", "--bare", filepath.Join(t.TempDir(), "origin.git"))
+	bare, _ := filepath.Glob(filepath.Join(filepath.Dir(dir), "*", "origin.git"))
+	sh("git", "remote", "add", "origin", bare[len(bare)-1])
+	sh("git", "commit", "-q", "--allow-empty", "-m", "init")
+	sh("git", "push", "-q", "origin", "HEAD:refs/heads/main")
 	sh("bd", "init", "--quiet", "--prefix", "it")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	w, err := runstate.Open(dir, runstate.Write)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Run().ID, w.Run().Actor, w.Run().Machine = "ITRUN", itActor, "it-box"
+	if err := w.Save(); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	store, err := runstate.Open(dir, runstate.Read)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	bd := bdx.Exec{}
 	env := &intent.Env{
 		BD:    bd,
-		Run:   &runstate.Run{ID: "ITRUN", Actor: itActor, Machine: "it-box"},
+		Run:   store.Run(),
+		Store: store,
 		Sleep: func(time.Duration) {},
+		Lock:  &lock.Lock{Git: lock.Exec{Dir: dir}, Journal: store, Run: "ITRUN", Actor: itActor},
 	}
 	create := func(title string) string {
 		t.Helper()

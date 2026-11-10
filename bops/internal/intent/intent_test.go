@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/extremenelson/beads-ops/bops/internal/bdx"
 	"github.com/extremenelson/beads-ops/bops/internal/intent"
 	"github.com/extremenelson/beads-ops/bops/internal/ledger"
+	"github.com/extremenelson/beads-ops/bops/internal/lock"
 	"github.com/extremenelson/beads-ops/bops/internal/runstate"
 )
 
@@ -106,96 +108,6 @@ func TestNextCapsAndPool(t *testing.T) {
 	}
 }
 
-func TestClaimHappyPath(t *testing.T) {
-	before := `[{"id":"x-1","title":"t","status":"open","priority":2,"issue_type":"task","created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}]`
-	after := `[{"id":"x-1","title":"t","status":"in_progress","assignee":"tester","labels":["run:RUN1"],"priority":2,"issue_type":"task","created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}]`
-	f := &bdx.Fake{
-		Responses: map[string][]byte{
-			"update x-1 --claim":     []byte(`{}`),
-			"label add x-1 run:RUN1": []byte(``),
-			"comments add x-1 bops:claimed run=RUN1 actor=tester machine=box": []byte(``),
-			"dolt push": []byte(``),
-		},
-		// first show = precondition read, second show = readback after the write
-		Sequences: map[string][][]byte{"show x-1 --json": {[]byte(before), []byte(after)}},
-	}
-	env := newEnv(f)
-	out, err := intent.Claim(context.Background(), env, "x-1", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !out.ReadbackOK || out.Run != "RUN1" {
-		t.Fatalf("%+v", out)
-	}
-	if got := env.Run.HeldIDs(); len(got) != 1 || got[0] != "x-1" {
-		t.Errorf("run should hold x-1: %v", env.Run.Held)
-	}
-	if f.Calls[len(f.Calls)-1][0] != "dolt" {
-		t.Errorf("last call should be dolt push, got %v", f.Calls[len(f.Calls)-1])
-	}
-}
-
-func TestClaimRefusesWhenAssigned(t *testing.T) {
-	f := &bdx.Fake{Responses: map[string][]byte{
-		"show x-1 --json": []byte(`[{"id":"x-1","status":"open","assignee":"other","created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}]`),
-	}}
-	_, err := intent.Claim(context.Background(), newEnv(f), "x-1", false)
-	if !errors.Is(err, intent.ErrPrecondition) {
-		t.Fatalf("want ErrPrecondition, got %v", err)
-	}
-	if len(f.Calls) != 1 {
-		t.Errorf("must not write after a failed precondition; calls=%v", f.Calls)
-	}
-}
-
-func TestReleaseEffects(t *testing.T) {
-	held := `[{"id":"x-1","status":"in_progress","assignee":"tester","labels":["run:RUN1"],"created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}]`
-	for _, tc := range []struct{ reason, update, label string }{
-		{"blocked", "update x-1 --assignee  --status blocked", ""},
-		{"human", "update x-1 --assignee  --status open", "label add x-1 needs:human"},
-		{"scope", "update x-1 --assignee  --status open", "label add x-1 bops:hold"},
-		{"stale", "update x-1 --assignee  --status open", "label add x-1 bops:hold"},
-		{"done", "update x-1 --assignee ", "label add x-1 bops:landing"},
-	} {
-		f := &bdx.Fake{Responses: map[string][]byte{
-			"show x-1 --json":           []byte(held),
-			tc.update:                   []byte(``),
-			"label remove x-1 run:RUN1": []byte(``),
-			"comments add x-1 bops:released run=RUN1 reason=" + tc.reason: []byte(``),
-			"dolt push": []byte(``),
-		}}
-		if tc.label != "" {
-			f.Responses[tc.label] = []byte(``)
-		}
-		env := newEnv(f)
-		env.Run.Hold("x-1")
-		if _, err := intent.Release(context.Background(), env, "x-1", tc.reason); err != nil {
-			t.Fatalf("%s: %v", tc.reason, err)
-		}
-		if len(env.Run.Held) != 0 {
-			t.Errorf("%s: run should no longer hold x-1", tc.reason)
-		}
-	}
-}
-
-func TestClaimRemovesExpiredHold(t *testing.T) {
-	before := `[{"id":"x-1","status":"open","labels":["bops:hold"],"created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}]`
-	after := `[{"id":"x-1","status":"in_progress","assignee":"tester","labels":["run:RUN1"],"created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}]`
-	f := &bdx.Fake{
-		Responses: map[string][]byte{
-			"update x-1 --claim":         []byte(`{}`),
-			"label add x-1 run:RUN1":     []byte(``),
-			"label remove x-1 bops:hold": []byte(``),
-			"comments add x-1 bops:claimed run=RUN1 actor=tester machine=box": []byte(``),
-			"dolt push": []byte(``),
-		},
-		Sequences: map[string][][]byte{"show x-1 --json": {[]byte(before), []byte(after)}},
-	}
-	if _, err := intent.Claim(context.Background(), newEnv(f), "x-1", false); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestLintHoldWindow(t *testing.T) {
 	updated := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
 	held := func(at time.Time) *ledger.Issue {
@@ -221,86 +133,6 @@ func TestLintHoldWindow(t *testing.T) {
 		if got != tc.held {
 			t.Errorf("%s: W12 failed=%v, want %v (%+v)", tc.name, got, tc.held, r)
 		}
-	}
-}
-
-func TestReleaseRefusesOtherRun(t *testing.T) {
-	f := &bdx.Fake{Responses: map[string][]byte{
-		"show x-1 --json": []byte(`[{"id":"x-1","status":"in_progress","assignee":"other","labels":["run:OTHER"],"created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}]`),
-	}}
-	if _, err := intent.Release(context.Background(), newEnv(f), "x-1", "done"); !errors.Is(err, intent.ErrPrecondition) {
-		t.Fatalf("want ErrPrecondition, got %v", err)
-	}
-}
-
-func TestSyncRetriesOnceOnLock(t *testing.T) {
-	calls := 0
-	f := &flaky{Fake: bdx.Fake{Responses: map[string][]byte{"dolt pull": []byte(``), "dolt push": []byte(``), "heartbeat x-1": []byte(``)}},
-		failFirst: "dolt push", n: &calls}
-	env := newEnv(f)
-	env.Run.Hold("x-1")
-	out, err := intent.Sync(context.Background(), env, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !out.Pulled || !out.Pushed {
-		t.Fatalf("%+v", out)
-	}
-	if calls != 2 {
-		t.Errorf("push should have been attempted twice, got %d", calls)
-	}
-}
-
-func TestSyncCoversEveryHoldInTheClone(t *testing.T) {
-	f := &bdx.Fake{Responses: map[string][]byte{
-		"dolt pull": []byte(``), "dolt push": []byte(``),
-		"heartbeat x-1": []byte(``), "heartbeat x-2": []byte(``), "heartbeat x-3": []byte(``),
-	}}
-	env := newEnv(f)
-	env.Run.Hold("x-1")
-	env.Store = &fakeHolds{holds: []runstate.Hold{
-		{ID: "x-1", Run: "RUN1"},
-		{ID: "x-2", Run: "OTHER", Worktree: "/live"},
-		{ID: "x-3", Run: "GONE", Worktree: "/removed", Stranded: true},
-	}}
-	out, err := intent.Sync(context.Background(), env, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Join(out.StrandedHolds, ","); got != "x-3" {
-		t.Errorf("stranded = %q, want x-3", got)
-	}
-	beats := map[string]int{}
-	for _, c := range f.Calls {
-		if c[0] == "heartbeat" {
-			beats[c[1]]++
-		}
-	}
-	for _, id := range []string{"x-1", "x-2", "x-3"} {
-		if beats[id] != 1 {
-			t.Errorf("heartbeats for %s = %d, want 1 (%v)", id, beats[id], beats)
-		}
-	}
-}
-
-func TestReleaseDropsAStrandedHold(t *testing.T) {
-	held := `[{"id":"x-3","status":"in_progress","assignee":"tester","labels":["run:GONE"],"created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}]`
-	f := &bdx.Fake{Responses: map[string][]byte{
-		"show x-3 --json":                                      []byte(held),
-		"update x-3 --assignee  --status open":                 []byte(``),
-		"label remove x-3 run:GONE":                            []byte(``),
-		"label add x-3 bops:hold":                              []byte(``),
-		"comments add x-3 bops:released run=RUN1 reason=stale": []byte(``),
-		"dolt push": []byte(``),
-	}}
-	env := newEnv(f)
-	store := &fakeHolds{holds: []runstate.Hold{{ID: "x-3", Run: "GONE", Stranded: true}}}
-	env.Store = store
-	if _, err := intent.Release(context.Background(), env, "x-3", "stale"); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Join(store.dropped, ",") != "x-3" {
-		t.Errorf("dropped = %v, want x-3", store.dropped)
 	}
 }
 
@@ -428,14 +260,6 @@ func callNames(calls [][]string) []string {
 	return names
 }
 
-type fakeHolds struct {
-	holds   []runstate.Hold
-	dropped []string
-}
-
-func (f *fakeHolds) Holds() []runstate.Hold { return f.holds }
-func (f *fakeHolds) DropHold(id string)     { f.dropped = append(f.dropped, id) }
-
 type flaky struct {
 	bdx.Fake
 	failFirst string
@@ -451,6 +275,28 @@ func (f *flaky) Run(ctx context.Context, args ...string) ([]byte, error) {
 		}
 	}
 	return f.Fake.Run(ctx, args...)
+}
+
+func TestSyncRetriesOnceOnLock(t *testing.T) {
+	calls := 0
+	f := &flaky{Fake: bdx.Fake{Responses: map[string][]byte{"dolt pull": []byte(``), "dolt push": []byte(``)}},
+		failFirst: "dolt push", n: &calls}
+	remote := bareRemote(t)
+	dir := filepath.Join(t.TempDir(), "A")
+	git(t, filepath.Dir(dir), "clone", "-q", remote, dir)
+	s := openStore(t, dir, "A")
+	env := &intent.Env{BD: f, Run: s.Run(), Store: s, Sleep: func(time.Duration) {},
+		Lock: &lock.Lock{Git: lock.Exec{Dir: dir}, Journal: s, Run: "A", Actor: "tester"}}
+	out, err := intent.Sync(context.Background(), env, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.Pulled || !out.Pushed {
+		t.Fatalf("%+v", out)
+	}
+	if calls != 2 {
+		t.Errorf("push should have been attempted twice, got %d", calls)
+	}
 }
 
 func ids(o *intent.NextOut) string {
