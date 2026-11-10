@@ -309,45 +309,11 @@ bd setup claude              # idempotent; --check to verify, --global for ~/.cl
 
 What the plugin gives you (`plugins/beads/.claude-plugin/plugin.json`): `SessionStart` and `PreCompact` hooks that run `bd prime`, the `beads` skill, 29 `/bd-*` slash commands, and `task-agent`. Upstream deliberately does **not** run `bd gate check` or `bd list --status in_progress` in hooks. Add them.
 
-**`.claude/settings.json` (project)** — canonical copy at `bindings/claude-code/settings.json`:
+**`.claude/settings.json` (project):** merge [`bindings/claude-code/settings.json`](../bindings/claude-code/settings.json), which adds sync, `bd gate check` and the `in_progress` report to the upstream hooks. If you use `bops`, merge [`settings.bops.json`](../bindings/claude-code/settings.bops.json) in its place.
 
-```json
-{
-  "hooks": {
-    "SessionStart": [
-      { "matcher": "", "hooks": [
-        { "type": "command", "command": "bd prime" },
-        { "type": "command", "command": "bd gate check 2>/dev/null || true" },
-        { "type": "command", "command": "bd list --status in_progress --json 2>/dev/null || true" }
-      ]}
-    ],
-    "PreCompact": [
-      { "matcher": "", "hooks": [
-        { "type": "command", "command": "bd prime" }
-      ]}
-    ]
-  }
-}
-```
+**`CLAUDE.md` addition:** append [`bindings/claude-code/CLAUDE.md.snippet`](../bindings/claude-code/CLAUDE.md.snippet). It carries the process rules, the `bd-lint-claim.sh` claim rule and the `bops` session protocol.
 
-**`CLAUDE.md` addition** — canonical copy at `bindings/claude-code/CLAUDE.md.snippet`:
-
-```markdown
-## Work tracking
-This project uses bd (beads). Run `bd prime` for commands.
-Process rules (override general guidance):
-- Session start: report in_progress + ready before acting. in_progress beats ready.
-- Claim before editing. One claimed bead per session.
-- Notes use COMPLETED/IN PROGRESS/NEXT/BLOCKER/KEY DECISION. NEXT is one concrete step.
-- File discovered work immediately with --deps discovered-from:<current>.
-- Only `blocks` for hard prerequisites. Validate with `bd blocked`.
-- Irreversible or spend actions: create a human gate, label needs-human, stop.
-- Close only when every acceptance criterion is verified. Never close epics.
-- Before stopping: handoff note, then `bd dolt push` if online.
-Full process: docs/PROCESS.md
-```
-
-The repo copy also wires `bd-lint-claim.sh` into the claim rule.
+Install steps are in [`bindings/claude-code/README.md`](../bindings/claude-code/README.md).
 
 **Compaction:** the upstream `PreCompact` hook re-injects `bd prime` but cannot save your notes for you. Add a habit (or a `UserPromptSubmit` hook that checks context size) to write a handoff note when the conversation gets long. The Codex plugin's `PostCompact` + `UserPromptSubmit` refresh marker is the pattern to copy if you want it automated in Claude Code — not provided upstream for Claude.
 

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # bd-lint-claim.sh — pre-claim workability lint for a bead (PROCESS.md §3.6/§3.7)
 #
+# SUPERSEDED by `bops lint <id>`. Kept for repos and bindings that do not use bops yet.
+#
 # Usage:  bd-lint-claim.sh <bead-id> [--actor NAME] [--machine LABEL] [--no-sync] [--strict] [--json]
 # Exit:   0 workable  |  1 fix the bead first  |  2 tool/shape error
 #
