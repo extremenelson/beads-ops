@@ -131,13 +131,17 @@ Record that work reached its destination
 
 | Arg | Type | Default | Doc |
 |---|---|---|---|
+| `--forge` | enum: auto \| github \| gitlab \| none | `auto` |  |
 | `--id` | string |  |  |
 | `--ref` | url |  |  |
 | `--sha` | string |  |  |
+| `--verify` | bool | `false` |  |
+
+Preconditions: run: label matches current run.
 
 Never: merge, push a branch, close.
 
-Wraps: `bd comments add <id>`, `bd update <id> --metadata (merge bops.landed)`, `bd dolt push`.
+Wraps: `bd update <id> --metadata @<file> (merge bops.landed)`, `bd comments add <id>`, `bd dolt push`.
 
 Output:
 

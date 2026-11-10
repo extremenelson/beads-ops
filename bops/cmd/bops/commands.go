@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/extremenelson/beads-ops/bops/internal/bdx"
+	"github.com/extremenelson/beads-ops/bops/internal/forge"
 	"github.com/extremenelson/beads-ops/bops/internal/intent"
 	"github.com/extremenelson/beads-ops/bops/internal/ledger"
 	"github.com/extremenelson/beads-ops/bops/internal/manifest"
@@ -215,6 +216,34 @@ func cmdNote(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 	defer store.Close()
 	out, err := intent.Note(ctx, env, fs.Arg(0), text)
 	return emit(m, "note", asJSON, out, err, stdout, stderr)
+}
+
+func cmdLand(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
+	fs := flag.NewFlagSet("land", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	ref := fs.String("ref", "", "URL of the merge request")
+	sha := fs.String("sha", "", "commit the work landed as")
+	verify := fs.Bool("verify", false, "check the ref's commit on the forge first")
+	forgeName := fs.String("forge", "auto", "auto|github|gitlab|none (used with --verify)")
+	fs.Bool("json", false, "")
+	if err := parseAnyOrder(fs, args); err != nil || fs.NArg() != 1 || *ref == "" || *sha == "" {
+		fmt.Fprintln(stderr, "usage: bops land <id> --ref <url> --sha <sha> [--verify] [--forge auto|github|gitlab|none]")
+		return exitUsage
+	}
+	env, store, err := newEnv(runstate.Read)
+	if err != nil {
+		return emit(m, "land", asJSON, nil, err, stdout, stderr)
+	}
+	defer store.Close()
+	opts := intent.LandOpts{Ref: *ref, SHA: *sha}
+	if *verify {
+		if opts.Verify, err = forge.Select(ctx, *forgeName, forge.Exec); err != nil {
+			fmt.Fprintln(stderr, "bops land:", err)
+			return exitUsage
+		}
+	}
+	out, err := intent.Land(ctx, env, fs.Arg(0), opts)
+	return emit(m, "land", asJSON, out, err, stdout, stderr)
 }
 
 func cmdRelease(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {

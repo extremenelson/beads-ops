@@ -73,9 +73,16 @@
       "name": "land",
       "intent": "Record that work reached its destination",
       "kind": "write",
-      "args": { "id": { "type": "string" }, "ref": { "type": "url" }, "sha": { "type": "string" } },
+      "args": {
+        "id": { "type": "string" },
+        "ref": { "type": "url" },
+        "sha": { "type": "string" },
+        "verify": { "type": "bool", "default": false },
+        "forge": { "type": "enum", "values": ["auto", "github", "gitlab", "none"], "default": "auto" }
+      },
+      "preconditions": ["run: label matches current run"],
       "never": ["merge", "push a branch", "close"],
-      "wraps": ["bd comments add <id>", "bd update <id> --metadata (merge bops.landed)", "bd dolt push"],
+      "wraps": ["bd update <id> --metadata @<file> (merge bops.landed)", "bd comments add <id>", "bd dolt push"],
       "output": { "id": "string", "landed": { "ref": "string", "sha": "string", "run": "string", "at": "string" } },
       "surfaces": { "cc": ["skill"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": false } }
     },

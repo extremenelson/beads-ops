@@ -13,27 +13,101 @@ import (
 // Issue is a bead as returned by `bd ready|list|show --json`.
 // Only fields bops reads are declared; unknown fields are ignored.
 type Issue struct {
-	ID                 string       `json:"id"`
-	Title              string       `json:"title"`
-	Description        string       `json:"description,omitempty"`
-	AcceptanceCriteria string       `json:"acceptance_criteria,omitempty"`
-	Status             string       `json:"status"`
-	Priority           int          `json:"priority"`
-	IssueType          string       `json:"issue_type"`
-	Assignee           string       `json:"assignee,omitempty"`
-	Owner              string       `json:"owner,omitempty"`
-	Labels             []string     `json:"labels,omitempty"`
-	Notes              string       `json:"notes,omitempty"`
-	Parent             string       `json:"parent,omitempty"`
-	Dependencies       []Dependency `json:"dependencies,omitempty"`
-	DependencyCount    int          `json:"dependency_count"`
-	DependentCount     int          `json:"dependent_count"`
-	CommentCount       int          `json:"comment_count"`
-	CreatedAt          time.Time    `json:"created_at"`
-	UpdatedAt          time.Time    `json:"updated_at"`
-	StartedAt          *time.Time   `json:"started_at,omitempty"`
-	LeaseExpiresAt     *time.Time   `json:"lease_expires_at,omitempty"`
-	HeartbeatAt        *time.Time   `json:"heartbeat_at,omitempty"`
+	ID                 string          `json:"id"`
+	Title              string          `json:"title"`
+	Description        string          `json:"description,omitempty"`
+	AcceptanceCriteria string          `json:"acceptance_criteria,omitempty"`
+	Status             string          `json:"status"`
+	Priority           int             `json:"priority"`
+	IssueType          string          `json:"issue_type"`
+	Assignee           string          `json:"assignee,omitempty"`
+	Owner              string          `json:"owner,omitempty"`
+	Labels             []string        `json:"labels,omitempty"`
+	Notes              string          `json:"notes,omitempty"`
+	Parent             string          `json:"parent,omitempty"`
+	Dependencies       []Dependency    `json:"dependencies,omitempty"`
+	DependencyCount    int             `json:"dependency_count"`
+	DependentCount     int             `json:"dependent_count"`
+	CommentCount       int             `json:"comment_count"`
+	CreatedAt          time.Time       `json:"created_at"`
+	UpdatedAt          time.Time       `json:"updated_at"`
+	StartedAt          *time.Time      `json:"started_at,omitempty"`
+	LeaseExpiresAt     *time.Time      `json:"lease_expires_at,omitempty"`
+	HeartbeatAt        *time.Time      `json:"heartbeat_at,omitempty"`
+	Metadata           json.RawMessage `json:"metadata,omitempty"`
+}
+
+// Landed is one entry of metadata.bops.landed (SPEC §3.3).
+type Landed struct {
+	Ref string `json:"ref"`
+	SHA string `json:"sha"`
+	Run string `json:"run"`
+	At  string `json:"at"`
+}
+
+func object(raw json.RawMessage) (map[string]json.RawMessage, error) {
+	out := map[string]json.RawMessage{}
+	if len(raw) == 0 || string(raw) == "null" {
+		return out, nil
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// Landed returns this bead's landing records, oldest first.
+func (i *Issue) Landed() ([]Landed, error) {
+	top, err := object(i.Metadata)
+	if err != nil {
+		return nil, fmt.Errorf("ledger: metadata of %s: %w", i.ID, err)
+	}
+	bops, err := object(top["bops"])
+	if err != nil {
+		return nil, fmt.Errorf("ledger: metadata.bops of %s: %w", i.ID, err)
+	}
+	if len(bops["landed"]) == 0 {
+		return nil, nil
+	}
+	var out []Landed
+	if err := json.Unmarshal(bops["landed"], &out); err != nil {
+		return nil, fmt.Errorf("ledger: metadata.bops.landed of %s: %w", i.ID, err)
+	}
+	return out, nil
+}
+
+// MergeLanded adds l to metadata.bops.landed and leaves every other key
+// alone. When the same ref and sha are already recorded it returns that
+// entry and no new metadata.
+func MergeLanded(i *Issue, l Landed, contract int) (merged []byte, existing *Landed, err error) {
+	landed, err := i.Landed()
+	if err != nil {
+		return nil, nil, err
+	}
+	for n := range landed {
+		if landed[n].Ref == l.Ref && landed[n].SHA == l.SHA {
+			return nil, &landed[n], nil
+		}
+	}
+	top, err := object(i.Metadata)
+	if err != nil {
+		return nil, nil, err
+	}
+	bops, err := object(top["bops"])
+	if err != nil {
+		return nil, nil, err
+	}
+	if bops["landed"], err = json.Marshal(append(landed, l)); err != nil {
+		return nil, nil, err
+	}
+	if bops["contract"], err = json.Marshal(contract); err != nil {
+		return nil, nil, err
+	}
+	if top["bops"], err = json.Marshal(bops); err != nil {
+		return nil, nil, err
+	}
+	merged, err = json.Marshal(top)
+	return merged, nil, err
 }
 
 // Dependency is one edge as embedded in an Issue.

@@ -7,12 +7,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/extremenelson/beads-ops/bops/internal/bdx"
+	"github.com/extremenelson/beads-ops/bops/internal/forge"
 	"github.com/extremenelson/beads-ops/bops/internal/ledger"
 	"github.com/extremenelson/beads-ops/bops/internal/runstate"
 )
@@ -276,7 +279,7 @@ func Note(ctx context.Context, env *Env, id, text string) (*NoteOut, error) {
 	if !cur.HasLabel("run:" + env.Run.ID) {
 		return nil, fmt.Errorf("%w: %s is not held by this run", ErrPrecondition, id)
 	}
-	path, cleanup, err := writeNote(fmt.Sprintf("bops:note run=%s\n%s", env.Run.ID, text))
+	path, cleanup, err := writeTemp(fmt.Sprintf("bops:note run=%s\n%s", env.Run.ID, text))
 	if err != nil {
 		return nil, err
 	}
@@ -299,8 +302,9 @@ func Note(ctx context.Context, env *Env, id, text string) (*NoteOut, error) {
 	return out, nil
 }
 
-func writeNote(body string) (path string, cleanup func(), err error) {
-	f, err := os.CreateTemp("", "bops-note-*") // created mode 0600
+// writeTemp puts text for bd in a private file, so it stays off the command line.
+func writeTemp(body string) (path string, cleanup func(), err error) {
+	f, err := os.CreateTemp("", "bops-*") // created mode 0600
 	if err != nil {
 		return "", nil, err
 	}
@@ -325,6 +329,83 @@ func endsWithHandoff(text string) bool {
 		}
 	}
 	return false
+}
+
+// ---------------------------------------------------------------- land
+
+// contractVersion is recorded in metadata.bops (SPEC §3.3).
+const contractVersion = 1
+
+var hexSHA = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
+
+// LandOut is the `land` output.
+type LandOut struct {
+	ID     string        `json:"id"`
+	Landed ledger.Landed `json:"landed"`
+}
+
+// LandOpts are the `land` arguments. Verify is nil unless the caller asked
+// for --verify, so land touches a forge only on request.
+type LandOpts struct {
+	Ref, SHA string
+	Verify   forge.Forge
+}
+
+// Land records evidence that work reached its destination. It never merges,
+// pushes a branch, or closes the bead.
+func Land(ctx context.Context, env *Env, id string, o LandOpts) (*LandOut, error) {
+	u, err := url.Parse(o.Ref)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || strings.ContainsAny(o.Ref, " \t\r\n") {
+		return nil, fmt.Errorf("%w: ref %q is not an http(s) URL", ErrPrecondition, o.Ref)
+	}
+	if !hexSHA.MatchString(o.SHA) {
+		return nil, fmt.Errorf("%w: sha %q is not a lowercase hex commit id", ErrPrecondition, o.SHA)
+	}
+	raw, err := env.BD.Run(ctx, "show", id, "--json")
+	if err != nil {
+		return nil, err
+	}
+	cur, err := ledger.DecodeIssue(raw)
+	if err != nil {
+		return nil, err
+	}
+	if !cur.HasLabel("run:" + env.Run.ID) {
+		return nil, fmt.Errorf("%w: %s is not held by this run", ErrPrecondition, id)
+	}
+	if o.Verify != nil {
+		head, err := o.Verify.RefSHA(ctx, o.Ref)
+		if err != nil {
+			return nil, fmt.Errorf("could not verify %s: %w", o.Ref, err)
+		}
+		if !strings.HasPrefix(head, o.SHA) {
+			return nil, fmt.Errorf("%w: %s is at %s, not %s", ErrPrecondition, o.Ref, head, o.SHA)
+		}
+	}
+	entry := ledger.Landed{Ref: o.Ref, SHA: o.SHA, Run: env.Run.ID, At: env.now().Format(time.RFC3339)}
+	merged, existing, err := ledger.MergeLanded(cur, entry, contractVersion)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil { // a repeat of the same landing writes nothing
+		return &LandOut{ID: id, Landed: *existing}, nil
+	}
+	path, cleanup, err := writeTemp(string(merged))
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	if _, err := env.BD.Run(ctx, "update", id, "--metadata", "@"+path); err != nil {
+		return nil, err
+	}
+	out := &LandOut{ID: id, Landed: entry}
+	ev := fmt.Sprintf("bops:landed run=%s ref=%s sha=%s", env.Run.ID, o.Ref, o.SHA)
+	if _, err := env.BD.Run(ctx, "comments", "add", id, ev); err != nil {
+		return out, fmt.Errorf("landed but could not record event: %w", err)
+	}
+	if _, err := env.BD.Run(ctx, "dolt", "push"); err != nil {
+		return out, fmt.Errorf("landed locally; push failed: %w", err)
+	}
+	return out, nil
 }
 
 // ------------------------------------------------------------- release

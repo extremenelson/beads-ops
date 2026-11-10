@@ -28,8 +28,9 @@ Layout:
 | `internal/bdx` | The only package that talks to `bd`; `Runner` interface with `Exec` and `Fake` |
 | `internal/gen` | Binding generators (`docs` today; `cc`, `codex`, `hermes`, `clj`, `mcp` to come) |
 | `internal/ledger` | bd JSON types and decoding (the only place field names live) |
+| `internal/forge` | The only package that knows what a pull request is (`gh`, `glab`, or none) |
 | `internal/runstate` | Per-machine run identity and held claims (`$XDG_STATE_HOME/bops/`) |
-| `internal/intent` | The commands: `next`, `claim`, `note`, `release`, `sync`, `lint` so far |
+| `internal/intent` | The commands: `next`, `claim`, `note`, `land`, `release`, `sync`, `lint` so far |
 | `testdata/golden` | Golden outputs, one per generator target |
 
 Commands named in the manifest but not yet implemented exit 1 with `did NOT run`, so a binding never mistakes "unimplemented" for "nothing to do".
