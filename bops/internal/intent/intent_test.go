@@ -127,7 +127,7 @@ func TestClaimHappyPath(t *testing.T) {
 	if !out.ReadbackOK || out.Run != "RUN1" {
 		t.Fatalf("%+v", out)
 	}
-	if len(env.Run.Held) != 1 || env.Run.Held[0] != "x-1" {
+	if got := env.Run.HeldIDs(); len(got) != 1 || got[0] != "x-1" {
 		t.Errorf("run should hold x-1: %v", env.Run.Held)
 	}
 	if f.Calls[len(f.Calls)-1][0] != "dolt" {

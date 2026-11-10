@@ -28,8 +28,56 @@ type Run struct {
 	Machine   string    `json:"machine"`
 	Actor     string    `json:"actor"`
 	StartedAt time.Time `json:"started_at"`
-	Held      []string  `json:"held,omitempty"` // bead ids claimed by this run
+	Held      Held      `json:"held,omitempty"` // the journal of this run's holds
 }
+
+// Journal phases. A pushing entry has never been confirmed on the remote, so
+// losing it loses nothing. A held entry with no sha predates the lock.
+const (
+	PhasePushing = "pushing"
+	PhaseHeld    = "held"
+)
+
+// Entry is one bead in a run's hold journal.
+type Entry struct {
+	SHA           string `json:"sha,omitempty"`      // the ref value this run last confirmed
+	Intended      string `json:"intended,omitempty"` // a ref write whose outcome is not known yet
+	Phase         string `json:"phase"`
+	LedgerPending bool   `json:"ledger_pending,omitempty"`
+	DeletePending bool   `json:"delete_pending,omitempty"`
+}
+
+// Legacy reports whether the entry was taken before the lock existed.
+func (e Entry) Legacy() bool { return e.Phase == PhaseHeld && e.SHA == "" }
+
+// Held is a run's journal, keyed by bead id. It also decodes the list of ids
+// written by versions before the lock.
+type Held map[string]Entry
+
+// UnmarshalJSON accepts both the journal and the legacy list.
+func (h *Held) UnmarshalJSON(b []byte) error {
+	if strings.HasPrefix(strings.TrimSpace(string(b)), "[") {
+		var ids []string
+		if err := json.Unmarshal(b, &ids); err != nil {
+			return err
+		}
+		*h = Held{}
+		for _, id := range ids {
+			(*h)[id] = Entry{Phase: PhaseHeld}
+		}
+		return nil
+	}
+	var m map[string]Entry
+	if err := json.Unmarshal(b, &m); err != nil {
+		return err
+	}
+	*h = m
+	return nil
+}
+
+// stateVersion is written to state.json. A newer file is refused rather than
+// rewritten by a binary that would drop what it does not understand.
+const stateVersion = 2
 
 // Mode says whether a Store may be saved.
 type Mode int
@@ -52,10 +100,12 @@ type Hold struct {
 	Run      string
 	Worktree string
 	Stranded bool // the worktree that took this hold no longer exists
+	Entry    Entry
 }
 
 type state struct {
-	Runs map[string]*Run `json:"runs"` // keyed by absolute worktree root
+	Version int             `json:"version"`
+	Runs    map[string]*Run `json:"runs"` // keyed by absolute worktree root
 }
 
 // Store is one process's view of a clone's state file.
@@ -65,6 +115,7 @@ type Store struct {
 	st       state
 	run      *Run
 	locked   bool
+	token    string // proves the lock file on disk is this Store's
 }
 
 // locate finds the clone and worktree containing dir. Outside a git
@@ -160,6 +211,9 @@ func (s *Store) read() error {
 	if err := json.Unmarshal(b, &s.st); err != nil {
 		return fmt.Errorf("state file %s: %w", filepath.Join(s.dir, "state.json"), err)
 	}
+	if s.st.Version > stateVersion {
+		return fmt.Errorf("state file %s is version %d; this bops understands up to %d, so upgrade it", filepath.Join(s.dir, "state.json"), s.st.Version, stateVersion)
+	}
 	if s.st.Runs == nil {
 		s.st.Runs = map[string]*Run{}
 	}
@@ -173,6 +227,7 @@ func (s *Store) read() error {
 
 // write replaces the state file atomically. The lock must be held.
 func (s *Store) write() error {
+	s.st.Version = stateVersion
 	b, err := json.MarshalIndent(s.st, "", "  ")
 	if err != nil {
 		return err
@@ -196,9 +251,17 @@ func (s *Store) lock() error {
 	for {
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
-			fmt.Fprintf(f, "%d\n", os.Getpid())
+			s.token = fmt.Sprintf("%d %s\n", os.Getpid(), NewID())
+			_, werr := f.WriteString(s.token)
+			if cerr := f.Close(); werr == nil {
+				werr = cerr
+			}
+			if werr != nil {
+				_ = os.Remove(path)
+				return werr
+			}
 			s.locked = true
-			return f.Close()
+			return nil
 		}
 		if !errors.Is(err, os.ErrExist) {
 			return err
@@ -217,12 +280,139 @@ func (s *Store) lock() error {
 	}
 }
 
-// Close releases the write lock, if held.
+// Close releases the write lock if this Store still owns it. A lock broken
+// as abandoned may since have been taken by another process.
 func (s *Store) Close() {
-	if s.locked {
-		_ = os.Remove(filepath.Join(s.dir, "lock"))
-		s.locked = false
+	if !s.locked {
+		return
 	}
+	s.locked = false
+	path := filepath.Join(s.dir, "lock")
+	if b, err := os.ReadFile(path); err == nil && string(b) == s.token {
+		_ = os.Remove(path)
+	}
+}
+
+// update applies fn to the freshest state and writes it, taking the lock only
+// for that long, so a command never holds it across a network call. A Store
+// opened with Write already holds the lock and keeps it.
+func (s *Store) update(fn func()) error {
+	if !s.locked {
+		if err := s.lock(); err != nil {
+			return err
+		}
+		defer s.Close()
+		if err := s.refresh(); err != nil {
+			return err
+		}
+	}
+	fn()
+	return s.write()
+}
+
+// refresh re-reads the file while keeping s.run the same pointer, because
+// callers hold it. Pool and caps are per-process overrides and stay.
+func (s *Store) refresh() error {
+	if err := s.read(); err != nil {
+		return err
+	}
+	if s.run == nil {
+		return nil
+	}
+	if fresh := s.st.Runs[s.worktree]; fresh != nil {
+		pool, caps := s.run.Pool, s.run.Caps
+		*s.run = *fresh
+		s.run.Pool, s.run.Caps = pool, caps
+	}
+	s.st.Runs[s.worktree] = s.run
+	return nil
+}
+
+// holder returns the run whose journal has id, preferring this worktree's,
+// so a stranded hold can be finished from any worktree of the clone.
+func (s *Store) holder(id string) *Run {
+	if _, ok := s.run.Held[id]; ok {
+		return s.run
+	}
+	for _, r := range s.st.Runs {
+		if _, ok := r.Held[id]; ok {
+			return r
+		}
+	}
+	return s.run
+}
+
+func (r *Run) put(id string, e Entry) {
+	if r.Held == nil {
+		r.Held = Held{}
+	}
+	r.Held[id] = e
+}
+
+// Entry returns the journal entry for id from the last state read.
+func (s *Store) Entry(id string) (Entry, bool) {
+	e, ok := s.holder(id).Held[id]
+	return e, ok
+}
+
+// Intend records a ref write before it is pushed. A bead this run already
+// confirmed stays held, because the old sha is still its claim if the push
+// never landed.
+func (s *Store) Intend(id, sha string) error {
+	return s.update(func() {
+		r := s.holder(id)
+		e, ok := r.Held[id]
+		if !ok {
+			e = Entry{Phase: PhasePushing}
+		}
+		e.Intended = sha
+		r.put(id, e)
+	})
+}
+
+// Confirm records that the remote ref now holds sha.
+func (s *Store) Confirm(id, sha string) error {
+	return s.update(func() {
+		r := s.holder(id)
+		e := r.Held[id]
+		e.SHA, e.Intended, e.Phase = sha, "", PhaseHeld
+		r.put(id, e)
+	})
+}
+
+// Abandon records that an intended write did not land. An entry that was
+// never confirmed goes with it.
+func (s *Store) Abandon(id string) error {
+	return s.update(func() {
+		r := s.holder(id)
+		e, ok := r.Held[id]
+		if !ok {
+			return
+		}
+		if e.Phase == PhasePushing {
+			delete(r.Held, id)
+			return
+		}
+		e.Intended = ""
+		r.Held[id] = e
+	})
+}
+
+// IntendDelete records that this run is deleting its ref. Deleting a ref this
+// clone holds no entry for, as sweep does, records nothing.
+func (s *Store) IntendDelete(id string) error {
+	return s.update(func() {
+		r := s.holder(id)
+		if e, ok := r.Held[id]; ok {
+			e.DeletePending = true
+			r.Held[id] = e
+		}
+	})
+}
+
+// Drop forgets id for every run in this clone.
+func (s *Store) Drop(id string) error {
+	return s.update(func() { s.DropHold(id) })
 }
 
 // Run returns the run for this worktree.
@@ -233,8 +423,8 @@ func (s *Store) Holds() []Hold {
 	out := []Hold{}
 	for worktree, r := range s.st.Runs {
 		_, err := os.Stat(worktree)
-		for _, id := range r.Held {
-			out = append(out, Hold{ID: id, Run: r.ID, Worktree: worktree, Stranded: errors.Is(err, os.ErrNotExist)})
+		for id, e := range r.Held {
+			out = append(out, Hold{ID: id, Run: r.ID, Worktree: worktree, Stranded: errors.Is(err, os.ErrNotExist), Entry: e})
 		}
 	}
 	sort.Slice(out, func(a, b int) bool {
@@ -267,25 +457,24 @@ func (s *Store) Save() error {
 	return s.write()
 }
 
-// Hold records that this run holds id.
+// Hold records that this run holds id, keeping any journal entry it has.
 func (r *Run) Hold(id string) {
-	for _, h := range r.Held {
-		if h == id {
-			return
-		}
+	if _, ok := r.Held[id]; !ok {
+		r.put(id, Entry{Phase: PhaseHeld})
 	}
-	r.Held = append(r.Held, id)
 }
 
 // Drop forgets id.
-func (r *Run) Drop(id string) {
-	out := r.Held[:0]
-	for _, h := range r.Held {
-		if h != id {
-			out = append(out, h)
-		}
+func (r *Run) Drop(id string) { delete(r.Held, id) }
+
+// HeldIDs lists the beads this run holds, in order.
+func (r *Run) HeldIDs() []string {
+	ids := make([]string, 0, len(r.Held))
+	for id := range r.Held {
+		ids = append(ids, id)
 	}
-	r.Held = out
+	sort.Strings(ids)
+	return ids
 }
 
 // Actor resolves the identity written to the ledger: BEADS_ACTOR, then

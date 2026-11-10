@@ -82,14 +82,16 @@ Measured on GitHub with two clones pushing at once: exactly one winner in 40 of 
 | After a rejection, the ref | Create or replace | Delete |
 |---|---|---|
 | holds this attempt's sha | success (the acknowledgement was lost) | not gone: retry at `sync` |
+| still holds the leased sha | `unreachable`: nothing changed and nobody else wrote | not gone: retry at `sync` |
 | holds another sha | `lost` | `lost` |
-| is absent | retry the create once, then `unreachable`, `reason=lock_unsupported` | success (already gone) |
+| is absent, create | retry once, then `unreachable`, `reason=lock_unsupported` | success (already gone) |
+| is absent, replace | `lost`: the ref this run leased on was deleted | success (already gone) |
 
-The retry separates a forge that refuses custom refs from a holder who released between the push and the re-read. With no status line at all the ref is still re-read, using the same table. A failed re-read is `unreachable`.
+The retry separates a forge that refuses custom refs from a holder who released between the push and the re-read. With no status line at all the ref is still re-read, using the same table, and a create that still has no status line after the retry is `unreachable`. A failed re-read is `unreachable`.
 
 **One protocol for every ref write.** `internal/lock` owns this for create, note refresh, `--force`, `--resume`, the landing rewrite and delete, so no command repeats it:
 
-1. Take the state lock, journal the intended sha with `phase=pushing`, release the state lock.
+1. Take the state lock, journal the intended sha, release the state lock. A new claim is `phase=pushing`. A bead already held stays `phase=held`, because its old sha is still the claim if the push never lands.
 2. Push.
 3. Classify by the table above. If the ref holds the intended sha, adopt it, whatever the push reported.
 4. Take the state lock, record the result, release it.
@@ -141,7 +143,7 @@ The non-holder path for `--reason stale` is removed, so only the holder can rele
 
 **`sync`** runs `fetch --prune`, then pulls the ledger, then handles each hold in this order:
 
-1. `phase=pushing`: promote the entry if the ref equals its intended sha. Otherwise drop it silently, with no `lost_claims` report, because this run never owned the bead.
+1. An intended write: promote the entry if the ref equals the intended sha. Otherwise a `phase=pushing` entry is dropped silently, with no `lost_claims` report, because this run never owned the bead. A `phase=held` entry whose ref still holds its old sha just clears the intent.
 2. `delete_pending`: retry the delete, treating an absent ref as done.
 3. Stranded: report it, and do not refresh or heartbeat it, so a dead worktree cannot keep a lock alive.
 4. Legacy, with no sha: leave it alone.

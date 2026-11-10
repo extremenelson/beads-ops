@@ -578,7 +578,7 @@ func Sync(ctx context.Context, env *Env, noPush bool) (*SyncOut, error) {
 func (e *Env) holds() (held, stranded []string) {
 	stranded = []string{}
 	seen := map[string]bool{}
-	for _, id := range e.Run.Held {
+	for _, id := range e.Run.HeldIDs() {
 		seen[id] = true
 		held = append(held, id)
 	}
