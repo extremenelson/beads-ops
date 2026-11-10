@@ -408,6 +408,72 @@ func Land(ctx context.Context, env *Env, id string, o LandOpts) (*LandOut, error
 	return out, nil
 }
 
+// --------------------------------------------------------------- sweep
+
+// SweepOut is the `sweep` output.
+type SweepOut struct {
+	DryRun     bool     `json:"dry_run"`
+	Closed     []string `json:"closed"`
+	WouldClose []string `json:"would_close"`
+	Pending    []string `json:"pending"`
+	Unknown    []string `json:"unknown"`
+}
+
+// Sweep closes beads whose latest landed ref has merged. A bead still
+// carrying a run: label is pending: its run has not released it yet.
+func Sweep(ctx context.Context, env *Env, f forge.Forge, dryRun bool) (*SweepOut, error) {
+	raw, err := env.BD.Run(ctx, "list", "--status", "in_progress", "--limit", "0", "--json")
+	if err != nil {
+		return nil, err
+	}
+	issues, err := ledger.DecodeIssues(raw)
+	if err != nil {
+		return nil, err
+	}
+	out := &SweepOut{DryRun: dryRun, Closed: []string{}, WouldClose: []string{}, Pending: []string{}, Unknown: []string{}}
+	var failures []error
+	for k := range issues {
+		i := &issues[k]
+		landed, err := i.Landed()
+		if err != nil {
+			out.Unknown = append(out.Unknown, i.ID)
+			continue
+		}
+		if len(landed) == 0 {
+			continue
+		}
+		if len(i.LabelsWithPrefix("run:")) > 0 {
+			out.Pending = append(out.Pending, i.ID)
+			continue
+		}
+		last := landed[len(landed)-1]
+		switch f.IsMerged(ctx, last.Ref) {
+		case forge.No:
+			out.Pending = append(out.Pending, i.ID)
+		case forge.Unknown:
+			out.Unknown = append(out.Unknown, i.ID)
+		case forge.Yes:
+			if dryRun {
+				out.WouldClose = append(out.WouldClose, i.ID)
+				continue
+			}
+			reason := fmt.Sprintf("merged via %s (%s)", last.Ref, last.SHA)
+			if _, err := env.BD.Run(ctx, "close", i.ID, "--reason", reason); err != nil {
+				out.Unknown = append(out.Unknown, i.ID)
+				failures = append(failures, err)
+				continue
+			}
+			out.Closed = append(out.Closed, i.ID)
+		}
+	}
+	if len(out.Closed) > 0 {
+		if _, err := env.BD.Run(ctx, "dolt", "push"); err != nil {
+			failures = append(failures, fmt.Errorf("closed locally; push failed: %w", err))
+		}
+	}
+	return out, errors.Join(failures...)
+}
+
 // ------------------------------------------------------------- release
 
 // ReleaseReasons are the allowed `--reason` values.

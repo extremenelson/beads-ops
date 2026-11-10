@@ -45,7 +45,11 @@ func run(args []string, stdout, stderr *os.File) int {
 			wantJSON = true
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	timeout := 30 * time.Second
+	if name == "sweep" { // one forge call per landed bead
+		timeout = 5 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	switch name {
@@ -63,6 +67,10 @@ func run(args []string, stdout, stderr *os.File) int {
 		return cmdNext(ctx, m, rest, wantJSON, stdout, stderr)
 	case "claim":
 		return cmdClaim(ctx, m, rest, wantJSON, stdout, stderr)
+	case "land":
+		return cmdLand(ctx, m, rest, wantJSON, stdout, stderr)
+	case "sweep":
+		return cmdSweep(ctx, m, rest, wantJSON, stdout, stderr)
 	case "note":
 		return cmdNote(ctx, m, rest, wantJSON, stdout, stderr)
 	case "release":

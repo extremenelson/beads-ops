@@ -246,6 +246,30 @@ func cmdLand(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 	return emit(m, "land", asJSON, out, err, stdout, stderr)
 }
 
+func cmdSweep(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
+	fs := flag.NewFlagSet("sweep", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	dryRun := fs.Bool("dry-run", true, "report what would close without closing it")
+	forgeName := fs.String("forge", "auto", "auto|github|gitlab|none")
+	fs.Bool("json", false, "")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: bops sweep [--dry-run=false] [--forge auto|github|gitlab|none]")
+		return exitUsage
+	}
+	f, err := forge.Select(ctx, *forgeName, forge.Exec)
+	if err != nil {
+		fmt.Fprintln(stderr, "bops sweep:", err)
+		return exitUsage
+	}
+	env, store, err := newEnv(runstate.Read)
+	if err != nil {
+		return emit(m, "sweep", asJSON, nil, err, stdout, stderr)
+	}
+	defer store.Close()
+	out, err := intent.Sweep(ctx, env, f, *dryRun)
+	return emit(m, "sweep", asJSON, out, err, stdout, stderr)
+}
+
 func cmdRelease(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
 	fs := flag.NewFlagSet("release", flag.ContinueOnError)
 	fs.SetOutput(stderr)

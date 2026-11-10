@@ -94,8 +94,8 @@
         "dry-run": { "type": "bool", "default": true },
         "forge": { "type": "enum", "values": ["auto", "github", "gitlab", "none"], "default": "auto" }
       },
-      "wraps": ["forge.is_merged(ref)", "bd close <id> --reason 'merged via <ref> (<sha>)'"],
-      "output": { "closed": "string[]", "pending": "string[]", "unknown": "string[]" },
+      "wraps": ["bd list --status in_progress --limit 0 --json", "forge.is_merged(ref)", "bd close <id> --reason 'merged via <ref> (<sha>)'", "bd dolt push"],
+      "output": { "dry_run": "bool", "closed": "string[]", "would_close": "string[]", "pending": "string[]", "unknown": "string[]" },
       "surfaces": { "cc": ["skill"], "clj": "fn", "mcp": { "readOnly": false } }
     },
     {

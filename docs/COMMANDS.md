@@ -166,13 +166,15 @@ Close landed beads whose refs are merged
 | `--dry-run` | bool | `true` |  |
 | `--forge` | enum: auto \| github \| gitlab \| none | `auto` |  |
 
-Wraps: `forge.is_merged(ref)`, `bd close <id> --reason 'merged via <ref> (<sha>)'`.
+Wraps: `bd list --status in_progress --limit 0 --json`, `forge.is_merged(ref)`, `bd close <id> --reason 'merged via <ref> (<sha>)'`, `bd dolt push`.
 
 Output:
 
 ```json
 {
+  "dry_run": "bool",
   "closed": "string[]",
+  "would_close": "string[]",
   "pending": "string[]",
   "unknown": "string[]"
 }
