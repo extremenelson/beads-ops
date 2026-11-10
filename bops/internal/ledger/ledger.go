@@ -134,3 +134,18 @@ func DecodeIssue(b []byte) (*Issue, error) {
 	}
 	return &many[0], nil
 }
+
+// DecodeCommentID parses `bd comments add --json`, an object with the new
+// comment's id.
+func DecodeCommentID(b []byte) (string, error) {
+	var c struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(b, &c); err != nil {
+		return "", fmt.Errorf("ledger: decode comment: %w", err)
+	}
+	if c.ID == "" {
+		return "", errors.New("ledger: bd returned a comment with no id")
+	}
+	return c.ID, nil
+}

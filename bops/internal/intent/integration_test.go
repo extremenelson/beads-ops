@@ -3,6 +3,7 @@ package intent_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"slices"
@@ -148,6 +149,47 @@ func TestLiveClaimAndRelease(t *testing.T) {
 				t.Errorf("in bd ready = %v, want %v", in, tc.ready)
 			}
 		})
+	}
+}
+
+func TestLiveNote(t *testing.T) {
+	env, create := liveLedger(t)
+	ctx := context.Background()
+	id := create("note target")
+	if _, err := intent.Claim(ctx, env, id, false); err != nil {
+		t.Fatal(err)
+	}
+
+	text := "line with \"quotes\" and $(no expansion)\n\nNEXT: keep going"
+	out, err := intent.Note(ctx, env, id, text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.CommentID == "" || len(out.Warnings) != 0 {
+		t.Fatalf("%+v", out)
+	}
+	raw, err := env.BD.Run(ctx, "comments", id, "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var comments []struct {
+		ID, Text string
+	}
+	if err := json.Unmarshal(raw, &comments); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, c := range comments {
+		found = found || (c.ID == out.CommentID && c.Text == "bops:note run=ITRUN\n"+text)
+	}
+	if !found {
+		t.Errorf("note not stored verbatim: %+v", comments)
+	}
+
+	other := *env
+	other.Run = &runstate.Run{ID: "OTHER", Actor: itActor, Machine: "it-box"}
+	if _, err := intent.Note(ctx, &other, id, text); !errors.Is(err, intent.ErrPrecondition) {
+		t.Errorf("another run should be refused, got %v", err)
 	}
 }
 

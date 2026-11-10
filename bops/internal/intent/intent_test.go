@@ -3,6 +3,7 @@ package intent_test
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -303,7 +304,129 @@ func TestReleaseDropsAStrandedHold(t *testing.T) {
 	}
 }
 
+const heldByRun1 = `[{"id":"x-1","status":"in_progress","assignee":"tester","labels":["run:RUN1"],"created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}]`
+
+func TestNoteWritesViaFileAndHeartbeatsAfter(t *testing.T) {
+	text := "did \"the\" thing; $(not run)\n\nNEXT: finish it"
+	r := &noteRunner{Fake: bdx.Fake{Responses: map[string][]byte{
+		"show x-1 --json": []byte(heldByRun1),
+		"heartbeat x-1":   []byte(`{}`),
+	}}}
+	out, err := intent.Note(context.Background(), newEnv(r), "x-1", text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.CommentID != "c-1" || len(out.Warnings) != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if want := "bops:note run=RUN1\n" + text; r.body != want {
+		t.Errorf("comment body = %q, want %q", r.body, want)
+	}
+	if got := strings.Join(callNames(r.Calls), ","); got != "show,comments,heartbeat" {
+		t.Errorf("call order = %s", got)
+	}
+	for _, call := range r.Calls {
+		if strings.Contains(strings.Join(call, " "), "the") {
+			t.Errorf("note text reached a bd argument: %v", call)
+		}
+	}
+	if _, err := os.Stat(r.path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("temp file should be removed, stat = %v", err)
+	}
+}
+
+func TestNoteRefusesWhenRunDoesNotHoldBead(t *testing.T) {
+	r := &noteRunner{Fake: bdx.Fake{Responses: map[string][]byte{
+		"show x-1 --json": []byte(`[{"id":"x-1","status":"in_progress","assignee":"other","labels":["run:OTHER"],"created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}]`),
+	}}}
+	if _, err := intent.Note(context.Background(), newEnv(r), "x-1", "text\n\nNEXT: x"); !errors.Is(err, intent.ErrPrecondition) {
+		t.Fatalf("want ErrPrecondition, got %v", err)
+	}
+	if len(r.Calls) != 1 {
+		t.Errorf("must not write; calls = %v", r.Calls)
+	}
+}
+
+func TestNoteRefusesEmptyText(t *testing.T) {
+	r := &noteRunner{}
+	if _, err := intent.Note(context.Background(), newEnv(r), "x-1", " \n\t"); !errors.Is(err, intent.ErrPrecondition) {
+		t.Fatalf("want ErrPrecondition, got %v", err)
+	}
+	if len(r.Calls) != 0 {
+		t.Errorf("must not call bd; calls = %v", r.Calls)
+	}
+}
+
+func TestNoteWarnsAboutLastParagraph(t *testing.T) {
+	for _, tc := range []struct {
+		text string
+		warn bool
+	}{
+		{"done\n\nNEXT: more", false},
+		{"done\n\nBLOCKER: stuck", false},
+		{"done\n\nKEY DECISION: chose x", false},
+		{"done\r\n\r\nREF: url\r\n", false},
+		{"NEXT: only one paragraph", false},
+		{"NEXT: first\n\nthen prose", true},
+		{"next: lower case", true},
+		{"just prose", true},
+	} {
+		r := &noteRunner{Fake: bdx.Fake{Responses: map[string][]byte{
+			"show x-1 --json": []byte(heldByRun1),
+			"heartbeat x-1":   []byte(`{}`),
+		}}}
+		out, err := intent.Note(context.Background(), newEnv(r), "x-1", tc.text)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := strings.Contains(strings.Join(out.Warnings, ";"), "W09")
+		if got != tc.warn {
+			t.Errorf("%q: W09 warning = %v, want %v (%v)", tc.text, got, tc.warn, out.Warnings)
+		}
+	}
+}
+
+func TestNoteSurvivesAFailedHeartbeat(t *testing.T) {
+	r := &noteRunner{Fake: bdx.Fake{Responses: map[string][]byte{
+		"show x-1 --json": []byte(heldByRun1),
+	}}} // no heartbeat response, so the fake fails it
+	out, err := intent.Note(context.Background(), newEnv(r), "x-1", "t\n\nNEXT: x")
+	if err != nil {
+		t.Fatalf("a saved note must not fail on heartbeat: %v", err)
+	}
+	if !strings.Contains(strings.Join(out.Warnings, ";"), "heartbeat failed") {
+		t.Errorf("warnings = %v", out.Warnings)
+	}
+}
+
 // --- helpers
+
+// noteRunner reads the comment file while bd would, since it is removed after.
+type noteRunner struct {
+	bdx.Fake
+	path, body string
+}
+
+func (r *noteRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
+	if len(args) >= 4 && args[0] == "comments" && args[1] == "add" && args[3] == "-f" {
+		r.Calls = append(r.Calls, args)
+		b, err := os.ReadFile(args[4])
+		if err != nil {
+			return nil, err
+		}
+		r.path, r.body = args[4], string(b)
+		return []byte(`{"id":"c-1"}`), nil
+	}
+	return r.Fake.Run(ctx, args...)
+}
+
+func callNames(calls [][]string) []string {
+	names := make([]string, 0, len(calls))
+	for _, c := range calls {
+		names = append(names, c[0])
+	}
+	return names
+}
 
 type fakeHolds struct {
 	holds   []runstate.Hold

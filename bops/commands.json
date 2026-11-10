@@ -51,7 +51,7 @@
       "args": { "id": { "type": "string" }, "text": { "type": "stdin|file", "doc": "Never on the command line." } },
       "preconditions": ["run: label matches current run"],
       "lint": ["last paragraph starts with NEXT:|BLOCKER:|KEY DECISION:|REF: (warn)"],
-      "wraps": ["bd comments add <id>", "bd heartbeat <id>"],
+      "wraps": ["bd comments add <id> -f <file>", "bd heartbeat <id>"],
       "output": { "id": "string", "comment_id": "string", "warnings": "string[]" },
       "surfaces": { "cc": ["skill", "hook:PreCompact"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": false } }
     },

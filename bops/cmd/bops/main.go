@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -62,6 +63,8 @@ func run(args []string, stdout, stderr *os.File) int {
 		return cmdNext(ctx, m, rest, wantJSON, stdout, stderr)
 	case "claim":
 		return cmdClaim(ctx, m, rest, wantJSON, stdout, stderr)
+	case "note":
+		return cmdNote(ctx, m, rest, wantJSON, stdout, stderr)
 	case "release":
 		return cmdRelease(ctx, m, rest, wantJSON, stdout, stderr)
 	case "sync":
@@ -102,8 +105,18 @@ type versionOut struct {
 	Warning  string `json:"warning,omitempty"`
 }
 
+// resolveVersion prefers a version stamped by ldflags, then the module
+// version `go install` records, then "dev".
+func resolveVersion(stamped string, info *debug.BuildInfo) string {
+	if stamped != "dev" || info == nil || info.Main.Version == "" || info.Main.Version == "(devel)" {
+		return stamped
+	}
+	return info.Main.Version
+}
+
 func cmdVersion(ctx context.Context, m *manifest.Manifest, asJSON bool, stdout, stderr *os.File) int {
-	out := versionOut{Contract: m.Contract, Command: "version", OK: true, Bops: version}
+	info, _ := debug.ReadBuildInfo()
+	out := versionOut{Contract: m.Contract, Command: "version", OK: true, Bops: resolveVersion(version, info)}
 	v, err := bdx.DetectVersion(ctx, bdx.Exec{})
 	switch {
 	case errors.Is(err, bdx.ErrNotFound):

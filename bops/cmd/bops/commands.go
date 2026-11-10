@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"reflect"
 	"sort"
@@ -90,6 +92,23 @@ func printKV(w *os.File, v any) {
 	}
 }
 
+// parseAnyOrder lets flags appear before or after the bead id. The flag
+// package alone stops at the first non-flag argument.
+func parseAnyOrder(fs *flag.FlagSet, args []string) error {
+	positional := []string{}
+	for {
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		if fs.NArg() == 0 {
+			break
+		}
+		positional = append(positional, fs.Arg(0))
+		args = fs.Args()[1:]
+	}
+	return fs.Parse(append([]string{"--"}, positional...))
+}
+
 func newEnv(mode runstate.Mode) (*intent.Env, *runstate.Store, error) {
 	root, err := os.Getwd()
 	if err != nil {
@@ -148,7 +167,7 @@ func cmdClaim(ctx context.Context, m *manifest.Manifest, args []string, asJSON b
 	fs.SetOutput(stderr)
 	force := fs.Bool("force", false, "claim even if assigned")
 	fs.Bool("json", false, "")
-	if err := fs.Parse(args); err != nil || fs.NArg() != 1 {
+	if err := parseAnyOrder(fs, args); err != nil || fs.NArg() != 1 {
 		fmt.Fprintln(stderr, "usage: bops claim <id> [--force]")
 		return exitUsage
 	}
@@ -162,12 +181,48 @@ func cmdClaim(ctx context.Context, m *manifest.Manifest, args []string, asJSON b
 	return emit(m, "claim", asJSON, out, err, stdout, stderr)
 }
 
+// noteText reads the note body. It is never taken from an argument.
+func noteText(file string, stdin io.Reader, stdinIsTerminal bool) (string, error) {
+	if file != "" {
+		b, err := os.ReadFile(file)
+		return string(b), err
+	}
+	if stdinIsTerminal {
+		return "", errors.New("no note text: pipe it to stdin or use --file")
+	}
+	b, err := io.ReadAll(stdin)
+	return string(b), err
+}
+
+func cmdNote(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
+	fs := flag.NewFlagSet("note", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	file := fs.String("file", "", "read the note from this file instead of stdin")
+	fs.Bool("json", false, "")
+	if err := parseAnyOrder(fs, args); err != nil || fs.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: bops note <id> [--file <path>]   (text from stdin or --file)")
+		return exitUsage
+	}
+	text, err := noteText(*file, os.Stdin, isTerminal(os.Stdin))
+	if err != nil {
+		fmt.Fprintln(stderr, "bops note:", err)
+		return exitUsage
+	}
+	env, store, err := newEnv(runstate.Read)
+	if err != nil {
+		return emit(m, "note", asJSON, nil, err, stdout, stderr)
+	}
+	defer store.Close()
+	out, err := intent.Note(ctx, env, fs.Arg(0), text)
+	return emit(m, "note", asJSON, out, err, stdout, stderr)
+}
+
 func cmdRelease(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
 	fs := flag.NewFlagSet("release", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	reason := fs.String("reason", "", strings.Join(intent.ReleaseReasons, "|"))
 	fs.Bool("json", false, "")
-	if err := fs.Parse(args); err != nil || fs.NArg() != 1 || *reason == "" {
+	if err := parseAnyOrder(fs, args); err != nil || fs.NArg() != 1 || *reason == "" {
 		fmt.Fprintln(stderr, "usage: bops release <id> --reason "+strings.Join(intent.ReleaseReasons, "|"))
 		return exitUsage
 	}
@@ -203,7 +258,7 @@ func cmdLint(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 	fs.SetOutput(stderr)
 	strict := fs.Bool("strict", false, "promote warnings to failures")
 	fs.Bool("json", false, "")
-	if err := fs.Parse(args); err != nil || fs.NArg() != 1 {
+	if err := parseAnyOrder(fs, args); err != nil || fs.NArg() != 1 {
 		fmt.Fprintln(stderr, "usage: bops lint <id> [--strict]")
 		return exitUsage
 	}

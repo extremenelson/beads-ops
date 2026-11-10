@@ -90,7 +90,7 @@ Record where I am, keep the claim
 
 Preconditions: run: label matches current run.
 
-Wraps: `bd comments add <id>`, `bd heartbeat <id>`.
+Wraps: `bd comments add <id> -f <file>`, `bd heartbeat <id>`.
 
 Output:
 

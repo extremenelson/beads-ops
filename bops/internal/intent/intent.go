@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -243,6 +244,87 @@ func Claim(ctx context.Context, env *Env, id string, force bool) (*ClaimOut, err
 		return out, fmt.Errorf("claimed locally; push failed: %w", err)
 	}
 	return out, nil
+}
+
+// ---------------------------------------------------------------- note
+
+// NoteOut is the `note` output.
+type NoteOut struct {
+	ID        string   `json:"id"`
+	CommentID string   `json:"comment_id"`
+	Warnings  []string `json:"warnings"`
+}
+
+// noteEndings are the prefixes a note's last paragraph should start with,
+// so a fresh agent can resume from it (W09).
+var noteEndings = []string{"NEXT:", "BLOCKER:", "KEY DECISION:", "REF:"}
+
+// Note records where this run has got to and keeps the claim. The text goes
+// to bd through a private file, never as a command-line argument.
+func Note(ctx context.Context, env *Env, id, text string) (*NoteOut, error) {
+	if strings.TrimSpace(text) == "" {
+		return nil, fmt.Errorf("%w: note text is empty", ErrPrecondition)
+	}
+	raw, err := env.BD.Run(ctx, "show", id, "--json")
+	if err != nil {
+		return nil, err
+	}
+	cur, err := ledger.DecodeIssue(raw)
+	if err != nil {
+		return nil, err
+	}
+	if !cur.HasLabel("run:" + env.Run.ID) {
+		return nil, fmt.Errorf("%w: %s is not held by this run", ErrPrecondition, id)
+	}
+	path, cleanup, err := writeNote(fmt.Sprintf("bops:note run=%s\n%s", env.Run.ID, text))
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	added, err := env.BD.Run(ctx, "comments", "add", id, "-f", path, "--json")
+	if err != nil {
+		return nil, err
+	}
+	out := &NoteOut{ID: id, Warnings: []string{}}
+	if out.CommentID, err = ledger.DecodeCommentID(added); err != nil {
+		out.Warnings = append(out.Warnings, "note saved, but its comment id is unknown: "+err.Error())
+	}
+	if !endsWithHandoff(text) {
+		out.Warnings = append(out.Warnings, "W09: last paragraph should start with "+strings.Join(noteEndings, " "))
+	}
+	// The comment is already saved, so a lost lease is reported, not fatal.
+	if _, err := env.BD.Run(ctx, "heartbeat", id); err != nil {
+		out.Warnings = append(out.Warnings, "heartbeat failed: "+err.Error())
+	}
+	return out, nil
+}
+
+func writeNote(body string) (path string, cleanup func(), err error) {
+	f, err := os.CreateTemp("", "bops-note-*") // created mode 0600
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup = func() { _ = os.Remove(f.Name()) }
+	_, err = f.WriteString(body)
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return f.Name(), cleanup, nil
+}
+
+func endsWithHandoff(text string) bool {
+	paragraphs := strings.Split(strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n")), "\n\n")
+	last := strings.TrimSpace(paragraphs[len(paragraphs)-1])
+	for _, prefix := range noteEndings {
+		if strings.HasPrefix(last, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // ------------------------------------------------------------- release
