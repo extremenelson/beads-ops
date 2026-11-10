@@ -28,6 +28,35 @@ Run against a throwaway `bd init` ledger by `BOPS_INTEGRATION=1 go test ./intern
 - `bd comments <id> --json`: array of `{id, issue_id, author, text, created_at}`.
   There is no `bd comments list`.
 
+## Git ref lock on GitHub (git 2.56.0, 2026-11-09)
+
+Two clones pushing at once to a private GitHub repository, with
+`git push --porcelain --no-verify origin --force-with-lease=<ref>:<expected> <sha>:<ref>`.
+
+| Case | Trials | Exactly one winner | Loser's porcelain summary |
+|---|---|---|---|
+| Create the same ref | 40 | 40 | `[remote rejected] (cannot lock ref '<ref>': reference already exists)` |
+| Replace with the same lease (takeover) | 20 | 20 | `[remote rejected] (cannot lock ref '<ref>': is at <sha> but expected <sha>)` |
+
+One-at-a-time pushes:
+
+| Case | Result |
+|---|---|
+| Create when the ref exists | `[rejected] (stale info)`, exit 1 |
+| Replace, correct lease | `(forced update)`, exit 0 |
+| Replace, wrong lease | `[rejected] (stale info)`, exit 1, ref unchanged |
+| Delete, correct lease | `[deleted]`, exit 0 |
+| Delete, wrong lease | `[rejected] (stale info)`, exit 1, ref unchanged |
+| Delete, ref already gone | `[rejected] (stale info)`, exit 1 |
+| Create with an identical object | `[up to date]`, exit 0, so both sides "win" |
+
+Rules for the lock code:
+
+- Never pass `-f` with `--force-with-lease`. `-f` cancels the lease, and a wrong lease then succeeds (reproduced).
+- Make every lock commit unique, because of the identical-object row.
+- A race loser's reason differs from a local bare repo, which says `(reference already exists)`, so classify by re-reading the ref.
+- A failed delete can mean the ref is already gone. Re-read it before treating that as a failure.
+
 ## Open: bd 2.0 JSON envelope
 
 bd warns that `--json` output changes in 2.0 (`BD_JSON_ENVELOPE=1` opts in

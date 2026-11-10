@@ -208,6 +208,171 @@ func TestAbandonedLockIsBroken(t *testing.T) {
 	open(t, root, Write)
 }
 
+func TestLegacyHeldListStillLoads(t *testing.T) {
+	root, stateHome := repo(t)
+	s := open(t, root, Read)
+	dir := filepath.Dir(firstOrEmpty(stateFiles(t, stateHome)))
+	legacy := `{"runs":{"` + s.worktree + `":{"id":"RUN","machine":"m","actor":"a","started_at":"2026-11-09T00:00:00Z","held":["x-1","x-2"]}}}`
+	if err := os.WriteFile(filepath.Join(dir, "state.json"), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	w := open(t, root, Write)
+	if got := w.Run().HeldIDs(); len(got) != 2 || got[0] != "x-1" || got[1] != "x-2" {
+		t.Fatalf("held = %v", got)
+	}
+	e, ok := w.Entry("x-1")
+	if !ok || !e.Legacy() {
+		t.Errorf("entry = %+v, %v", e, ok)
+	}
+	if err := w.Save(); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+
+	b, err := os.ReadFile(filepath.Join(dir, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"version": 2`) {
+		t.Errorf("not migrated:\n%s", b)
+	}
+	if got := open(t, root, Read).Run().HeldIDs(); len(got) != 2 {
+		t.Errorf("after migration: %v", got)
+	}
+}
+
+func firstOrEmpty(s []string) string {
+	if len(s) == 0 {
+		return ""
+	}
+	return s[0]
+}
+
+func TestNewerStateFileIsRefused(t *testing.T) {
+	root, stateHome := repo(t)
+	open(t, root, Read)
+	path := firstOrEmpty(stateFiles(t, stateHome))
+	if err := os.WriteFile(path, []byte(`{"version":99,"runs":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(root, Read); err == nil || !strings.Contains(err.Error(), "upgrade") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestCloseLeavesAnotherProcessesLock(t *testing.T) {
+	root, _ := repo(t)
+	first := open(t, root, Write)
+	lock := filepath.Join(first.dir, "lock")
+	if err := os.WriteFile(lock, []byte("someone else\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first.Close()
+	if _, err := os.Stat(lock); err != nil {
+		t.Errorf("another process's lock was removed: %v", err)
+	}
+}
+
+// The journal must not need the lock between its own writes, or a command
+// would hold it across a push.
+func TestJournalHoldsNoLockBetweenWrites(t *testing.T) {
+	root, _ := repo(t)
+	shortLockWait(t)
+	s := open(t, root, Read)
+	if err := s.Intend("x-1", "aaa"); err != nil {
+		t.Fatal(err)
+	}
+	other := open(t, root, Write) // would fail if Intend had kept the lock
+	other.Close()
+
+	if e, _ := s.Entry("x-1"); e.Phase != PhasePushing || e.Intended != "aaa" {
+		t.Errorf("after intend: %+v", e)
+	}
+	if err := s.Confirm("x-1", "aaa"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Intend("x-1", "bbb"); err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := s.Entry("x-1"); e.Phase != PhaseHeld || e.SHA != "aaa" || e.Intended != "bbb" {
+		t.Errorf("a refresh must keep the claim: %+v", e)
+	}
+	if err := s.Abandon("x-1"); err != nil {
+		t.Fatal(err)
+	}
+	if e, ok := s.Entry("x-1"); !ok || e.Intended != "" || e.SHA != "aaa" {
+		t.Errorf("after abandon: %+v, %v", e, ok)
+	}
+
+	again := open(t, root, Read)
+	if e, ok := again.Entry("x-1"); !ok || e.SHA != "aaa" {
+		t.Errorf("not persisted: %+v, %v", e, ok)
+	}
+}
+
+func TestAbandonRemovesAnUnconfirmedEntry(t *testing.T) {
+	root, _ := repo(t)
+	s := open(t, root, Read)
+	if err := s.Intend("x-1", "aaa"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Abandon("x-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Entry("x-1"); ok {
+		t.Error("a write that never landed leaves nothing")
+	}
+}
+
+func TestJournalWritesDoNotLoseOtherWorktrees(t *testing.T) {
+	root, _ := repo(t)
+	wt := worktree(t, root, "wt")
+	a, b := open(t, root, Read), open(t, wt, Read)
+	if err := a.Intend("x-1", "aaa"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Intend("x-2", "bbb"); err != nil { // b read the file before a wrote
+		t.Fatal(err)
+	}
+	if err := a.Confirm("x-1", "aaa"); err != nil {
+		t.Fatal(err)
+	}
+	if holds := open(t, root, Read).Holds(); len(holds) != 2 {
+		t.Errorf("a write dropped another worktree's hold: %+v", holds)
+	}
+}
+
+func TestStrandedHoldIsFinishedFromAnotherWorktree(t *testing.T) {
+	root, _ := repo(t)
+	wt := worktree(t, root, "wt")
+	s := open(t, wt, Read)
+	if err := s.Intend("x-1", "aaa"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Confirm("x-1", "aaa"); err != nil {
+		t.Fatal(err)
+	}
+	git(t, root, "worktree", "remove", "--force", wt)
+
+	m := open(t, root, Read)
+	if e, ok := m.Entry("x-1"); !ok || e.SHA != "aaa" {
+		t.Fatalf("entry = %+v, %v", e, ok)
+	}
+	if err := m.IntendDelete("x-1"); err != nil {
+		t.Fatal(err)
+	}
+	if holds := open(t, root, Read).Holds(); len(holds) != 1 || !holds[0].Entry.DeletePending || holds[0].Run == m.Run().ID {
+		t.Fatalf("holds = %+v", holds)
+	}
+	if err := m.Drop("x-1"); err != nil {
+		t.Fatal(err)
+	}
+	if holds := open(t, root, Read).Holds(); len(holds) != 0 {
+		t.Errorf("holds = %+v", holds)
+	}
+}
+
 func TestSaveNeedsWriteMode(t *testing.T) {
 	root, _ := repo(t)
 	if err := open(t, root, Read).Save(); err == nil {

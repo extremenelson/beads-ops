@@ -17,6 +17,7 @@ import (
 	"github.com/extremenelson/beads-ops/bops/internal/forge"
 	"github.com/extremenelson/beads-ops/bops/internal/intent"
 	"github.com/extremenelson/beads-ops/bops/internal/ledger"
+	"github.com/extremenelson/beads-ops/bops/internal/lock"
 	"github.com/extremenelson/beads-ops/bops/internal/manifest"
 	"github.com/extremenelson/beads-ops/bops/internal/runstate"
 )
@@ -27,15 +28,24 @@ type envelope struct {
 	Command  string `json:"command"`
 	OK       bool   `json:"ok"`
 	Error    string `json:"error,omitempty"`
+	Code     string `json:"code,omitempty"`
 }
 
-// emit writes the result in JSON or key=value form and maps errors to exit
-// codes: nil → 0; ErrPrecondition and bd errors → 1.
+// verdict is a result that can be a successful run with a negative answer.
+type verdict interface{ Negative() bool }
+
+// emit writes the result in JSON or key=value form and picks the exit code:
+// nil → 0; a negative verdict → 3 with ok:false; any error → 1.
 func emit(m *manifest.Manifest, cmd string, asJSON bool, result any, err error, stdout, stderr *os.File) int {
-	env := envelope{Contract: m.Contract, Command: cmd, OK: err == nil}
+	negative := false
+	if v, ok := result.(verdict); ok && err == nil {
+		negative = v.Negative()
+	}
+	env := envelope{Contract: m.Contract, Command: cmd, OK: err == nil && !negative}
 	if err != nil {
-		env.Error = err.Error()
-		fmt.Fprintf(stderr, "bops %s: %v (did NOT run to completion)\n", cmd, err)
+		env.Error = lock.Scrub(err.Error())
+		env.Code = lock.CodeOf(err)
+		fmt.Fprintf(stderr, "bops %s: %s (did NOT run to completion)\n", cmd, env.Error)
 	}
 	if asJSON {
 		merged := map[string]any{}
@@ -54,8 +64,11 @@ func emit(m *manifest.Manifest, cmd string, asJSON bool, result any, err error, 
 			printKV(stdout, result)
 		}
 	}
-	if err != nil {
+	switch {
+	case err != nil:
 		return exitCantRun
+	case negative:
+		return exitNegative
 	}
 	return exitVerdict
 }
@@ -126,15 +139,8 @@ func newEnv(mode runstate.Mode) (*intent.Env, *runstate.Store, error) {
 	if c := os.Getenv("BOPS_CAPS"); c != "" {
 		run.Caps = strings.Split(c, ",")
 	}
-	return &intent.Env{BD: bdx.Exec{}, Run: run, Store: store}, store, nil
-}
-
-// saveRun persists hold state; a failure leaves a claim the state file
-// does not know about, so it must be visible.
-func saveRun(store *runstate.Store, stderr *os.File) {
-	if err := store.Save(); err != nil {
-		fmt.Fprintf(stderr, "bops: could not save run state: %v\n", err)
-	}
+	l := &lock.Lock{Git: lock.Exec{Dir: root}, Journal: store, Run: run.ID, Actor: run.Actor}
+	return &intent.Env{BD: bdx.Exec{}, Run: run, Store: store, Lock: l}, store, nil
 }
 
 func cmdNext(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
@@ -166,19 +172,24 @@ func cmdNext(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 func cmdClaim(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
 	fs := flag.NewFlagSet("claim", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	force := fs.Bool("force", false, "claim even if assigned")
+	force := fs.Bool("force", false, "take over an expired claim or an orphan")
+	resume := fs.Bool("resume", false, "take back a landing bead for PR rework")
 	fs.Bool("json", false, "")
-	if err := parseAnyOrder(fs, args); err != nil || fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: bops claim <id> [--force]")
+	if err := parseAnyOrder(fs, args); err != nil || fs.NArg() != 1 || (*force && *resume) {
+		fmt.Fprintln(stderr, "usage: bops claim <id> [--force | --resume]")
 		return exitUsage
 	}
-	env, store, err := newEnv(runstate.Write)
+	env, store, err := newEnv(runstate.Read)
 	if err != nil {
 		return emit(m, "claim", asJSON, nil, err, stdout, stderr)
 	}
 	defer store.Close()
-	out, err := intent.Claim(ctx, env, fs.Arg(0), *force)
-	saveRun(store, stderr)
+	var out *intent.ClaimOut
+	if *resume {
+		out, err = intent.ClaimResume(ctx, env, fs.Arg(0))
+	} else {
+		out, err = intent.Claim(ctx, env, fs.Arg(0), *force)
+	}
 	return emit(m, "claim", asJSON, out, err, stdout, stderr)
 }
 
@@ -279,13 +290,12 @@ func cmdRelease(ctx context.Context, m *manifest.Manifest, args []string, asJSON
 		fmt.Fprintln(stderr, "usage: bops release <id> --reason "+strings.Join(intent.ReleaseReasons, "|"))
 		return exitUsage
 	}
-	env, store, err := newEnv(runstate.Write)
+	env, store, err := newEnv(runstate.Read)
 	if err != nil {
 		return emit(m, "release", asJSON, nil, err, stdout, stderr)
 	}
 	defer store.Close()
 	out, err := intent.Release(ctx, env, fs.Arg(0), *reason)
-	saveRun(store, stderr)
 	return emit(m, "release", asJSON, out, err, stdout, stderr)
 }
 
@@ -297,7 +307,7 @@ func cmdSync(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
-	env, store, err := newEnv(runstate.Write)
+	env, store, err := newEnv(runstate.Read)
 	if err != nil {
 		return emit(m, "sync", asJSON, nil, err, stdout, stderr)
 	}

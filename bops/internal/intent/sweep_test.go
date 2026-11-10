@@ -2,13 +2,16 @@ package intent_test
 
 import (
 	"context"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/extremenelson/beads-ops/bops/internal/bdx"
 	"github.com/extremenelson/beads-ops/bops/internal/forge"
 	"github.com/extremenelson/beads-ops/bops/internal/intent"
+	"github.com/extremenelson/beads-ops/bops/internal/lock"
 )
 
 func landedBead(id, labels, ref string) string {
@@ -31,6 +34,7 @@ func sweepFixture() (*bdx.Fake, *fakeForge) {
 		`{"id":"x-bad","status":"in_progress","metadata":{"bops":"nope"},"created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}`,
 	}, ",") + "]"
 	return &bdx.Fake{Responses: map[string][]byte{
+		"dolt pull": []byte(``),
 		"list --status in_progress --limit 0 --json":                                     []byte(list),
 		"close x-merged --reason merged via https://github.com/o/r/pull/1 (" + sha + ")": []byte(``),
 		"dolt push": []byte(``),
@@ -39,9 +43,21 @@ func sweepFixture() (*bdx.Fake, *fakeForge) {
 	}}
 }
 
+// sweepEnv has an empty lock namespace, so these cases exercise the ledger
+// branches. The ref branches are in ownership_test.go.
+func sweepEnv(t *testing.T, b bdx.Runner) *intent.Env {
+	t.Helper()
+	remote := bareRemote(t)
+	dir := filepath.Join(t.TempDir(), "A")
+	git(t, filepath.Dir(dir), "clone", "-q", remote, dir)
+	s := openStore(t, dir, "A")
+	return &intent.Env{BD: b, Run: s.Run(), Store: s, Sleep: func(time.Duration) {},
+		Lock: &lock.Lock{Git: lock.Exec{Dir: dir}, Journal: s, Run: "A", Actor: "tester"}}
+}
+
 func TestSweepDryRunWritesNothing(t *testing.T) {
 	b, f := sweepFixture()
-	out, err := intent.Sweep(context.Background(), newEnv(b), f, true)
+	out, err := intent.Sweep(context.Background(), sweepEnv(t, b), f, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +71,7 @@ func TestSweepDryRunWritesNothing(t *testing.T) {
 
 func TestSweepClosesOnlyMergedAndSortsTheRest(t *testing.T) {
 	b, f := sweepFixture()
-	out, err := intent.Sweep(context.Background(), newEnv(b), f, false)
+	out, err := intent.Sweep(context.Background(), sweepEnv(t, b), f, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,9 +91,9 @@ func TestSweepClosesOnlyMergedAndSortsTheRest(t *testing.T) {
 
 func TestSweepUsesTheLatestLanding(t *testing.T) {
 	list := `[{"id":"x-1","status":"in_progress","metadata":{"bops":{"landed":[{"ref":"` + refMerged + `","sha":"` + sha + `"},{"ref":"` + refOpen + `","sha":"` + sha + `"}]}},"created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}]`
-	b := &bdx.Fake{Responses: map[string][]byte{"list --status in_progress --limit 0 --json": []byte(list)}}
+	b := &bdx.Fake{Responses: map[string][]byte{"dolt pull": []byte(``), "list --status in_progress --limit 0 --json": []byte(list)}}
 	_, f := sweepFixture()
-	out, err := intent.Sweep(context.Background(), newEnv(b), f, false)
+	out, err := intent.Sweep(context.Background(), sweepEnv(t, b), f, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,14 +103,15 @@ func TestSweepUsesTheLatestLanding(t *testing.T) {
 }
 
 func TestSweepContinuesPastACloseFailure(t *testing.T) {
-	list := "[" + landedBead("x-a", `[]`, refMerged) + "," + landedBead("x-b", `[]`, refMerged) + "]"
+	list := "[" + landedBead("x-a", `["bops:landing"]`, refMerged) + "," + landedBead("x-b", `["bops:landing"]`, refMerged) + "]"
 	b := &bdx.Fake{Responses: map[string][]byte{
+		"dolt pull": []byte(``),
 		"list --status in_progress --limit 0 --json":                                []byte(list),
 		"close x-b --reason merged via https://github.com/o/r/pull/1 (" + sha + ")": []byte(``),
 		"dolt push": []byte(``),
 	}}
 	_, f := sweepFixture()
-	out, err := intent.Sweep(context.Background(), newEnv(b), f, false)
+	out, err := intent.Sweep(context.Background(), sweepEnv(t, b), f, false)
 	if err == nil {
 		t.Error("the close failure must be reported")
 	}
@@ -104,11 +121,11 @@ func TestSweepContinuesPastACloseFailure(t *testing.T) {
 }
 
 func TestSweepNothingToCloseDoesNotPush(t *testing.T) {
-	b := &bdx.Fake{Responses: map[string][]byte{"list --status in_progress --limit 0 --json": []byte(`[]`)}}
-	if _, err := intent.Sweep(context.Background(), newEnv(b), &fakeForge{}, false); err != nil {
+	b := &bdx.Fake{Responses: map[string][]byte{"dolt pull": []byte(``), "list --status in_progress --limit 0 --json": []byte(`[]`)}}
+	if _, err := intent.Sweep(context.Background(), sweepEnv(t, b), &fakeForge{}, false); err != nil {
 		t.Fatal(err)
 	}
-	if len(b.Calls) != 1 {
+	if len(b.Calls) != 2 {
 		t.Errorf("calls = %v", b.Calls)
 	}
 }

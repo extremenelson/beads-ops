@@ -72,7 +72,7 @@ func heldWith(metadata string) string {
 
 func TestLandMergesMetadataAndKeepsForeignKeys(t *testing.T) {
 	r := landRunner(heldWith(`{"foreign":{"keep":1},"bops":{"acceptance_checked_at":"t0"}}`))
-	out, err := intent.Land(context.Background(), newEnv(r), "x-1", intent.LandOpts{Ref: prURL, SHA: sha})
+	out, err := intent.Land(context.Background(), noteEnv(r), "x-1", intent.LandOpts{Ref: prURL, SHA: sha})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestLandVerify(t *testing.T) {
 	} {
 		r := landRunner(heldWith(`{}`))
 		f := &fakeForge{head: tc.head, err: tc.ferr}
-		_, err := intent.Land(context.Background(), newEnv(r), "x-1", intent.LandOpts{Ref: prURL, SHA: sha, Verify: f})
+		_, err := intent.Land(context.Background(), noteEnv(r), "x-1", intent.LandOpts{Ref: prURL, SHA: sha, Verify: f})
 		if (err == nil) != tc.ok {
 			t.Errorf("%s: err = %v", tc.name, err)
 		}
@@ -147,18 +147,19 @@ func TestLandRefusesBadInputBeforeAnyCall(t *testing.T) {
 }
 
 func TestLandRefusesWhenRunDoesNotHoldBead(t *testing.T) {
-	r := landRunner(`[{"id":"x-1","status":"in_progress","labels":["run:OTHER"],"created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}]`)
-	if _, err := intent.Land(context.Background(), newEnv(r), "x-1", intent.LandOpts{Ref: prURL, SHA: sha}); !errors.Is(err, intent.ErrPrecondition) {
-		t.Fatalf("err = %v", err)
+	r := landRunner(heldWith(`{}`))
+	out, err := intent.Land(context.Background(), newEnv(r), "x-1", intent.LandOpts{Ref: prURL, SHA: sha})
+	if err != nil || out.Outcome != intent.OutcomeRefused || !out.Negative() {
+		t.Fatalf("%+v, %v", out, err)
 	}
-	if len(r.Calls) != 1 {
+	if len(r.Calls) != 0 {
 		t.Errorf("must not write; calls = %v", r.Calls)
 	}
 }
 
 func TestLandRepeatWritesNothing(t *testing.T) {
 	r := landRunner(heldWith(`{"bops":{"landed":[{"ref":"` + prURL + `","sha":"` + sha + `","run":"RUN1","at":"t0"}]}}`))
-	out, err := intent.Land(context.Background(), newEnv(r), "x-1", intent.LandOpts{Ref: prURL, SHA: sha})
+	out, err := intent.Land(context.Background(), noteEnv(r), "x-1", intent.LandOpts{Ref: prURL, SHA: sha})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +173,7 @@ func TestLandRepeatWritesNothing(t *testing.T) {
 
 func TestLandRefusesMalformedMetadata(t *testing.T) {
 	r := landRunner(heldWith(`{"bops":"not an object"}`))
-	if _, err := intent.Land(context.Background(), newEnv(r), "x-1", intent.LandOpts{Ref: prURL, SHA: sha}); err == nil {
+	if _, err := intent.Land(context.Background(), noteEnv(r), "x-1", intent.LandOpts{Ref: prURL, SHA: sha}); err == nil {
 		t.Fatal("want an error")
 	}
 	if len(r.Calls) != 1 {
