@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/extremenelson/beads-ops/bops/internal/forge"
 	"github.com/extremenelson/beads-ops/bops/internal/intent"
 	"github.com/extremenelson/beads-ops/bops/internal/lock"
 	"github.com/extremenelson/beads-ops/bops/internal/runstate"
@@ -27,6 +28,8 @@ var bg = context.Background()
 type bead struct {
 	Status, Assignee string
 	Labels, Comments []string
+	Metadata         json.RawMessage
+	Updated          time.Time
 }
 
 type fakeBD struct {
@@ -44,7 +47,7 @@ func newBD() *fakeBD {
 }
 
 func (b *fakeBD) add(id string) *bead {
-	n := &bead{Status: "open"}
+	n := &bead{Status: "open", Updated: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)}
 	b.beads[id] = n
 	return n
 }
@@ -95,10 +98,17 @@ func (b *fakeBD) Run(_ context.Context, args ...string) ([]byte, error) {
 		if !ok {
 			return nil, fmt.Errorf("no bead %s", args[1])
 		}
-		return json.Marshal([]map[string]any{{"id": args[1], "status": n.Status, "assignee": n.Assignee, "labels": n.Labels,
-			"created_at": "2026-10-01T00:00:00Z", "updated_at": "2026-10-01T00:00:00Z"}})
+		return json.Marshal([]map[string]any{b.issue(args[1], n)})
 	case "comments":
 		if args[1] == "add" {
+			if args[3] == "-f" {
+				text, err := os.ReadFile(args[4])
+				if err != nil {
+					return nil, err
+				}
+				b.beads[args[2]].Comments = append(b.beads[args[2]].Comments, string(text))
+				return []byte(`{"id":"c-1"}`), nil
+			}
 			b.beads[args[2]].Comments = append(b.beads[args[2]].Comments, args[3])
 			return nil, nil
 		}
@@ -121,6 +131,13 @@ func (b *fakeBD) Run(_ context.Context, args ...string) ([]byte, error) {
 		n := b.beads[args[1]]
 		for i := 2; i < len(args); i++ {
 			switch args[i] {
+			case "--metadata":
+				raw, err := os.ReadFile(strings.TrimPrefix(args[i+1], "@"))
+				if err != nil {
+					return nil, err
+				}
+				n.Metadata = raw
+				i++
 			case "--claim":
 				n.Assignee, n.Status = b.actor, "in_progress"
 			case "--assignee":
@@ -136,9 +153,30 @@ func (b *fakeBD) Run(_ context.Context, args ...string) ([]byte, error) {
 		return []byte(`[{"id":"x-1","title":"t","description":"d","acceptance_criteria":"ac","status":"open","priority":2,"issue_type":"task","owner":"o","created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"},
 			{"id":"x-2","title":"t","description":"d","acceptance_criteria":"ac","status":"open","priority":2,"issue_type":"task","owner":"o","created_at":"2026-10-02T00:00:00Z","updated_at":"2026-10-02T00:00:00Z"}]`), nil
 	case "list":
+		if slices.Contains(args, "--limit") {
+			out := []map[string]any{}
+			for id, n := range b.beads {
+				if n.Status == "in_progress" {
+					out = append(out, b.issue(id, n))
+				}
+			}
+			return json.Marshal(out)
+		}
 		return []byte(`[]`), nil
+	case "close":
+		b.beads[args[1]].Status = "closed"
+		return nil, nil
 	}
 	return nil, fmt.Errorf("fakeBD: unhandled %v", args)
+}
+
+func (b *fakeBD) issue(id string, n *bead) map[string]any {
+	out := map[string]any{"id": id, "status": n.Status, "assignee": n.Assignee, "labels": n.Labels,
+		"created_at": "2026-10-01T00:00:00Z", "updated_at": n.Updated.Format(time.RFC3339)}
+	if n.Metadata != nil {
+		out["metadata"] = n.Metadata
+	}
+	return out
 }
 
 func git(t *testing.T, dir string, args ...string) string {
@@ -185,10 +223,16 @@ func openStore(t *testing.T, dir, run string) *runstate.Store {
 // flakyGit fails the pushes and remote reads of a side that has gone offline.
 type flakyGit struct {
 	lock.Exec
-	offline bool
+	offline    bool
+	beforePush func()
 }
 
 func (g *flakyGit) Run(ctx context.Context, c lock.Cmd) (lock.Output, error) {
+	if c.Args[0] == "push" && g.beforePush != nil {
+		hook := g.beforePush
+		g.beforePush = nil
+		hook()
+	}
 	if g.offline && (c.Args[0] == "push" || c.Args[0] == "ls-remote" || c.Args[0] == "fetch") {
 		return lock.Output{Stderr: "fatal: unable to access remote"}, errors.New("exit status 128")
 	}
@@ -873,3 +917,579 @@ func (j *memJournal) Confirm(id, sha string) error {
 func (j *memJournal) Abandon(id string) error      { delete(j.entries, id); return nil }
 func (j *memJournal) IntendDelete(id string) error { return nil }
 func (j *memJournal) Drop(id string) error         { delete(j.entries, id); return nil }
+
+// ------------------------------------------- force, resume, note, land, sweep
+
+const (
+	prRef   = "https://github.com/o/r/pull/1"
+	prSHA   = "abc1234"
+	twoDays = 48 * time.Hour
+)
+
+type mergedForge struct{}
+
+func (mergedForge) Name() string                                   { return "fake" }
+func (mergedForge) IsMerged(context.Context, string) forge.Merged  { return forge.Yes }
+func (mergedForge) RefSHA(context.Context, string) (string, error) { return prSHA, nil }
+
+func later(r *rig, d time.Duration) {
+	r.env.Now = func() time.Time { return time.Now().UTC().Add(d) }
+}
+
+func mustForce(t *testing.T, r *rig, id string) *intent.ClaimOut {
+	t.Helper()
+	out, err := intent.Claim(bg, r.env, id, true)
+	if err != nil || out.Outcome != intent.OutcomeClaimed {
+		t.Fatalf("force: %+v, %v", out, err)
+	}
+	return out
+}
+
+func pair(t *testing.T, id string) (a, b *rig, bdA, bdB *fakeBD) {
+	t.Helper()
+	remote := bareRemote(t)
+	bdA, bdB = newBD(), newBD()
+	bdA.add(id)
+	bdB.add(id)
+	return client(t, remote, "A", bdA), client(t, remote, "B", bdB), bdA, bdB
+}
+
+func TestForceRefusesAFreshClaim(t *testing.T) {
+	a, b, _, bdB := pair(t, "x-1")
+	mustClaim(t, a, "x-1")
+	bdB.beads["x-1"].Assignee = "tester"
+	out, err := intent.Claim(bg, b.env, "x-1", true)
+	if err != nil || out.Outcome != intent.OutcomeRefused || out.StaleMinutes != 120 || out.Reason == "" {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if bdB.wrote("x-1") {
+		t.Errorf("wrote: %v", bdB.calls)
+	}
+}
+
+func TestForceTakesAStaleClaimAndTheOldHolderLearnsAtSync(t *testing.T) {
+	a, b, bdA, bdB := pair(t, "x-1")
+	mustClaim(t, a, "x-1")
+	n := bdB.beads["x-1"]
+	n.Assignee, n.Status, n.Labels = "old", "in_progress", []string{"run:A"}
+	later(b, 3*time.Hour)
+
+	mustForce(t, b, "x-1")
+	if n.Assignee != "tester" || !slices.Contains(n.Labels, "run:B") || slices.Contains(n.Labels, "run:A") {
+		t.Errorf("ledger = %+v", n)
+	}
+	if !strings.Contains(strings.Join(n.Comments, ";"), "takeover=A") {
+		t.Errorf("comments = %v", n.Comments)
+	}
+	out, err := intent.Sync(bg, a.env, false)
+	if err != nil || strings.Join(out.LostClaims, ",") != "x-1" {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	_ = bdA
+}
+
+func TestForceRefusals(t *testing.T) {
+	t.Run("landing", func(t *testing.T) {
+		a, b, _, _ := pair(t, "x-1")
+		mustClaim(t, a, "x-1")
+		if out, err := intent.Release(bg, a.env, "x-1", "done"); err != nil || out.Outcome != intent.OutcomeReleased {
+			t.Fatal(out, err)
+		}
+		later(b, twoDays)
+		out, err := intent.Claim(bg, b.env, "x-1", true)
+		if err != nil || out.Outcome != intent.OutcomeRefused || !strings.Contains(out.Reason, "resume") {
+			t.Fatalf("%+v, %v", out, err)
+		}
+	})
+	t.Run("future time", func(t *testing.T) {
+		a, b, _, _ := pair(t, "x-1")
+		later(a, twoDays)
+		a.env.Lock.Now = a.env.Now
+		mustClaim(t, a, "x-1")
+		out, err := intent.Claim(bg, b.env, "x-1", true)
+		if err != nil || out.Outcome != intent.OutcomeRefused || !strings.Contains(out.Reason, "clock") {
+			t.Fatalf("%+v, %v", out, err)
+		}
+	})
+	t.Run("unreadable time is not stale", func(t *testing.T) {
+		remote := bareRemote(t)
+		bd := newBD()
+		bd.add("x-1")
+		b := client(t, remote, "B", bd)
+		tree := git(t, b.dir, "hash-object", "-w", "-t", "tree", "--stdin")
+		commit := git(t, b.dir, "-c", "user.name=x", "-c", "user.email=x@example.invalid", "commit-tree", tree, "-m", "run=OLD\nactor=x\nstate=held\nat=yesterday")
+		git(t, b.dir, "push", "-q", "origin", commit+":refs/bops/claims/x-1")
+		later(b, twoDays)
+		out, err := intent.Claim(bg, b.env, "x-1", true)
+		if err != nil || out.Outcome != intent.OutcomeRefused {
+			t.Fatalf("%+v, %v", out, err)
+		}
+	})
+	t.Run("nothing to take over", func(t *testing.T) {
+		_, b, _, _ := pair(t, "x-1")
+		out, err := intent.Claim(bg, b.env, "x-1", true)
+		if err != nil || out.Outcome != intent.OutcomeRefused {
+			t.Fatalf("%+v, %v", out, err)
+		}
+	})
+}
+
+func TestForceOnALedgerClaimWithNoRef(t *testing.T) {
+	_, b, _, bd := pair(t, "x-1")
+	n := bd.beads["x-1"]
+	n.Assignee, n.Status = "raw-user", "in_progress"
+
+	n.Updated = time.Now().UTC()
+	out, err := intent.Claim(bg, b.env, "x-1", true)
+	if err != nil || out.Outcome != intent.OutcomeRefused {
+		t.Fatalf("recent: %+v, %v", out, err)
+	}
+	n.Updated = time.Now().UTC().Add(-3 * time.Hour)
+	mustForce(t, b, "x-1")
+	if n.Assignee != "tester" || liveSHA(t, b, "x-1") == "" {
+		t.Errorf("ledger = %+v", n)
+	}
+}
+
+func TestForceFailsClosedWhenThePullFails(t *testing.T) {
+	a, b, _, bd := pair(t, "x-1")
+	mustClaim(t, a, "x-1")
+	later(b, twoDays)
+	bd.fail = func(args []string) error {
+		if strings.Join(args, " ") == "dolt pull" {
+			return errors.New("offline")
+		}
+		return nil
+	}
+	out, err := intent.Claim(bg, b.env, "x-1", true)
+	if lock.CodeOf(err) != lock.CodeUnreachable || out.Outcome != intent.OutcomeUnreachable {
+		t.Fatalf("%+v, %v", out, err)
+	}
+}
+
+func TestConcurrentTakeoversHaveOneWinner(t *testing.T) {
+	remote := bareRemote(t)
+	bdA := newBD()
+	bdA.add("x-1")
+	a := client(t, remote, "A", bdA)
+	mustClaim(t, a, "x-1")
+	rigs := []*rig{}
+	for _, run := range []string{"B", "C", "D"} {
+		bd := newBD()
+		bd.add("x-1").Assignee = "old"
+		r := client(t, remote, run, bd)
+		later(r, 3*time.Hour)
+		rigs = append(rigs, r)
+	}
+	results := make([]*intent.ClaimOut, len(rigs))
+	var wg sync.WaitGroup
+	for i, r := range rigs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			out, err := intent.Claim(bg, r.env, "x-1", true)
+			if err != nil {
+				t.Errorf("%v", err)
+			}
+			results[i] = out
+		}()
+	}
+	wg.Wait()
+	won := 0
+	for _, o := range results {
+		if o != nil && o.Outcome == intent.OutcomeClaimed {
+			won++
+		}
+	}
+	if won != 1 {
+		t.Errorf("winners = %d: %+v", won, results)
+	}
+}
+
+func landAndFinish(t *testing.T, r *rig, id string) {
+	t.Helper()
+	if out, err := intent.Land(bg, r.env, id, intent.LandOpts{Ref: prRef, SHA: prSHA}); err != nil || out.Outcome != intent.OutcomeLanded {
+		t.Fatalf("land: %+v, %v", out, err)
+	}
+	if out, err := intent.Release(bg, r.env, id, "done"); err != nil || out.Outcome != intent.OutcomeReleased {
+		t.Fatalf("release: %+v, %v", out, err)
+	}
+}
+
+func TestResumeTakesBackALandingBead(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	n := bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	landAndFinish(t, a, "x-1")
+
+	b := client(t, remote, "B", bd)
+	out, err := intent.ClaimResume(bg, b.env, "x-1")
+	if err != nil || out.Outcome != intent.OutcomeClaimed {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	ref, err := b.env.Lock.Read(bg, "x-1")
+	if err != nil || ref.State != lock.StateHeld || ref.Run != "B" {
+		t.Fatalf("ref = %+v, %v", ref, err)
+	}
+	if n.Assignee != "tester" || n.Status != "in_progress" || !slices.Contains(n.Labels, "run:B") || slices.Contains(n.Labels, "bops:landing") {
+		t.Errorf("ledger = %+v", n)
+	}
+	if !strings.Contains(strings.Join(n.Comments, ";"), "resumed=A") {
+		t.Errorf("comments = %v", n.Comments)
+	}
+}
+
+func TestResumeRefusals(t *testing.T) {
+	t.Run("another actor", func(t *testing.T) {
+		a, b, _, _ := pair(t, "x-1")
+		mustClaim(t, a, "x-1")
+		if _, err := intent.Release(bg, a.env, "x-1", "done"); err != nil {
+			t.Fatal(err)
+		}
+		b.env.Run.Actor = "someone-else"
+		out, err := intent.ClaimResume(bg, b.env, "x-1")
+		if err != nil || out.Outcome != intent.OutcomeRefused {
+			t.Fatalf("%+v, %v", out, err)
+		}
+	})
+	t.Run("held, not landing", func(t *testing.T) {
+		a, b, _, _ := pair(t, "x-1")
+		mustClaim(t, a, "x-1")
+		out, err := intent.ClaimResume(bg, b.env, "x-1")
+		if err != nil || out.Outcome != intent.OutcomeRefused {
+			t.Fatalf("%+v, %v", out, err)
+		}
+	})
+	t.Run("no ref", func(t *testing.T) {
+		_, b, _, _ := pair(t, "x-1")
+		out, err := intent.ClaimResume(bg, b.env, "x-1")
+		if err != nil || out.Outcome != intent.OutcomeRefused {
+			t.Fatalf("%+v, %v", out, err)
+		}
+	})
+}
+
+// The label is display. A machine sharing the actor, whose replica still shows
+// bops:landing, must not displace a holder who already resumed.
+func TestSecondMachineCannotDisplaceAResumedHolder(t *testing.T) {
+	a, b, _, bdB := pair(t, "x-1")
+	mustClaim(t, a, "x-1")
+	if _, err := intent.Release(bg, a.env, "x-1", "done"); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := intent.ClaimResume(bg, a.env, "x-1"); err != nil || out.Outcome != intent.OutcomeClaimed {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	bdB.beads["x-1"].Labels = []string{"bops:landing"}
+	out, err := intent.ClaimResume(bg, b.env, "x-1")
+	if err != nil || out.Outcome != intent.OutcomeRefused || out.Holder == nil || out.Holder.Run != "A" {
+		t.Fatalf("%+v, %v", out, err)
+	}
+}
+
+// A landing bead stays protected when its label never reached the ledger.
+func TestFailedLandingLabelStillRefusesForce(t *testing.T) {
+	a, b, bdA, _ := pair(t, "x-1")
+	mustClaim(t, a, "x-1")
+	bdA.fail = func(args []string) error {
+		if strings.Join(args, " ") == "label add x-1 bops:landing" {
+			return errors.New("boom")
+		}
+		return nil
+	}
+	rel, err := intent.Release(bg, a.env, "x-1", "done")
+	if err != nil || !rel.LedgerPending {
+		t.Fatalf("%+v, %v", rel, err)
+	}
+	later(b, twoDays)
+	out, err := intent.Claim(bg, b.env, "x-1", true)
+	if err != nil || out.Outcome != intent.OutcomeRefused {
+		t.Fatalf("%+v, %v", out, err)
+	}
+}
+
+func TestNoteRefreshesTheRef(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	before := liveSHA(t, a, "x-1")
+	out, err := intent.Note(bg, a.env, "x-1", "work\n\nNEXT: more")
+	if err != nil || out.Outcome != intent.OutcomeNoted || out.CommentID == "" {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	after := liveSHA(t, a, "x-1")
+	if after == before {
+		t.Error("the ref should change")
+	}
+	if e, _ := a.store.Entry("x-1"); e.SHA != after {
+		t.Errorf("journal = %+v", e)
+	}
+}
+
+func TestNoteWorksWhileTheLedgerIsPending(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	n := bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	n.Labels = nil // the run label never reached this ledger
+	out, err := intent.Note(bg, a.env, "x-1", "work\n\nNEXT: more")
+	if err != nil || out.Outcome != intent.OutcomeNoted {
+		t.Fatalf("%+v, %v", out, err)
+	}
+}
+
+func TestNoteOfflineWarnsAndStillWrites(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	n := bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	comments := len(n.Comments)
+	a.git.offline = true
+	out, err := intent.Note(bg, a.env, "x-1", "work\n\nNEXT: more")
+	if err != nil || out.Outcome != intent.OutcomeNoted || !strings.Contains(strings.Join(out.Warnings, ";"), "not refreshed") {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if len(n.Comments) != comments+1 {
+		t.Errorf("comments = %v", n.Comments)
+	}
+	if _, ok := a.store.Entry("x-1"); !ok {
+		t.Error("an offline note must keep the claim")
+	}
+}
+
+func TestNoteOnADisplacedHoldDropsItAndSavesTheText(t *testing.T) {
+	a, b, bdA, _ := pair(t, "x-1")
+	mustClaim(t, a, "x-1")
+	takeOver(t, b, "x-1")
+	comments := len(bdA.beads["x-1"].Comments)
+	out, err := intent.Note(bg, a.env, "x-1", "my work\n\nNEXT: more")
+	if err != nil || out.Outcome != intent.OutcomeLost || !out.Negative() || out.Holder == nil || out.Holder.Run != "B" {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if len(bdA.beads["x-1"].Comments) != comments {
+		t.Error("no comment for a lost claim")
+	}
+	saved, err := os.ReadFile(out.SavedTo)
+	if err != nil || !strings.Contains(string(saved), "my work") {
+		t.Errorf("saved = %q, %v", saved, err)
+	}
+	_ = os.Remove(out.SavedTo)
+	if _, ok := a.store.Entry("x-1"); ok {
+		t.Error("hold should be dropped")
+	}
+}
+
+// A refresh whose reply was lost must not make the next note read as lost.
+func TestNoteAfterALostReplyKeepsTheClaim(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	other := &lock.Lock{Git: a.git, Journal: newMemJournal(), Run: "A", Actor: "tester"}
+	res, err := other.Replace(bg, "x-1", liveSHA(t, a, "x-1"), lock.StateHeld)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.store.Intend("x-1", res.SHA); err != nil {
+		t.Fatal(err)
+	}
+	out, err := intent.Note(bg, a.env, "x-1", "work\n\nNEXT: more")
+	if err != nil || out.Outcome != intent.OutcomeNoted {
+		t.Fatalf("%+v, %v", out, err)
+	}
+}
+
+func TestLandDecidesOnTheRef(t *testing.T) {
+	t.Run("label not needed", func(t *testing.T) {
+		remote, bd := bareRemote(t), newBD()
+		n := bd.add("x-1")
+		a := client(t, remote, "A", bd)
+		mustClaim(t, a, "x-1")
+		n.Labels = nil
+		out, err := intent.Land(bg, a.env, "x-1", intent.LandOpts{Ref: prRef, SHA: prSHA})
+		if err != nil || out.Outcome != intent.OutcomeLanded {
+			t.Fatalf("%+v, %v", out, err)
+		}
+	})
+	t.Run("displaced", func(t *testing.T) {
+		a, b, bdA, _ := pair(t, "x-1")
+		mustClaim(t, a, "x-1")
+		takeOver(t, b, "x-1")
+		out, err := intent.Land(bg, a.env, "x-1", intent.LandOpts{Ref: prRef, SHA: prSHA})
+		if err != nil || out.Outcome != intent.OutcomeLost || !out.Negative() || out.Holder == nil {
+			t.Fatalf("%+v, %v", out, err)
+		}
+		if bdA.beads["x-1"].Metadata != nil {
+			t.Error("a displaced holder must not record a landing")
+		}
+	})
+	t.Run("offline", func(t *testing.T) {
+		remote, bd := bareRemote(t), newBD()
+		n := bd.add("x-1")
+		a := client(t, remote, "A", bd)
+		mustClaim(t, a, "x-1")
+		a.git.offline = true
+		out, err := intent.Land(bg, a.env, "x-1", intent.LandOpts{Ref: prRef, SHA: prSHA})
+		if lock.CodeOf(err) != lock.CodeUnreachable || out.Outcome != intent.OutcomeUnreachable || n.Metadata != nil {
+			t.Fatalf("%+v, %v", out, err)
+		}
+	})
+}
+
+func landed(t *testing.T) (*rig, *fakeBD) {
+	t.Helper()
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	landAndFinish(t, a, "x-1")
+	return a, bd
+}
+
+func TestSweepDeletesTheRefThenCloses(t *testing.T) {
+	a, bd := landed(t)
+	dry, err := intent.Sweep(bg, a.env, mergedForge{}, true)
+	if err != nil || strings.Join(dry.WouldClose, ",") != "x-1" {
+		t.Fatalf("%+v, %v", dry, err)
+	}
+	if liveSHA(t, a, "x-1") == "" || bd.beads["x-1"].Status == "closed" {
+		t.Fatal("a dry run must change nothing")
+	}
+	out, err := intent.Sweep(bg, a.env, mergedForge{}, false)
+	if err != nil || strings.Join(out.Closed, ",") != "x-1" {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if liveSHA(t, a, "x-1") != "" || bd.beads["x-1"].Status != "closed" {
+		t.Errorf("ref=%q status=%s", liveSHA(t, a, "x-1"), bd.beads["x-1"].Status)
+	}
+}
+
+func TestSweepLeavesAResumedBead(t *testing.T) {
+	a, bd := landed(t)
+	if out, err := intent.ClaimResume(bg, a.env, "x-1"); err != nil || out.Outcome != intent.OutcomeClaimed {
+		t.Fatal(out, err)
+	}
+	sha := liveSHA(t, a, "x-1")
+	bd.beads["x-1"].Labels = []string{"bops:landing"} // a stale replica's view
+	out, err := intent.Sweep(bg, a.env, mergedForge{}, false)
+	if err != nil || strings.Join(out.Pending, ",") != "x-1" {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if liveSHA(t, a, "x-1") != sha || bd.beads["x-1"].Status == "closed" {
+		t.Error("a live lock must survive sweep")
+	}
+}
+
+func TestSweepLeavesALandingRefFromAnotherRun(t *testing.T) {
+	a, _ := landed(t)
+	b := client(t, git(t, a.dir, "remote", "get-url", "origin"), "B", a.bd)
+	if out, err := intent.ClaimResume(bg, b.env, "x-1"); err != nil || out.Outcome != intent.OutcomeClaimed {
+		t.Fatal(out, err)
+	}
+	if out, err := intent.Release(bg, b.env, "x-1", "done"); err != nil || out.Outcome != intent.OutcomeReleased {
+		t.Fatal(out, err)
+	}
+	out, err := intent.Sweep(bg, a.env, mergedForge{}, false)
+	if err != nil || strings.Join(out.Pending, ",") != "x-1" {
+		t.Fatalf("the last landing is A's but the ref is B's: %+v, %v", out, err)
+	}
+}
+
+// The lease decides between a sweep and a resume arriving at the same moment.
+func TestSweepRacingAResumeLeavesTheHolder(t *testing.T) {
+	a, bd := landed(t)
+	origin := git(t, a.dir, "remote", "get-url", "origin")
+	b := client(t, origin, "B", bd)
+	a.git.beforePush = func() {
+		if out, err := intent.ClaimResume(bg, b.env, "x-1"); err != nil || out.Outcome != intent.OutcomeClaimed {
+			t.Errorf("resume: %+v, %v", out, err)
+		}
+	}
+	out, err := intent.Sweep(bg, a.env, mergedForge{}, false)
+	if err != nil || strings.Join(out.Pending, ",") != "x-1" || len(out.Closed) != 0 {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if liveSHA(t, a, "x-1") == "" || bd.beads["x-1"].Status == "closed" {
+		t.Error("the resumed holder must keep the bead")
+	}
+}
+
+func TestSweepRecoversFromACrashBetweenDeleteAndClose(t *testing.T) {
+	a, bd := landed(t)
+	failing := true
+	bd.fail = func(args []string) error {
+		if failing && args[0] == "close" {
+			return errors.New("boom")
+		}
+		return nil
+	}
+	out, err := intent.Sweep(bg, a.env, mergedForge{}, false)
+	if err == nil || strings.Join(out.Unknown, ",") != "x-1" {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if liveSHA(t, a, "x-1") != "" {
+		t.Fatal("the delete happened first")
+	}
+	failing = false
+	out, err = intent.Sweep(bg, a.env, mergedForge{}, false)
+	if err != nil || strings.Join(out.Closed, ",") != "x-1" || bd.beads["x-1"].Status != "closed" {
+		t.Fatalf("%+v, %v", out, err)
+	}
+}
+
+func TestSweepDoesNothingWhenThePullFails(t *testing.T) {
+	a, bd := landed(t)
+	bd.fail = func(args []string) error {
+		if strings.Join(args, " ") == "dolt pull" {
+			return errors.New("offline")
+		}
+		return nil
+	}
+	if _, err := intent.Sweep(bg, a.env, mergedForge{}, false); err == nil {
+		t.Fatal("want an error")
+	}
+	if liveSHA(t, a, "x-1") == "" || bd.beads["x-1"].Status == "closed" {
+		t.Error("no deletes or closes on a failed pull")
+	}
+}
+
+func TestSweepNoRefNoLabelIsPending(t *testing.T) {
+	a, bd := landed(t)
+	if res, err := a.env.Lock.Delete(bg, "x-1", liveSHA(t, a, "x-1")); err != nil || res.Outcome != lock.Gone {
+		t.Fatal(res, err)
+	}
+	bd.beads["x-1"].Labels = nil
+	out, err := intent.Sweep(bg, a.env, mergedForge{}, false)
+	if err != nil || strings.Join(out.Pending, ",") != "x-1" || bd.beads["x-1"].Status == "closed" {
+		t.Fatalf("%+v, %v", out, err)
+	}
+}
+
+func TestFullLoopThroughRework(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	n := bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	if out, err := intent.Note(bg, a.env, "x-1", "w\n\nNEXT: x"); err != nil || out.Outcome != intent.OutcomeNoted {
+		t.Fatal(out, err)
+	}
+	landAndFinish(t, a, "x-1")
+	if out, err := intent.ClaimResume(bg, a.env, "x-1"); err != nil || out.Outcome != intent.OutcomeClaimed {
+		t.Fatal(out, err)
+	}
+	if _, err := intent.Sync(bg, a.env, false); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := intent.Land(bg, a.env, "x-1", intent.LandOpts{Ref: prRef + "0", SHA: prSHA}); err != nil || out.Outcome != intent.OutcomeLanded {
+		t.Fatal(out, err)
+	}
+	if out, err := intent.Release(bg, a.env, "x-1", "done"); err != nil || out.Outcome != intent.OutcomeReleased {
+		t.Fatal(out, err)
+	}
+	out, err := intent.Sweep(bg, a.env, mergedForge{}, false)
+	if err != nil || strings.Join(out.Closed, ",") != "x-1" || n.Status != "closed" || liveSHA(t, a, "x-1") != "" {
+		t.Fatalf("%+v, %v, %+v", out, err, n)
+	}
+}

@@ -3,7 +3,6 @@ package intent_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -211,8 +210,12 @@ func TestLiveNote(t *testing.T) {
 
 	other := *env
 	other.Run = &runstate.Run{ID: "OTHER", Actor: itActor, Machine: "it-box"}
-	if _, err := intent.Note(ctx, &other, id, text); !errors.Is(err, intent.ErrPrecondition) {
-		t.Errorf("another run should be refused, got %v", err)
+	refused, err := intent.Note(ctx, &other, id, text)
+	if err != nil || refused.Outcome != intent.OutcomeRefused {
+		t.Errorf("another run should be refused, got %+v, %v", refused, err)
+	}
+	if refused != nil && refused.SavedTo != "" {
+		_ = os.Remove(refused.SavedTo)
 	}
 }
 

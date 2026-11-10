@@ -144,7 +144,7 @@ func TestNoteWritesViaFileAndHeartbeatsAfter(t *testing.T) {
 		"show x-1 --json": []byte(heldByRun1),
 		"heartbeat x-1":   []byte(`{}`),
 	}}}
-	out, err := intent.Note(context.Background(), newEnv(r), "x-1", text)
+	out, err := intent.Note(context.Background(), noteEnv(r), "x-1", text)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestNoteWritesViaFileAndHeartbeatsAfter(t *testing.T) {
 	if want := "bops:note run=RUN1\n" + text; r.body != want {
 		t.Errorf("comment body = %q, want %q", r.body, want)
 	}
-	if got := strings.Join(callNames(r.Calls), ","); got != "show,comments,heartbeat" {
+	if got := strings.Join(callNames(r.Calls), ","); got != "comments,heartbeat" {
 		t.Errorf("call order = %s", got)
 	}
 	for _, call := range r.Calls {
@@ -171,12 +171,18 @@ func TestNoteRefusesWhenRunDoesNotHoldBead(t *testing.T) {
 	r := &noteRunner{Fake: bdx.Fake{Responses: map[string][]byte{
 		"show x-1 --json": []byte(`[{"id":"x-1","status":"in_progress","assignee":"other","labels":["run:OTHER"],"created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}]`),
 	}}}
-	if _, err := intent.Note(context.Background(), newEnv(r), "x-1", "text\n\nNEXT: x"); !errors.Is(err, intent.ErrPrecondition) {
-		t.Fatalf("want ErrPrecondition, got %v", err)
+	out, err := intent.Note(context.Background(), newEnv(r), "x-1", "text\n\nNEXT: x")
+	if err != nil || out.Outcome != intent.OutcomeRefused || !out.Negative() {
+		t.Fatalf("%+v, %v", out, err)
 	}
-	if len(r.Calls) != 1 {
+	if len(r.Calls) != 0 {
 		t.Errorf("must not write; calls = %v", r.Calls)
 	}
+	saved, err := os.ReadFile(out.SavedTo)
+	if err != nil || string(saved) != "text\n\nNEXT: x" {
+		t.Errorf("refused note was not saved: %q, %v", saved, err)
+	}
+	_ = os.Remove(out.SavedTo)
 }
 
 func TestNoteRefusesEmptyText(t *testing.T) {
@@ -207,7 +213,7 @@ func TestNoteWarnsAboutLastParagraph(t *testing.T) {
 			"show x-1 --json": []byte(heldByRun1),
 			"heartbeat x-1":   []byte(`{}`),
 		}}}
-		out, err := intent.Note(context.Background(), newEnv(r), "x-1", tc.text)
+		out, err := intent.Note(context.Background(), noteEnv(r), "x-1", tc.text)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -222,7 +228,7 @@ func TestNoteSurvivesAFailedHeartbeat(t *testing.T) {
 	r := &noteRunner{Fake: bdx.Fake{Responses: map[string][]byte{
 		"show x-1 --json": []byte(heldByRun1),
 	}}} // no heartbeat response, so the fake fails it
-	out, err := intent.Note(context.Background(), newEnv(r), "x-1", "t\n\nNEXT: x")
+	out, err := intent.Note(context.Background(), noteEnv(r), "x-1", "t\n\nNEXT: x")
 	if err != nil {
 		t.Fatalf("a saved note must not fail on heartbeat: %v", err)
 	}
@@ -232,6 +238,25 @@ func TestNoteSurvivesAFailedHeartbeat(t *testing.T) {
 }
 
 // --- helpers
+
+// noteEnv holds x-1 as a legacy claim, which has no ref to refresh. The ref
+// paths are covered in ownership_test.go.
+func noteEnv(r bdx.Runner) *intent.Env {
+	env := newEnv(r)
+	env.Run.Hold("x-1")
+	env.Lock = &lock.Lock{Journal: journalOf{env.Run}}
+	return env
+}
+
+// journalOf reads a Run's journal for tests that make no ref writes.
+type journalOf struct{ run *runstate.Run }
+
+func (j journalOf) Entry(id string) (runstate.Entry, bool) { e, ok := j.run.Held[id]; return e, ok }
+func (j journalOf) Intend(string, string) error            { return nil }
+func (j journalOf) Confirm(string, string) error           { return nil }
+func (j journalOf) Abandon(string) error                   { return nil }
+func (j journalOf) IntendDelete(string) error              { return nil }
+func (j journalOf) Drop(id string) error                   { j.run.Drop(id); return nil }
 
 // noteRunner reads the comment file while bd would, since it is removed after.
 type noteRunner struct {

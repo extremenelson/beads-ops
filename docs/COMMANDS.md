@@ -61,8 +61,9 @@ Take this bead for this run
 
 | Arg | Type | Default | Doc |
 |---|---|---|---|
-| `--force` | bool | `false` |  |
+| `--force` | bool | `false` | Take over a claim stale for 120 minutes, or an orphan. Refused on a landing bead. |
 | `--id` | string |  |  |
+| `--resume` | bool | `false` | Take back a landing bead for PR rework. Only the ref's actor can. |
 
 Preconditions: assignee is empty OR --force; status in (open, ready); no run: label; origin matches the Dolt remote.
 
@@ -81,6 +82,8 @@ Output:
   "ref_pending": "bool?",
   "holder": "object?",
   "reason": "string?",
+  "age_minutes": "int?",
+  "stale_minutes": "int?",
   "retry": "string?",
   "side_effects": "string?",
   "warnings": "string[]?"
@@ -96,17 +99,21 @@ Record where I am, keep the claim
 | `--id` | string |  |  |
 | `--text` | stdin|file |  | Never on the command line. |
 
-Preconditions: run: label matches current run.
+Preconditions: this run holds the bead and its ref still matches.
 
-Wraps: `bd comments add <id> -f <file>`, `bd heartbeat <id>`.
+Wraps: `git push refs/bops/claims/<id> (lease; a network failure is a warning)`, `bd comments add <id> -f <file>`, `bd heartbeat <id>`.
 
 Output:
 
 ```json
 {
   "id": "string",
-  "comment_id": "string",
-  "warnings": "string[]"
+  "outcome": "string",
+  "comment_id": "string?",
+  "warnings": "string[]",
+  "holder": "object?",
+  "reason": "string?",
+  "saved_to": "string?"
 }
 ```
 
@@ -151,7 +158,7 @@ Record that work reached its destination
 | `--sha` | string |  |  |
 | `--verify` | bool | `false` |  |
 
-Preconditions: run: label matches current run.
+Preconditions: this run holds the bead and its ref still matches.
 
 Never: merge, push a branch, close.
 
@@ -162,12 +169,15 @@ Output:
 ```json
 {
   "id": "string",
+  "outcome": "string",
   "landed": {
     "ref": "string",
     "sha": "string",
     "run": "string",
     "at": "string"
-  }
+  },
+  "holder": "object?",
+  "reason": "string?"
 }
 ```
 
@@ -180,7 +190,7 @@ Close landed beads whose refs are merged
 | `--dry-run` | bool | `true` |  |
 | `--forge` | enum: auto \| github \| gitlab \| none | `auto` |  |
 
-Wraps: `bd list --status in_progress --limit 0 --json`, `forge.is_merged(ref)`, `bd close <id> --reason 'merged via <ref> (<sha>)'`, `bd dolt push`.
+Wraps: `bd dolt pull`, `bd list --status in_progress --limit 0 --json`, `forge.is_merged(ref)`, `git fetch --prune refs/bops/claims/*`, `git push (lease): delete the ref`, `bd close <id> --reason 'merged via <ref> (<sha>)'`, `bd dolt push`.
 
 Output:
 

@@ -37,11 +37,11 @@
       "name": "claim",
       "intent": "Take this bead for this run",
       "kind": "write",
-      "args": { "id": { "type": "string" }, "force": { "type": "bool", "default": false } },
+      "args": { "id": { "type": "string" }, "force": { "type": "bool", "default": false, "doc": "Take over a claim stale for 120 minutes, or an orphan. Refused on a landing bead." }, "resume": { "type": "bool", "default": false, "doc": "Take back a landing bead for PR rework. Only the ref's actor can." } },
       "preconditions": ["assignee is empty OR --force", "status in (open, ready)", "no run: label", "origin matches the Dolt remote"],
       "wraps": ["git push refs/bops/claims/<id> (create-only)", "bd dolt pull", "bd update <id> --claim", "bd label add <id> run:<ulid>", "bd comments add <id>", "bd dolt push"],
       "outcomes": { "claimed": 0, "held": 0, "lost": 3, "refused": 3, "unreachable": 1 },
-      "output": { "id": "string", "run": "string", "outcome": "string", "claimed_at": "string?", "readback_ok": "bool?", "ledger_pending": "bool?", "ref_pending": "bool?", "holder": "object?", "reason": "string?", "retry": "string?", "side_effects": "string?", "warnings": "string[]?" },
+      "output": { "id": "string", "run": "string", "outcome": "string", "claimed_at": "string?", "readback_ok": "bool?", "ledger_pending": "bool?", "ref_pending": "bool?", "holder": "object?", "reason": "string?", "age_minutes": "int?", "stale_minutes": "int?", "retry": "string?", "side_effects": "string?", "warnings": "string[]?" },
       "surfaces": { "cc": ["skill"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": false } }
     },
     {
@@ -49,10 +49,11 @@
       "intent": "Record where I am, keep the claim",
       "kind": "write",
       "args": { "id": { "type": "string" }, "text": { "type": "stdin|file", "doc": "Never on the command line." } },
-      "preconditions": ["run: label matches current run"],
+      "preconditions": ["this run holds the bead and its ref still matches"],
       "lint": ["last paragraph starts with NEXT:|BLOCKER:|KEY DECISION:|REF: (warn)"],
-      "wraps": ["bd comments add <id> -f <file>", "bd heartbeat <id>"],
-      "output": { "id": "string", "comment_id": "string", "warnings": "string[]" },
+      "wraps": ["git push refs/bops/claims/<id> (lease; a network failure is a warning)", "bd comments add <id> -f <file>", "bd heartbeat <id>"],
+      "outcomes": { "noted": 0, "lost": 3, "refused": 3 },
+      "output": { "id": "string", "outcome": "string", "comment_id": "string?", "warnings": "string[]", "holder": "object?", "reason": "string?", "saved_to": "string?" },
       "surfaces": { "cc": ["skill", "hook:PreCompact"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": false } }
     },
     {
@@ -81,10 +82,11 @@
         "verify": { "type": "bool", "default": false },
         "forge": { "type": "enum", "values": ["auto", "github", "gitlab", "none"], "default": "auto" }
       },
-      "preconditions": ["run: label matches current run"],
+      "preconditions": ["this run holds the bead and its ref still matches"],
       "never": ["merge", "push a branch", "close"],
       "wraps": ["bd update <id> --metadata @<file> (merge bops.landed)", "bd comments add <id>", "bd dolt push"],
-      "output": { "id": "string", "landed": { "ref": "string", "sha": "string", "run": "string", "at": "string" } },
+      "outcomes": { "landed": 0, "lost": 3, "refused": 3, "unreachable": 1 },
+      "output": { "id": "string", "outcome": "string", "landed": { "ref": "string", "sha": "string", "run": "string", "at": "string" }, "holder": "object?", "reason": "string?" },
       "surfaces": { "cc": ["skill"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": false } }
     },
     {
@@ -95,7 +97,7 @@
         "dry-run": { "type": "bool", "default": true },
         "forge": { "type": "enum", "values": ["auto", "github", "gitlab", "none"], "default": "auto" }
       },
-      "wraps": ["bd list --status in_progress --limit 0 --json", "forge.is_merged(ref)", "bd close <id> --reason 'merged via <ref> (<sha>)'", "bd dolt push"],
+      "wraps": ["bd dolt pull", "bd list --status in_progress --limit 0 --json", "forge.is_merged(ref)", "git fetch --prune refs/bops/claims/*", "git push (lease): delete the ref", "bd close <id> --reason 'merged via <ref> (<sha>)'", "bd dolt push"],
       "output": { "dry_run": "bool", "closed": "string[]", "would_close": "string[]", "pending": "string[]", "unknown": "string[]" },
       "surfaces": { "cc": ["skill"], "clj": "fn", "mcp": { "readOnly": false } }
     },

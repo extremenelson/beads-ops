@@ -184,10 +184,10 @@ func (e *Env) display(ctx context.Context, cur *ledger.Issue, actor, run string,
 	if !comment {
 		return nil
 	}
-	return e.addClaimComment(ctx, id, actor, run)
+	return e.addClaimComment(ctx, id, actor, run, "")
 }
 
-func (e *Env) addClaimComment(ctx context.Context, id, actor, run string) error {
+func (e *Env) addClaimComment(ctx context.Context, id, actor, run, extra string) error {
 	raw, err := e.BD.Run(ctx, "comments", id, "--json")
 	if err != nil {
 		return err
@@ -204,7 +204,7 @@ func (e *Env) addClaimComment(ctx context.Context, id, actor, run string) error 
 			return nil
 		}
 	}
-	_, err = e.BD.Run(ctx, "comments", "add", id, fmt.Sprintf("bops:claimed run=%s actor=%s machine=%s", run, actor, e.Run.Machine))
+	_, err = e.BD.Run(ctx, "comments", "add", id, fmt.Sprintf("bops:claimed run=%s actor=%s machine=%s%s", run, actor, e.Run.Machine, extra))
 	return err
 }
 
@@ -221,6 +221,8 @@ type ClaimOut struct {
 	RefPending    bool      `json:"ref_pending,omitempty"`
 	Holder        *Holder   `json:"holder,omitempty"`
 	Reason        string    `json:"reason,omitempty"`
+	AgeMinutes    int       `json:"age_minutes,omitempty"`
+	StaleMinutes  int       `json:"stale_minutes,omitempty"`
 	Retry         string    `json:"retry,omitempty"`
 	SideEffects   string    `json:"side_effects,omitempty"`
 	Warnings      []string  `json:"warnings,omitempty"`
@@ -291,7 +293,7 @@ func Claim(ctx context.Context, env *Env, id string, force bool) (*ClaimOut, err
 	}
 
 	out.Outcome, out.ClaimedAt = OutcomeClaimed, env.now()
-	if err := env.publishClaim(ctx, cur, out); err != nil {
+	if err := env.publishClaim(ctx, cur, "", out); err != nil {
 		out.LedgerPending = true
 		out.Warnings = append(out.Warnings, "ledger display pending: "+err.Error())
 		env.setLedgerPending(id, true)
@@ -349,8 +351,11 @@ func (e *Env) giveBack(ctx context.Context, id, sha, why string, out *ClaimOut) 
 	return out, nil
 }
 
-func (e *Env) publishClaim(ctx context.Context, cur *ledger.Issue, out *ClaimOut) error {
-	if err := e.display(ctx, cur, e.Run.Actor, e.Run.ID, true); err != nil {
+func (e *Env) publishClaim(ctx context.Context, cur *ledger.Issue, extra string, out *ClaimOut) error {
+	if err := e.display(ctx, cur, e.Run.Actor, e.Run.ID, false); err != nil {
+		return err
+	}
+	if err := e.addClaimComment(ctx, cur.ID, e.Run.Actor, e.Run.ID, extra); err != nil {
 		return err
 	}
 	if got, err := e.show(ctx, cur.ID); err == nil {
@@ -362,31 +367,188 @@ func (e *Env) publishClaim(ctx context.Context, cur *ledger.Issue, out *ClaimOut
 	return e.pushLedger(ctx)
 }
 
-// claimForce keeps the pre-lock takeover until bops-ss6.20.3 replaces it, and
-// records no ref, so the hold is treated as legacy.
+// checkHold settles any unfinished ref write and reports whether this run
+// still owns the bead. A legacy hold has no ref to compare.
+func (e *Env) checkHold(ctx context.Context, id string) (runstate.Entry, bool, error) {
+	entry, ok := e.Lock.Journal.Entry(id)
+	if !ok {
+		return entry, false, nil
+	}
+	if entry.Legacy() {
+		return entry, true, nil
+	}
+	live, _, err := e.Lock.Live(ctx, id)
+	if err != nil {
+		return entry, false, err
+	}
+	state, err := e.Lock.Settle(id, live)
+	if err != nil {
+		return entry, false, err
+	}
+	if state == lock.Displaced || state == lock.Discarded {
+		return entry, false, nil
+	}
+	entry, ok = e.Lock.Journal.Entry(id)
+	return entry, ok, nil
+}
+
+// dropLost forgets a hold that is gone and says who has the bead now.
+func (e *Env) dropLost(ctx context.Context, id string) (*Holder, error) {
+	if err := e.Lock.Journal.Drop(id); err != nil {
+		return nil, err
+	}
+	ref, err := e.Lock.Read(ctx, id)
+	if err != nil {
+		return nil, nil // the hold is gone either way, and the holder is a courtesy
+	}
+	return e.holder(ref), nil
+}
+
+func (e *Env) refuseStale(out *ClaimOut, why string, age time.Duration) (*ClaimOut, error) {
+	out.Outcome, out.Reason = OutcomeRefused, why
+	out.AgeMinutes, out.StaleMinutes = int(age.Minutes()), int(e.staleAfter().Minutes())
+	e.event("claim", out.ID, "force_check", OutcomeRefused, "", nil)
+	return out, nil
+}
+
+// claimForce is the single recovery path for an expired claim or an orphan. It
+// replaces the ref with a lease on the value it just read, so of two takeovers
+// exactly one wins. A landing bead is refused: its work is done.
 func claimForce(ctx context.Context, env *Env, id string) (*ClaimOut, error) {
 	if err := lock.ValidateID(id); err != nil {
 		return nil, err
 	}
-	if _, err := env.BD.Run(ctx, "update", id, "--claim"); err != nil {
+	out := &ClaimOut{ID: id, Run: env.Run.ID, Warnings: []string{}}
+	if err := env.checkRemote(ctx); err != nil {
+		return out.fail(err)
+	}
+	if done, err := env.alreadyHeld(ctx, id, out); done || err != nil {
+		return out, err
+	}
+	if _, err := withLockRetry(ctx, env, "dolt", "pull"); err != nil {
+		return out.fail(&lock.Error{Code: lock.CodeUnreachable, Err: err})
+	}
+	ref, err := env.Lock.Read(ctx, id)
+	if err != nil {
+		return out.fail(err)
+	}
+	cur, err := env.show(ctx, id)
+	if err != nil {
 		return nil, err
 	}
-	run := env.Run.ID
-	if _, err := env.BD.Run(ctx, "label", "add", id, "run:"+run); err != nil {
-		return nil, fmt.Errorf("claimed but could not add run label: %w", err)
+	now, window := env.now(), env.staleAfter()
+	expected, previous := "", ""
+	if ref != nil {
+		expected, previous = ref.SHA, ref.Run
+		age := now.Sub(ref.At)
+		switch {
+		case ref.State == lock.StateLanding:
+			return env.refuseStale(out, "its work has landed and is waiting on the PR; use claim --resume as the holder, or see the recovery section of PROCESS", age)
+		case ref.Anomalous(now):
+			return env.refuseStale(out, fmt.Sprintf("the claim's time %s is ahead of this machine's clock; check both clocks", ref.At.Format(time.RFC3339)), 0)
+		case !ref.Stale(now, window):
+			return env.refuseStale(out, fmt.Sprintf("held by %s and not stale; a person can wait or ask the holder to release it", ref.Actor), age)
+		}
+	} else {
+		runs := cur.LabelsWithPrefix("run:")
+		if cur.Assignee == "" && len(runs) == 0 {
+			out.Outcome, out.Reason = OutcomeRefused, "nothing to take over; use a plain claim"
+			return out, nil
+		}
+		if len(runs) > 0 {
+			previous = runs[0]
+		}
+		age := now.Sub(cur.UpdatedAt)
+		if cur.UpdatedAt.IsZero() || cur.UpdatedAt.After(now) || age <= window {
+			return env.refuseStale(out, fmt.Sprintf("assigned to %q with recent activity; a person can wait or ask them to release it", cur.Assignee), age)
+		}
 	}
-	ev := fmt.Sprintf("bops:claimed run=%s actor=%s machine=%s", run, env.Run.Actor, env.Run.Machine)
-	if _, err := env.BD.Run(ctx, "comments", "add", id, ev); err != nil {
-		return nil, fmt.Errorf("claimed but could not record event: %w", err)
+	res, err := env.Lock.Replace(ctx, id, expected, lock.StateHeld)
+	if err != nil {
+		env.event("claim", id, "ref_replace", OutcomeUnreachable, "", err)
+		return out.fail(err)
 	}
-	if err := env.Lock.Journal.Confirm(id, ""); err != nil {
-		return nil, err
+	out.Warnings = append(out.Warnings, res.Warnings...)
+	if res.Outcome == lock.Lost {
+		out.Outcome, out.Holder = OutcomeLost, env.holder(res.Holder)
+		env.event("claim", id, "ref_replace", OutcomeLost, "", nil)
+		return out, nil
 	}
-	out := &ClaimOut{ID: id, Run: run, Outcome: OutcomeClaimed, ClaimedAt: env.now(), ReadbackOK: true}
-	if _, err := env.BD.Run(ctx, "dolt", "push"); err != nil {
-		return out, fmt.Errorf("claimed locally; push failed: %w", err)
-	}
+	env.event("claim", id, "ref_replace", OutcomeClaimed, res.SHA, nil)
+	out.Outcome, out.ClaimedAt = OutcomeClaimed, now
+	env.finishTakeover(ctx, cur, res.SHA, " takeover="+previous, out)
 	return out, nil
+}
+
+// ClaimResume takes back a landing bead for PR rework (D25). The ref's state
+// and actor decide, not the ledger's label, and the lease separates two
+// machines sharing one actor name.
+func ClaimResume(ctx context.Context, env *Env, id string) (*ClaimOut, error) {
+	if err := lock.ValidateID(id); err != nil {
+		return nil, err
+	}
+	out := &ClaimOut{ID: id, Run: env.Run.ID, Warnings: []string{}}
+	if err := env.checkRemote(ctx); err != nil {
+		return out.fail(err)
+	}
+	if done, err := env.alreadyHeld(ctx, id, out); done || err != nil {
+		return out, err
+	}
+	ref, err := env.Lock.Read(ctx, id)
+	if err != nil {
+		return out.fail(err)
+	}
+	refuse := func(why string) (*ClaimOut, error) {
+		out.Outcome, out.Reason = OutcomeRefused, why
+		env.event("claim", id, "resume_check", OutcomeRefused, "", nil)
+		return out, nil
+	}
+	switch {
+	case ref == nil:
+		return refuse("no claim exists for this bead, so there is nothing to resume; a merged bead is closed by sweep")
+	case ref.State != lock.StateLanding:
+		out.Holder = env.holder(ref)
+		return refuse("the bead is held, not waiting on a PR")
+	case ref.Actor != env.Run.Actor:
+		out.Holder = env.holder(ref)
+		return refuse(fmt.Sprintf("only %s can resume this bead", ref.Actor))
+	}
+	res, err := env.Lock.Replace(ctx, id, ref.SHA, lock.StateHeld)
+	if err != nil {
+		env.event("claim", id, "ref_replace", OutcomeUnreachable, "", err)
+		return out.fail(err)
+	}
+	if res.Outcome == lock.Lost {
+		out.Outcome, out.Holder = OutcomeLost, env.holder(res.Holder)
+		env.event("claim", id, "ref_replace", OutcomeLost, "", nil)
+		return out, nil
+	}
+	env.event("claim", id, "ref_replace", OutcomeClaimed, res.SHA, nil)
+	out.Outcome, out.ClaimedAt = OutcomeClaimed, env.now()
+	if _, err := withLockRetry(ctx, env, "dolt", "pull"); err != nil {
+		out.Warnings = append(out.Warnings, "ledger not pulled: "+err.Error())
+	}
+	cur, err := env.show(ctx, id)
+	if err != nil {
+		out.LedgerPending = true
+		out.Warnings = append(out.Warnings, "ledger display pending: "+err.Error())
+		env.setLedgerPending(id, true)
+		return out, nil
+	}
+	env.finishTakeover(ctx, cur, res.SHA, " resumed="+ref.Run, out)
+	return out, nil
+}
+
+// finishTakeover updates the display after the ref has changed hands.
+func (e *Env) finishTakeover(ctx context.Context, cur *ledger.Issue, sha, extra string, out *ClaimOut) {
+	if err := e.publishClaim(ctx, cur, extra, out); err != nil {
+		out.LedgerPending = true
+		out.Warnings = append(out.Warnings, "ledger display pending: "+err.Error())
+		e.setLedgerPending(cur.ID, true)
+		e.event("claim", cur.ID, "ledger", "pending", sha, err)
+		return
+	}
+	e.event("claim", cur.ID, "ledger", "written", sha, nil)
 }
 
 // ------------------------------------------------------------- release
