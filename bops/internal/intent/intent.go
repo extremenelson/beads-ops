@@ -112,18 +112,12 @@ func Next(ctx context.Context, env *Env, o NextOpts) (*NextOut, error) {
 		return nil, err
 	}
 	// Parents with an in-progress sibling come first in the ordering.
-	activeParents := map[string]bool{}
-	if ipRaw, err := env.BD.Run(ctx, "list", "--status", "in_progress", "--json"); err == nil {
-		if ip, err := ledger.DecodeIssues(ipRaw); err == nil {
-			for _, i := range ip {
-				if i.Parent != "" {
-					activeParents[i.Parent] = true
-				}
-			}
-		}
-	}
+	activeParents, listErr := parentsInProgress(ctx, env)
 	lenv := LintEnv{Pool: env.Run.Pool, Caps: env.caps(), Now: env.now(), StaleAfter: env.staleAfter()}
 	out := &NextOut{Candidates: []Candidate{}}
+	if listErr != nil { // it only affects the order, so a read still answers
+		out.Warnings = append(out.Warnings, "ordering ignores work in progress: "+listErr.Error())
+	}
 	claims := map[string]lock.Ref{}
 	if env.Lock != nil {
 		seen, err := env.Lock.Seen(ctx)
@@ -200,6 +194,25 @@ func Next(ctx context.Context, env *Env, o NextOpts) (*NextOut, error) {
 		out.Candidates = append(out.Candidates, s.c)
 	}
 	return out, nil
+}
+
+// parentsInProgress finds the parents that already have work in flight.
+func parentsInProgress(ctx context.Context, env *Env) (map[string]bool, error) {
+	parents := map[string]bool{}
+	raw, err := env.BD.Run(ctx, "list", "--status", "in_progress", "--json")
+	if err != nil {
+		return parents, err
+	}
+	issues, err := ledger.DecodeIssues(raw)
+	if err != nil {
+		return parents, err
+	}
+	for _, i := range issues {
+		if i.Parent != "" {
+			parents[i.Parent] = true
+		}
+	}
+	return parents, nil
 }
 
 // ---------------------------------------------------------------- note
@@ -591,7 +604,21 @@ func withLockRetry(ctx context.Context, env *Env, args ...string) ([]byte, error
 	return b, err
 }
 
+// lockErrors are the contention messages in the bd 1.3.4 binary. Matching the
+// bare word "lock" also matched "blocked" and "clock".
+var lockErrors = []string{
+	"database is locked",
+	"locked by another dolt process",
+	"lock already held by another process",
+	"lock timeout exceeded",
+}
+
 func isLockError(err error) bool {
 	s := strings.ToLower(err.Error())
-	return strings.Contains(s, "lock")
+	for _, m := range lockErrors {
+		if strings.Contains(s, m) {
+			return true
+		}
+	}
+	return false
 }

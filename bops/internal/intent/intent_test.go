@@ -288,6 +288,7 @@ func callNames(calls [][]string) []string {
 type flaky struct {
 	bdx.Fake
 	failFirst string
+	msg       string
 	n         *int
 }
 
@@ -296,31 +297,58 @@ func (f *flaky) Run(ctx context.Context, args ...string) ([]byte, error) {
 	if key == f.failFirst {
 		*f.n++
 		if *f.n == 1 {
-			return nil, errors.New("bd dolt push: database is locked by another process")
+			return nil, errors.New(f.msg)
 		}
 	}
 	return f.Fake.Run(ctx, args...)
 }
 
-func TestSyncRetriesOnceOnLock(t *testing.T) {
-	calls := 0
-	f := &flaky{Fake: bdx.Fake{Responses: map[string][]byte{"dolt pull": []byte(``), "dolt push": []byte(``)}},
-		failFirst: "dolt push", n: &calls}
-	remote := bareRemote(t)
-	dir := filepath.Join(t.TempDir(), "A")
-	git(t, filepath.Dir(dir), "clone", "-q", remote, dir)
-	s := openStore(t, dir, "A")
-	env := &intent.Env{BD: f, Run: s.Run(), Store: s, Sleep: func(time.Duration) {},
-		Lock: &lock.Lock{Git: lock.Exec{Dir: dir}, Journal: s, Run: "A", Actor: "tester"}}
-	out, err := intent.Sync(context.Background(), env, false)
+func TestSyncRetriesOnlyOnRealLockErrors(t *testing.T) {
+	for _, tc := range []struct {
+		msg   string
+		tries int
+	}{
+		{"bd dolt push: database is locked by another process", 2},
+		{"The Dolt database is locked.", 2},
+		{"the database is locked by another dolt process", 2},
+		{"lock already held by another process", 2},
+		{"Error 1205: lock timeout exceeded", 2},
+		{"push rejected: blocked by a protection rule", 1},
+		{"clock skew detected", 1},
+		{"non-fast-forward", 1},
+	} {
+		t.Run(tc.msg, func(t *testing.T) {
+			calls := 0
+			f := &flaky{Fake: bdx.Fake{Responses: map[string][]byte{"dolt pull": []byte(``), "dolt push": []byte(``)}},
+				failFirst: "dolt push", msg: tc.msg, n: &calls}
+			remote := bareRemote(t)
+			dir := filepath.Join(t.TempDir(), "A")
+			git(t, filepath.Dir(dir), "clone", "-q", remote, dir)
+			s := openStore(t, dir, "A")
+			env := &intent.Env{BD: f, Run: s.Run(), Store: s, Sleep: func(time.Duration) {},
+				Lock: &lock.Lock{Git: lock.Exec{Dir: dir}, Journal: s, Run: "A", Actor: "tester"}}
+			out, err := intent.Sync(context.Background(), env, false)
+			if calls != tc.tries {
+				t.Errorf("push attempts = %d, want %d", calls, tc.tries)
+			}
+			if tc.tries == 2 && (err != nil || !out.Pushed) {
+				t.Errorf("%+v, %v", out, err)
+			}
+			if tc.tries == 1 && err == nil {
+				t.Error("the push failure must be reported")
+			}
+		})
+	}
+}
+
+func TestNextWarnsWhenTheInProgressListingFails(t *testing.T) {
+	f := &bdx.Fake{Responses: map[string][]byte{"ready --json": []byte(readyJSON)}} // no list response, so it fails
+	out, err := intent.Next(context.Background(), newEnv(f), intent.NextOpts{N: 5})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("a read must still answer: %v", err)
 	}
-	if !out.Pulled || !out.Pushed {
-		t.Fatalf("%+v", out)
-	}
-	if calls != 2 {
-		t.Errorf("push should have been attempted twice, got %d", calls)
+	if len(out.Candidates) == 0 || !strings.Contains(strings.Join(out.Warnings, ";"), "work in progress") {
+		t.Errorf("%+v", out)
 	}
 }
 
