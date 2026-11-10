@@ -1,6 +1,6 @@
 # ADR 0001 — A graph layer over beads is a derived read model, never a write path
 
-- **Status:** Accepted, 2026-11-04
+- **Status:** Accepted, 2026-11-04. Amended 2026-11-10 for the claim lock (see [Amendment](#amendment-2026-11-10-a-git-ref-claim-lock))
 - **Scope:** Any index, cache, or graph store that beads-ops (or a consumer such as Kestrel) keeps alongside the beads ledger
 - **Source:** [`docs/research/2026-11-graph-read-model.md`](../research/2026-11-graph-read-model.md) (four research tracks, synthesized 2026-11-04)
 
@@ -31,9 +31,10 @@ to beads through stable CLI surfaces", and the roadmap's "Beads Graph Preview 2"
    `rebuild = truncate + replay`; drift check = rebuild into a temp store and diff.
 2. **All writes go through `bd`** (CLI, `bd serve` HTTP, or the Go library) with
    `--if-revision` / `--if-assignee` compare-and-set where a write is conditional.
-   No direct SQL writes, no custom tables, no second sync fabric.
+   No direct SQL writes, no custom tables, no second sync fabric. (Amended: the
+   claim lock is one narrow exception. See below.)
 3. Durable shared state lives in the ledger as labels, comments, and
-   `metadata` keys (SPEC §3). Per-machine state (watermarks, journal cursors,
+   `metadata` keys (SPEC §3), except claim ownership (amended, see below). Per-machine state (watermarks, journal cursors,
    lease shadows) lives in `$XDG_STATE_HOME/bops/<repo-hash>/`, never in the
    projection and never in beads.
 4. `bd ready` remains the arbiter of what is claimable. The projection answers
@@ -74,7 +75,8 @@ SurrealDB (BSL/SSPL), Neo4j embedded (GPL, single-instance).
   (currently "unchanged, not served over BDP in v0") — the projection then
   becomes a BDP client or is deleted.
 - **Never** promote the projection to a write path, whatever the engine. If a
-  write-side need appears, the answer is a `bd` feature request or a hook.
+  write-side need appears, the answer is a `bd` feature request or a hook. The
+  claim lock is the one exception, and it is not a projection. See below.
 
 ## Consequences
 
@@ -87,3 +89,37 @@ SurrealDB (BSL/SSPL), Neo4j embedded (GPL, single-instance).
   settled here: whether events-journal sequence numbers survive `bd dolt pull`
   across machines (design assumes not), and the exact `bd ready` effect of
   `parent-child` on the pinned bd version.
+
+## Amendment 2026-11-10: a git ref claim lock
+
+**Why.** `--if-assignee` and `bd update --claim` compare and set on one replica
+only. In a two-replica test on bd 1.3.4 both replicas claimed one bead, and
+Dolt's last-write-wins then settled the assignee, so an agent told it had
+succeeded lost the bead and nothing told it so. Decision 2's compare-and-set
+cannot prevent that across machines, and `bd` offers no cross-replica form.
+
+**Decision.** Claim ownership moves to one git ref per bead,
+`refs/bops/claims/<id>`, on the remote the project already uses, written with a
+create-only or leased push. The design is
+[`docs/designs/bops-claim-lock-v0.1.0.md`](../designs/bops-claim-lock-v0.1.0.md).
+
+This changes three statements above:
+
+- **Decision 2.** The lock is a second write path, for ownership only. It adds no
+  server or new service. It carries no issue data: a ref holds only the run,
+  actor, state, a nonce and a timestamp. Every issue write still goes through `bd`.
+- **Decision 3.** Ownership is no longer ledger state. The ref decides who holds a
+  bead. The assignee and the `run:` and `bops:landing` labels become a best-effort
+  display for people and for tools reading raw `bd`.
+- **The "never" switching condition.** The rule against promoting the projection
+  stands. A `bd` feature request remains the preferred answer to a write-side
+  need; the lock exists because the loop cannot wait for one.
+
+**Retirement.** Delete the lock the day `bd` offers cross-replica compare-and-set.
+Ownership then returns to the ledger and this amendment is withdrawn.
+
+**Limits.** The guarantee covers claims made through `bops`. A raw `bd update
+--claim` bypasses the lock, and until they are moved so do `/bead-loop` and
+Kestrel. How often claims really collide is unmeasured, and the two-machine run
+for v0.1.0 records a count. The race itself is reproduced, which is why the lock
+is built before that number exists.
