@@ -250,7 +250,68 @@ func TestSyncRetriesOnceOnLock(t *testing.T) {
 	}
 }
 
+func TestSyncCoversEveryHoldInTheClone(t *testing.T) {
+	f := &bdx.Fake{Responses: map[string][]byte{
+		"dolt pull": []byte(``), "dolt push": []byte(``),
+		"heartbeat x-1": []byte(``), "heartbeat x-2": []byte(``), "heartbeat x-3": []byte(``),
+	}}
+	env := newEnv(f)
+	env.Run.Hold("x-1")
+	env.Store = &fakeHolds{holds: []runstate.Hold{
+		{ID: "x-1", Run: "RUN1"},
+		{ID: "x-2", Run: "OTHER", Worktree: "/live"},
+		{ID: "x-3", Run: "GONE", Worktree: "/removed", Stranded: true},
+	}}
+	out, err := intent.Sync(context.Background(), env, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(out.StrandedHolds, ","); got != "x-3" {
+		t.Errorf("stranded = %q, want x-3", got)
+	}
+	beats := map[string]int{}
+	for _, c := range f.Calls {
+		if c[0] == "heartbeat" {
+			beats[c[1]]++
+		}
+	}
+	for _, id := range []string{"x-1", "x-2", "x-3"} {
+		if beats[id] != 1 {
+			t.Errorf("heartbeats for %s = %d, want 1 (%v)", id, beats[id], beats)
+		}
+	}
+}
+
+func TestReleaseDropsAStrandedHold(t *testing.T) {
+	held := `[{"id":"x-3","status":"in_progress","assignee":"tester","labels":["run:GONE"],"created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}]`
+	f := &bdx.Fake{Responses: map[string][]byte{
+		"show x-3 --json":                                      []byte(held),
+		"update x-3 --assignee  --status open":                 []byte(``),
+		"label remove x-3 run:GONE":                            []byte(``),
+		"label add x-3 bops:hold":                              []byte(``),
+		"comments add x-3 bops:released run=RUN1 reason=stale": []byte(``),
+		"dolt push": []byte(``),
+	}}
+	env := newEnv(f)
+	store := &fakeHolds{holds: []runstate.Hold{{ID: "x-3", Run: "GONE", Stranded: true}}}
+	env.Store = store
+	if _, err := intent.Release(context.Background(), env, "x-3", "stale"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(store.dropped, ",") != "x-3" {
+		t.Errorf("dropped = %v, want x-3", store.dropped)
+	}
+}
+
 // --- helpers
+
+type fakeHolds struct {
+	holds   []runstate.Hold
+	dropped []string
+}
+
+func (f *fakeHolds) Holds() []runstate.Hold { return f.holds }
+func (f *fakeHolds) DropHold(id string)     { f.dropped = append(f.dropped, id) }
 
 type flaky struct {
 	bdx.Fake

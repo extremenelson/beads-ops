@@ -253,7 +253,8 @@ Output:
   "pulled": "bool",
   "pushed": "bool",
   "revision": "string",
-  "unpublished": "int"
+  "unpublished": "int",
+  "stranded_holds": "string[]"
 }
 ```
 

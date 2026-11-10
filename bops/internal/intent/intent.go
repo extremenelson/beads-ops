@@ -18,13 +18,21 @@ import (
 
 // Env is everything an intent needs besides its arguments.
 type Env struct {
-	BD    bdx.Runner
-	Run   *runstate.Run
+	BD  bdx.Runner
+	Run *runstate.Run
+	// Store is the clone's hold state across worktrees. Nil means only Run.
+	Store HoldStore
 	Now   func() time.Time
 	Sleep func(time.Duration) // injectable for the sync retry
 	// StaleAfter is how long a claim may go without a heartbeat/update
 	// before `next` treats it as stale. Default 2h.
 	StaleAfter time.Duration
+}
+
+// HoldStore is the part of the clone's state that spans worktrees.
+type HoldStore interface {
+	Holds() []runstate.Hold
+	DropHold(id string)
 }
 
 func (e *Env) now() time.Time {
@@ -293,6 +301,9 @@ func Release(ctx context.Context, env *Env, id, reason string) (*ReleaseOut, err
 		return nil, fmt.Errorf("released but could not record event: %w", err)
 	}
 	env.Run.Drop(id)
+	if env.Store != nil {
+		env.Store.DropHold(id) // the hold may belong to a removed worktree's run
+	}
 	if _, err := env.BD.Run(ctx, "dolt", "push"); err != nil {
 		return &ReleaseOut{id, reason}, fmt.Errorf("released locally; push failed: %w", err)
 	}
@@ -307,17 +318,21 @@ type SyncOut struct {
 	Pushed      bool   `json:"pushed"`
 	Revision    string `json:"revision"`
 	Unpublished int    `json:"unpublished"`
+	// StrandedHolds are beads held by a worktree that no longer exists.
+	// `bops release <id> --reason stale` from any checkout clears one.
+	StrandedHolds []string `json:"stranded_holds"`
 }
 
-// Sync pulls, heartbeats held claims, and pushes, retrying once after a
-// Dolt lock error (SPEC §4 retry policy).
+// Sync pulls, heartbeats every claim held in this clone, and pushes,
+// retrying once after a Dolt lock error (SPEC §4 retry policy).
 func Sync(ctx context.Context, env *Env, noPush bool) (*SyncOut, error) {
-	out := &SyncOut{}
+	held, stranded := env.holds()
+	out := &SyncOut{StrandedHolds: stranded}
 	if _, err := withLockRetry(ctx, env, "dolt", "pull"); err != nil {
 		return out, err
 	}
 	out.Pulled = true
-	for _, id := range env.Run.Held {
+	for _, id := range held {
 		_, _ = env.BD.Run(ctx, "heartbeat", id) // best effort; lease is advisory
 	}
 	if noPush {
@@ -328,6 +343,29 @@ func Sync(ctx context.Context, env *Env, noPush bool) (*SyncOut, error) {
 	}
 	out.Pushed = true
 	return out, nil
+}
+
+// holds returns every bead held in this clone, and which of them are stranded.
+func (e *Env) holds() (held, stranded []string) {
+	stranded = []string{}
+	seen := map[string]bool{}
+	for _, id := range e.Run.Held {
+		seen[id] = true
+		held = append(held, id)
+	}
+	if e.Store == nil {
+		return held, stranded
+	}
+	for _, h := range e.Store.Holds() {
+		if !seen[h.ID] {
+			seen[h.ID] = true
+			held = append(held, h.ID)
+		}
+		if h.Stranded {
+			stranded = append(stranded, h.ID)
+		}
+	}
+	return held, stranded
 }
 
 func withLockRetry(ctx context.Context, env *Env, args ...string) ([]byte, error) {

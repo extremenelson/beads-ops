@@ -121,7 +121,7 @@
       "args": { "no-push": { "type": "bool", "default": false } },
       "wraps": ["bd dolt pull", "bd heartbeat <id> (held claims)", "bd dolt push"],
       "retry": { "on": "dolt lock", "times": 1, "after_ms": 5000 },
-      "output": { "pulled": "bool", "pushed": "bool", "revision": "string", "unpublished": "int" },
+      "output": { "pulled": "bool", "pushed": "bool", "revision": "string", "unpublished": "int", "stranded_holds": "string[]" },
       "surfaces": { "cc": ["skill", "hook:Stop"], "codex": ["skill"], "clj": "fn" }
     },
     {

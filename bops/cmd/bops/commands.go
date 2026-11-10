@@ -90,27 +90,30 @@ func printKV(w *os.File, v any) {
 	}
 }
 
-func newEnv(ctx context.Context) (*intent.Env, error) {
+func newEnv(mode runstate.Mode) (*intent.Env, *runstate.Store, error) {
 	root, err := os.Getwd()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	run, err := runstate.Load(root)
+	store, err := runstate.Open(root, mode)
 	if err != nil {
-		return nil, fmt.Errorf("run state: %w", err)
+		return nil, nil, fmt.Errorf("run state: %w", err)
 	}
+	run := store.Run()
 	if p := os.Getenv("BOPS_POOL"); p != "" {
 		run.Pool = p
 	}
 	if c := os.Getenv("BOPS_CAPS"); c != "" {
 		run.Caps = strings.Split(c, ",")
 	}
-	return &intent.Env{BD: bdx.Exec{}, Run: run}, nil
+	return &intent.Env{BD: bdx.Exec{}, Run: run, Store: store}, store, nil
 }
 
-func saveRun(env *intent.Env) {
-	if root, err := os.Getwd(); err == nil {
-		_ = env.Run.Save(root)
+// saveRun persists hold state; a failure leaves a claim the state file
+// does not know about, so it must be visible.
+func saveRun(store *runstate.Store, stderr *os.File) {
+	if err := store.Save(); err != nil {
+		fmt.Fprintf(stderr, "bops: could not save run state: %v\n", err)
 	}
 }
 
@@ -125,10 +128,11 @@ func cmdNext(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
-	env, err := newEnv(ctx)
+	env, store, err := newEnv(runstate.Read)
 	if err != nil {
 		return emit(m, "next", asJSON, nil, err, stdout, stderr)
 	}
+	defer store.Close()
 	if *pool != "" {
 		env.Run.Pool = *pool
 	}
@@ -148,12 +152,13 @@ func cmdClaim(ctx context.Context, m *manifest.Manifest, args []string, asJSON b
 		fmt.Fprintln(stderr, "usage: bops claim <id> [--force]")
 		return exitUsage
 	}
-	env, err := newEnv(ctx)
+	env, store, err := newEnv(runstate.Write)
 	if err != nil {
 		return emit(m, "claim", asJSON, nil, err, stdout, stderr)
 	}
+	defer store.Close()
 	out, err := intent.Claim(ctx, env, fs.Arg(0), *force)
-	saveRun(env)
+	saveRun(store, stderr)
 	return emit(m, "claim", asJSON, out, err, stdout, stderr)
 }
 
@@ -166,12 +171,13 @@ func cmdRelease(ctx context.Context, m *manifest.Manifest, args []string, asJSON
 		fmt.Fprintln(stderr, "usage: bops release <id> --reason "+strings.Join(intent.ReleaseReasons, "|"))
 		return exitUsage
 	}
-	env, err := newEnv(ctx)
+	env, store, err := newEnv(runstate.Write)
 	if err != nil {
 		return emit(m, "release", asJSON, nil, err, stdout, stderr)
 	}
+	defer store.Close()
 	out, err := intent.Release(ctx, env, fs.Arg(0), *reason)
-	saveRun(env)
+	saveRun(store, stderr)
 	return emit(m, "release", asJSON, out, err, stdout, stderr)
 }
 
@@ -183,10 +189,11 @@ func cmdSync(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
-	env, err := newEnv(ctx)
+	env, store, err := newEnv(runstate.Write)
 	if err != nil {
 		return emit(m, "sync", asJSON, nil, err, stdout, stderr)
 	}
+	defer store.Close()
 	out, err := intent.Sync(ctx, env, *noPush)
 	return emit(m, "sync", asJSON, out, err, stdout, stderr)
 }
@@ -200,10 +207,11 @@ func cmdLint(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 		fmt.Fprintln(stderr, "usage: bops lint <id> [--strict]")
 		return exitUsage
 	}
-	env, err := newEnv(ctx)
+	env, store, err := newEnv(runstate.Read)
 	if err != nil {
 		return emit(m, "lint", asJSON, nil, err, stdout, stderr)
 	}
+	defer store.Close()
 	raw, err := env.BD.Run(ctx, "show", fs.Arg(0), "--json")
 	if err != nil {
 		return emit(m, "lint", asJSON, nil, err, stdout, stderr)
