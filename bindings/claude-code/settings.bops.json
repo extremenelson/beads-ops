@@ -1,0 +1,15 @@
+{
+  "_comment": "Temporary hooks for the bops loop; use in place of settings.json. SessionStart becomes `bops session-start` once it ships. There is deliberately no Stop hook yet: sync runs a fetch, pull and push, and its cost must be measured before it runs on every turn. Until then the skill tells the agent to run `bops sync` before stopping.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "bd prime" },
+          { "type": "command", "command": "bd list --status in_progress --json 2>/dev/null || true" },
+          { "type": "command", "command": "bops next 2>/dev/null || true" }
+        ]
+      }
+    ]
+  }
+}

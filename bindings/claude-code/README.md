@@ -17,6 +17,18 @@ cp scripts/bd-lint-claim.sh ./scripts/
 alias bdclaim='f(){ scripts/bd-lint-claim.sh "$1" && bd update "$1" --claim; }; f'
 ```
 
+## Using bops
+
+`skills/bops/SKILL.md` and `settings.bops.json` drive the same contract through `bops` instead of raw `bd`. Both are hand-written until the generator ships (`bops gen cc`).
+
+```bash
+go install github.com/extremenelson/beads-ops/bops/cmd/bops@v0.1.0   # or: go install ./cmd/bops from bops/
+mkdir -p .claude/skills && cp -R bindings/claude-code/skills/bops .claude/skills/
+# use settings.bops.json in place of settings.json when merging into .claude/settings.json
+```
+
+There is no Stop hook yet, because `bops sync` runs a fetch, pull and push and its cost on every turn has not been measured. The skill tells the agent to run it before stopping.
+
 ## Autonomous dispatch
 
 Upstream ships `agents/task-agent.md` (ready → claim → execute → close loop). To run it under this process, filter `needs-human` and machine labels before dispatch:
