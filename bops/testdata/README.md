@@ -15,6 +15,19 @@
   issue_type assignee owner labels notes parent dependencies[] {issue_id
   depends_on_id type} created_at updated_at started_at lease_expires_at heartbeat_at`.
 
+## Verified bd syntaxes (bd 1.3.4)
+
+Run against a throwaway `bd init` ledger by `BOPS_INTEGRATION=1 go test ./internal/intent`.
+
+- `bd update <id> --claim` claims atomically on this replica. It refuses
+  `--if-assignee` and `--if-status` (`cannot combine … with --claim`).
+- `bd update <id> --assignee '' --status open|blocked` clears the assignee and
+  sets status in one call.
+- `bd label add|remove <id> <label>`.
+- `bd comments add <id> <text>`, or `-f <file>` for text from a file.
+- `bd comments <id> --json`: array of `{id, issue_id, author, text, created_at}`.
+  There is no `bd comments list`.
+
 ## Open: bd 2.0 JSON envelope
 
 bd warns that `--json` output changes in 2.0 (`BD_JSON_ENVELOPE=1` opts in

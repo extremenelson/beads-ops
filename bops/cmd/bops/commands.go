@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/extremenelson/beads-ops/bops/internal/bdx"
 	"github.com/extremenelson/beads-ops/bops/internal/intent"
@@ -215,6 +216,6 @@ func cmdLint(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 	for _, c := range env.Run.Caps {
 		caps[c] = true
 	}
-	res := intent.Lint(issue, intent.LintEnv{Pool: env.Run.Pool, Caps: caps, Now: env.Now(), StaleAfter: 0, Strict: *strict})
+	res := intent.Lint(issue, intent.LintEnv{Pool: env.Run.Pool, Caps: caps, Now: time.Now().UTC(), StaleAfter: 0, Strict: *strict})
 	return emit(m, "lint", asJSON, &res, nil, stdout, stderr)
 }

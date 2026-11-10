@@ -29,13 +29,17 @@ type LintEnv struct {
 	Caps        map[string]bool
 	Now         time.Time
 	StaleAfter  time.Duration // a run: label with no heartbeat for this long is stale
+	HoldFor     time.Duration // how long bops:hold cools off; zero means defaultHold
 	MaxBodySize int
 	Strict      bool
 	// OpenGates maps bead id -> ids of unsatisfied gates (nil when unknown).
 	OpenGates map[string][]string
 }
 
-const defaultMaxBody = 8 * 1024
+const (
+	defaultMaxBody = 8 * 1024
+	defaultHold    = 120 * time.Minute // SPEC §3.1 hold_minutes default
+)
 
 // Lint evaluates rules W01–W11 against one bead. W11 (cycles) is delegated
 // to bd at claim time and reported here only when OpenGates reports it.
@@ -102,7 +106,7 @@ func Lint(i *ledger.Issue, env LintEnv) LintResult {
 	}
 	// W09 (NEXT: paragraph) and W10 (duplicate title) need comments / the
 	// full list and are evaluated by callers that have them; W11 by bd.
-	if i.HasLabel("bops:hold") {
+	if i.HasLabel("bops:hold") && holdActive(i, env) {
 		fail("W12", "labelled bops:hold (cooling off)")
 	} else {
 		pass("W12")
@@ -135,6 +139,17 @@ func unmetCaps(i *ledger.Issue, have map[string]bool) []string {
 		}
 	}
 	return out
+}
+
+// holdActive reports whether a bops:hold label is still cooling off. A label
+// has no timestamp of its own, so the window runs from the bead's updated_at;
+// a later write extends the hold, and a bead with no timestamp stays held.
+func holdActive(i *ledger.Issue, env LintEnv) bool {
+	hold := env.HoldFor
+	if hold == 0 {
+		hold = defaultHold
+	}
+	return i.UpdatedAt.IsZero() || env.Now.Sub(i.UpdatedAt) < hold
 }
 
 func isStale(i *ledger.Issue, env LintEnv) bool {

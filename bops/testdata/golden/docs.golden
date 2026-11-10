@@ -66,7 +66,7 @@ Take this bead for this run
 
 Preconditions: assignee is empty OR --force; status in (open, ready); no run: label.
 
-Wraps: `bd update <id> --claim --if-assignee ''`, `bd label add <id> run:<ulid>`, `bd comments add <id>`, `bd dolt push`.
+Wraps: `bd update <id> --claim`, `bd label add <id> run:<ulid>`, `bd comments add <id>`, `bd dolt push`.
 
 Output:
 

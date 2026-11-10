@@ -204,16 +204,18 @@ func Claim(ctx context.Context, env *Env, id string, force bool) (*ClaimOut, err
 			return nil, fmt.Errorf("%w: %s is %s", ErrPrecondition, id, cur.Status)
 		}
 	}
-	args := []string{"update", id, "--claim"}
-	if !force {
-		args = append(args, "--if-assignee", "")
-	}
-	if _, err := env.BD.Run(ctx, args...); err != nil {
+	// --claim is bd's own compare-and-set; bd refuses --if-assignee beside it.
+	if _, err := env.BD.Run(ctx, "update", id, "--claim"); err != nil {
 		return nil, err
 	}
 	run := env.Run.ID
 	if _, err := env.BD.Run(ctx, "label", "add", id, "run:"+run); err != nil {
 		return nil, fmt.Errorf("claimed but could not add run label: %w", err)
+	}
+	if cur.HasLabel("bops:hold") {
+		if _, err := env.BD.Run(ctx, "label", "remove", id, "bops:hold"); err != nil {
+			return nil, fmt.Errorf("claimed but could not clear bops:hold: %w", err)
+		}
 	}
 	ev := fmt.Sprintf("bops:claimed run=%s actor=%s machine=%s", run, env.Run.Actor, env.Run.Machine)
 	if _, err := env.BD.Run(ctx, "comments", "add", id, ev); err != nil {
@@ -263,7 +265,16 @@ func Release(ctx context.Context, env *Env, id, reason string) (*ReleaseOut, err
 	if len(runs) > 0 && !contains(runs, env.Run.ID) && reason != "stale" {
 		return nil, fmt.Errorf("%w: %s is held by run %s, not this run (use --reason stale to reclaim)", ErrPrecondition, id, runs[0])
 	}
-	if _, err := env.BD.Run(ctx, "update", id, "--assignee", ""); err != nil {
+	// done stays in_progress until sweep closes it; every other reason
+	// returns the bead to a status bd ready understands.
+	update := []string{"update", id, "--assignee", ""}
+	switch reason {
+	case "blocked":
+		update = append(update, "--status", "blocked")
+	case "human", "scope", "stale":
+		update = append(update, "--status", "open")
+	}
+	if _, err := env.BD.Run(ctx, update...); err != nil {
 		return nil, err
 	}
 	for _, r := range runs {
@@ -271,17 +282,9 @@ func Release(ctx context.Context, env *Env, id, reason string) (*ReleaseOut, err
 			return nil, fmt.Errorf("unassigned but could not remove run label: %w", err)
 		}
 	}
-	switch reason {
-	case "blocked":
-		if _, err := env.BD.Run(ctx, "update", id, "--status", "blocked"); err != nil {
-			return nil, err
-		}
-	case "human":
-		if _, err := env.BD.Run(ctx, "label", "add", id, "needs:human"); err != nil {
-			return nil, err
-		}
-	case "scope", "stale":
-		if _, err := env.BD.Run(ctx, "label", "add", id, "bops:hold"); err != nil {
+	label := map[string]string{"human": "needs:human", "scope": "bops:hold", "stale": "bops:hold", "done": "bops:landing"}[reason]
+	if label != "" {
+		if _, err := env.BD.Run(ctx, "label", "add", id, label); err != nil {
 			return nil, err
 		}
 	}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/extremenelson/beads-ops/bops/internal/bdx"
 	"github.com/extremenelson/beads-ops/bops/internal/intent"
+	"github.com/extremenelson/beads-ops/bops/internal/ledger"
 	"github.com/extremenelson/beads-ops/bops/internal/runstate"
 )
 
@@ -109,8 +110,8 @@ func TestClaimHappyPath(t *testing.T) {
 	after := `[{"id":"x-1","title":"t","status":"in_progress","assignee":"tester","labels":["run:RUN1"],"priority":2,"issue_type":"task","created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}]`
 	f := &bdx.Fake{
 		Responses: map[string][]byte{
-			"update x-1 --claim --if-assignee ":                               []byte(`{}`),
-			"label add x-1 run:RUN1":                                          []byte(``),
+			"update x-1 --claim":     []byte(`{}`),
+			"label add x-1 run:RUN1": []byte(``),
 			"comments add x-1 bops:claimed run=RUN1 actor=tester machine=box": []byte(``),
 			"dolt push": []byte(``),
 		},
@@ -148,29 +149,76 @@ func TestClaimRefusesWhenAssigned(t *testing.T) {
 
 func TestReleaseEffects(t *testing.T) {
 	held := `[{"id":"x-1","status":"in_progress","assignee":"tester","labels":["run:RUN1"],"created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}]`
-	for reason, extra := range map[string]string{
-		"blocked": "update x-1 --status blocked",
-		"human":   "label add x-1 needs:human",
-		"scope":   "label add x-1 bops:hold",
-		"done":    "",
+	for _, tc := range []struct{ reason, update, label string }{
+		{"blocked", "update x-1 --assignee  --status blocked", ""},
+		{"human", "update x-1 --assignee  --status open", "label add x-1 needs:human"},
+		{"scope", "update x-1 --assignee  --status open", "label add x-1 bops:hold"},
+		{"stale", "update x-1 --assignee  --status open", "label add x-1 bops:hold"},
+		{"done", "update x-1 --assignee ", "label add x-1 bops:landing"},
 	} {
 		f := &bdx.Fake{Responses: map[string][]byte{
 			"show x-1 --json":           []byte(held),
-			"update x-1 --assignee ":    []byte(``),
+			tc.update:                   []byte(``),
 			"label remove x-1 run:RUN1": []byte(``),
-			"comments add x-1 bops:released run=RUN1 reason=" + reason: []byte(``),
+			"comments add x-1 bops:released run=RUN1 reason=" + tc.reason: []byte(``),
 			"dolt push": []byte(``),
 		}}
-		if extra != "" {
-			f.Responses[extra] = []byte(``)
+		if tc.label != "" {
+			f.Responses[tc.label] = []byte(``)
 		}
 		env := newEnv(f)
 		env.Run.Hold("x-1")
-		if _, err := intent.Release(context.Background(), env, "x-1", reason); err != nil {
-			t.Fatalf("%s: %v", reason, err)
+		if _, err := intent.Release(context.Background(), env, "x-1", tc.reason); err != nil {
+			t.Fatalf("%s: %v", tc.reason, err)
 		}
 		if len(env.Run.Held) != 0 {
-			t.Errorf("%s: run should no longer hold x-1", reason)
+			t.Errorf("%s: run should no longer hold x-1", tc.reason)
+		}
+	}
+}
+
+func TestClaimRemovesExpiredHold(t *testing.T) {
+	before := `[{"id":"x-1","status":"open","labels":["bops:hold"],"created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}]`
+	after := `[{"id":"x-1","status":"in_progress","assignee":"tester","labels":["run:RUN1"],"created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}]`
+	f := &bdx.Fake{
+		Responses: map[string][]byte{
+			"update x-1 --claim":         []byte(`{}`),
+			"label add x-1 run:RUN1":     []byte(``),
+			"label remove x-1 bops:hold": []byte(``),
+			"comments add x-1 bops:claimed run=RUN1 actor=tester machine=box": []byte(``),
+			"dolt push": []byte(``),
+		},
+		Sequences: map[string][][]byte{"show x-1 --json": {[]byte(before), []byte(after)}},
+	}
+	if _, err := intent.Claim(context.Background(), newEnv(f), "x-1", false); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLintHoldWindow(t *testing.T) {
+	updated := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+	held := func(at time.Time) *ledger.Issue {
+		return &ledger.Issue{ID: "x-1", Status: "open", AcceptanceCriteria: "ac", Parent: "e",
+			Labels: []string{"bops:hold"}, UpdatedAt: at}
+	}
+	for _, tc := range []struct {
+		name string
+		i    *ledger.Issue
+		now  time.Time
+		held bool
+	}{
+		{"inside the window", held(updated), updated.Add(119 * time.Minute), true},
+		{"at the boundary", held(updated), updated.Add(120 * time.Minute), false},
+		{"after the window", held(updated), updated.Add(3 * time.Hour), false},
+		{"no timestamp stays held", held(time.Time{}), updated, true},
+	} {
+		r := intent.Lint(tc.i, intent.LintEnv{Now: tc.now})
+		got := false
+		for _, f := range r.Fails {
+			got = got || f.ID == "W12"
+		}
+		if got != tc.held {
+			t.Errorf("%s: W12 failed=%v, want %v (%+v)", tc.name, got, tc.held, r)
 		}
 	}
 }

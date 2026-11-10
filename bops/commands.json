@@ -40,7 +40,7 @@
       "kind": "write",
       "args": { "id": { "type": "string" }, "force": { "type": "bool", "default": false } },
       "preconditions": ["assignee is empty OR --force", "status in (open, ready)", "no run: label"],
-      "wraps": ["bd update <id> --claim --if-assignee ''", "bd label add <id> run:<ulid>", "bd comments add <id>", "bd dolt push"],
+      "wraps": ["bd update <id> --claim", "bd label add <id> run:<ulid>", "bd comments add <id>", "bd dolt push"],
       "output": { "id": "string", "run": "string", "claimed_at": "string", "readback_ok": "bool" },
       "surfaces": { "cc": ["skill"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": false } }
     },
