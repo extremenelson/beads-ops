@@ -5,6 +5,7 @@ These rules override general guidance:
 
 - Session start: report in_progress + ready before acting. in_progress beats ready.
 - Claim before editing. One claimed bead per session. Claim via `scripts/bd-lint-claim.sh <id> && bd update <id> --claim`; if the lint fails, fix the bead or pick another — do not claim anyway.
+- If `bops` is installed, use this session protocol instead of the `bd update --claim` route: `bops next` → create a worktree for the bead → `bops claim <id>` inside it → work → `bops note <id>` at each milestone and at least hourly → push and open the PR → `bops land <id> --ref <pr-url> --sha <sha> --verify` → `bops release <id> --reason done` → `bops sync`. `bops land` never merges or closes; `bops sweep --dry-run=false` closes beads whose PRs have merged. The `bops` skill has the full loop.
 - Notes use `COMPLETED / IN PROGRESS / NEXT / BLOCKER / KEY DECISION`. `NEXT` is one concrete step a stranger could execute.
 - File discovered work immediately: `bd create "..." --deps discovered-from:<current-id>`. Decide blocker-or-defer; move on.
 - Only `blocks` for hard prerequisites. Validate with `bd blocked`. Name beads by WHAT, never "Phase N".
