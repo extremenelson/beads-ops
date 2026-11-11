@@ -363,9 +363,9 @@ The skill lives at `bindings/kestrel/beads.clj` (draft; see `bindings/kestrel/RE
 | `session-start` | §2.1 — sync, gate check, in_progress beats ready, needs-human/machine filter, throws on missing `NEXT` |
 | `claim!` | §2.2 — runs `bd-lint-claim.sh --json` first; refuses on fail. Claims with `bops claim`, so it holds the `bops` lock; returns `:claimed`, `:held`, `:lost` (with `:holder`) or `:refused` (with `:reason`), and throws with the stable `code` when `bops` could not run |
 | `handoff!` | §4 — Malli-validated note |
-| `discovered!`, `block!`, `gate-human!` | §5, §6 |
-| `close!` | §2.5 — refuses epics |
-| `sync!` | §8 — exit 3 tolerated, offline returns a map |
+| `discovered!`, `block!`, `gate-human!` | §5, §6 — `block!` and `gate-human!` give the claim back with `bops release` (reason `blocked`, `human`), then write the BLOCKER note or the human gate with `bd` |
+| `close!` | §2.5 — refuses epics; `bops land` then `bops release --reason done`; does not close: `bops sweep` closes after the merge |
+| `sync!` | §8 — `bops sync`; offline returns a map |
 
 Integration points in Kestrel:
 
