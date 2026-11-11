@@ -42,6 +42,8 @@ type fakeBD struct {
 	calls   [][]string
 	fail    func(args []string) error
 	onPull  func()
+	ready   []byte // bd ready output; nil means two fixed beads
+	prime   string
 }
 
 func newBD() *fakeBD {
@@ -156,7 +158,14 @@ func (b *fakeBD) Run(_ context.Context, args ...string) ([]byte, error) {
 			}
 		}
 		return nil, nil
+	case "prime":
+		return []byte(b.prime), nil
+	case "gate":
+		return []byte(`[]`), nil
 	case "ready":
+		if b.ready != nil {
+			return b.ready, nil
+		}
 		return []byte(`[{"id":"x-1","title":"t","description":"d","acceptance_criteria":"ac","status":"open","priority":2,"issue_type":"task","owner":"o","created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"},
 			{"id":"x-2","title":"t","description":"d","acceptance_criteria":"ac","status":"open","priority":2,"issue_type":"task","owner":"o","created_at":"2026-10-02T00:00:00Z","updated_at":"2026-10-02T00:00:00Z"}]`), nil
 	case "list":

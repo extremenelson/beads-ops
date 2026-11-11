@@ -61,11 +61,17 @@ func TestEmitExitCodes(t *testing.T) {
 		{"release lost", &intent.ReleaseOut{Outcome: intent.OutcomeLost}, nil, exitNegative, false, ""},
 		{"unreachable", &intent.ClaimOut{Outcome: intent.OutcomeUnreachable}, &lock.Error{Code: lock.CodeUnreachable, Err: errors.New("no")}, exitCantRun, false, lock.CodeUnreachable},
 		{"nil result with error", (*intent.ClaimOut)(nil), errors.New("bad"), exitCantRun, false, ""},
+		{"session-start after a failed sync", &intent.SessionStartOut{Mine: []string{"x-1"}}, errors.New("sync failed"), exitCantRun, false, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			code, got := emitted(t, tc.result, tc.err)
 			if code != tc.code || got["ok"] != tc.ok {
 				t.Errorf("code=%d ok=%v, want %d %v", code, got["ok"], tc.code, tc.ok)
+			}
+			if r, ok := tc.result.(*intent.SessionStartOut); ok && r != nil {
+				if mine, _ := got["mine"].([]any); len(mine) != 1 {
+					t.Errorf("a failed sync must still print the document: %v", got)
+				}
 			}
 			if c, _ := got["code"].(string); c != tc.errCode {
 				t.Errorf("code field = %q, want %q", c, tc.errCode)
@@ -82,7 +88,7 @@ func TestEmitScrubsCredentials(t *testing.T) {
 }
 
 func TestBudgets(t *testing.T) {
-	for name, min := range map[string]time.Duration{"claim": time.Minute, "release": time.Minute, "note": time.Minute, "sync": 2 * time.Minute, "sweep": 5 * time.Minute} {
+	for name, min := range map[string]time.Duration{"claim": time.Minute, "release": time.Minute, "note": time.Minute, "session-start": time.Minute, "sync": 2 * time.Minute, "sweep": 5 * time.Minute} {
 		if budget(name) < min {
 			t.Errorf("%s budget = %v", name, budget(name))
 		}

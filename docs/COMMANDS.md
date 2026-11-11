@@ -307,16 +307,20 @@ Output:
 
 Orient a fresh agent session
 
-Wraps: `sync`, `bd prime`, `stale --older-than 2h`, `bd list --assignee <me> --status in_progress --json`.
+Wraps: `sync --no-push`, `stale --older-than 2h (count, all machines)`, `next (count of workable)`, `bd prime --mcp --max-memory-chars 600 (capped at 3000 bytes)`.
 
 Output:
 
 ```json
 {
   "mine": "string[]",
+  "lost_claims": "string[]",
+  "stranded_holds": "string[]",
   "stale": "int",
   "ready_count": "int",
-  "prime": "string"
+  "synced": "bool",
+  "prime": "string",
+  "warnings": "string[]"
 }
 ```
 

@@ -316,6 +316,23 @@ func cmdSync(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 	return emit(m, "sync", asJSON, out, err, stdout, stderr)
 }
 
+func cmdSessionStart(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
+	fs := flag.NewFlagSet("session-start", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Bool("json", false, "")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: bops session-start")
+		return exitUsage
+	}
+	env, store, err := newEnv(runstate.Read)
+	if err != nil {
+		return emit(m, "session-start", asJSON, nil, err, stdout, stderr)
+	}
+	defer store.Close()
+	out, err := intent.SessionStart(ctx, env)
+	return emit(m, "session-start", asJSON, out, err, stdout, stderr)
+}
+
 func cmdStale(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
 	fs := flag.NewFlagSet("stale", flag.ContinueOnError)
 	fs.SetOutput(stderr)

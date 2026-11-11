@@ -1,13 +1,11 @@
 {
-  "_comment": "Temporary hooks for the bops loop; use in place of settings.json. SessionStart becomes `bops session-start` once it ships. There is deliberately no Stop hook yet: sync runs a fetch, pull and push, and its cost must be measured before it runs on every turn. Until then the skill tells the agent to run `bops sync` before stopping.",
+  "_comment": "Hooks for the bops loop; use in place of settings.json. `bops session-start` pulls (no push), then prints one document: the beads this worktree holds, lost and stranded claims, the stale count, the workable count and bd's minimal prime (about 2 kB, 3-4 s). It replaces upstream's SessionStart `bd prime` hook, so remove that one if `bd setup claude` installed it; keep upstream's PreCompact `bd prime`. `|| true` keeps a failed sync from hiding the document, which then says ok:false. There is deliberately no Stop hook: a full `bops sync` measured about 3 s and pushes the ledger (2026-11-10), and Stop runs after every reply. The skill tells the agent to run `bops sync` before stopping instead.",
   "hooks": {
     "SessionStart": [
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "bd prime" },
-          { "type": "command", "command": "bd list --status in_progress --json 2>/dev/null || true" },
-          { "type": "command", "command": "bops next 2>/dev/null || true" }
+          { "type": "command", "command": "bops session-start || true" }
         ]
       }
     ]

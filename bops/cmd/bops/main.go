@@ -80,6 +80,8 @@ func run(args []string, stdout, stderr *os.File) int {
 		return cmdLint(ctx, m, rest, wantJSON, stdout, stderr)
 	case "stale":
 		return cmdStale(ctx, m, rest, wantJSON, stdout, stderr)
+	case "session-start":
+		return cmdSessionStart(ctx, m, rest, wantJSON, stdout, stderr)
 	}
 	if _, ok := m.Lookup(name); ok {
 		fmt.Fprintf(stderr, "bops %s: specified in contract %d but not yet implemented (did NOT run)\n", name, m.Contract)
@@ -99,7 +101,7 @@ func budget(name string) time.Duration {
 		return 5 * time.Minute
 	case "sync":
 		return 2 * time.Minute
-	case "claim", "release", "note":
+	case "claim", "release", "note", "session-start":
 		return time.Minute
 	}
 	return 30 * time.Second
