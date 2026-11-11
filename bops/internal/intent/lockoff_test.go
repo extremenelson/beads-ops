@@ -344,3 +344,31 @@ func TestLockOffLandIsLostWhenTheLedgerShowsAnotherRun(t *testing.T) {
 		t.Errorf("a lost land wrote metadata %s", n.Metadata)
 	}
 }
+
+// lock.remote names the remote that holds claim refs. With the lock off it is
+// never consulted: no git call, no Dolt remote comparison, no no_origin.
+func TestLockOffIgnoresANonDefaultLockRemote(t *testing.T) {
+	bd := newBD()
+	bd.add("x-1")
+	r := lockOffRig(t, "A", bd)
+	r.env.Lock.Remote = "upstream" // no such git remote exists
+	g := r.env.Lock.Git.(*noGit)
+
+	if out, err := intent.Next(bg, r.env, intent.NextOpts{}); err != nil {
+		t.Fatalf("next: %+v, %v", out, err)
+	}
+	claim, err := intent.Claim(bg, r.env, "x-1", false)
+	if err != nil || claim.Outcome != intent.OutcomeClaimed {
+		t.Fatalf("claim: %+v, %v", claim, err)
+	}
+	saysLockOff(t, claim.Warnings)
+	if out, err := intent.SessionStart(bg, r.env); err != nil || len(out.LostClaims) != 0 {
+		t.Fatalf("session-start: %+v, %v", out, err)
+	}
+	if out, err := intent.Release(bg, r.env, "x-1", "scope"); err != nil || out.Outcome != intent.OutcomeReleased {
+		t.Fatalf("release: %+v, %v", out, err)
+	}
+	if len(g.calls) != 0 || bd.count("dolt remote") != 0 {
+		t.Errorf("git calls = %v; bd calls = %v", g.calls, bd.calls)
+	}
+}
