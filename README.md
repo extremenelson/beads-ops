@@ -47,7 +47,7 @@ cat ../beads-ops/bindings/claude-code/CLAUDE.md.snippet >> CLAUDE.md
 bops next                                 # ranked, workable candidates
 bops claim bd-a1b2 && echo mine           # exit 0 claimed or held; exit 3 lost or refused: pick another
 echo "NEXT: write the parser test" | bops note bd-a1b2
-bops release bd-a1b2 --reason done        # or blocked|scope|stale|human
+bops release bd-a1b2 --reason done        # or blocked|scope|abandoned|human
 ```
 
 `bops claim` takes a bead through a git ref on your remote (`refs/bops/claims/<id>`), so two machines can never both hold it. `bd update --claim` cannot promise that across machines. Claims made with raw `bd`, including `/bead-loop` and the Kestrel binding today, bypass the lock. When something gets stuck, [`PROCESS.md` §12](docs/PROCESS.md#12-recovery-runbook-bops-ledgers) is the runbook.

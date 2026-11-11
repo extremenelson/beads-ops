@@ -705,7 +705,7 @@ func (e *Env) finishTakeover(ctx context.Context, cur *ledger.Issue, sha, extra 
 // ------------------------------------------------------------- release
 
 // ReleaseReasons are the allowed `--reason` values.
-var ReleaseReasons = []string{"done", "blocked", "scope", "stale", "human"}
+var ReleaseReasons = []string{"done", "blocked", "scope", "abandoned", "human"}
 
 // ReleaseOut is the `release` output.
 type ReleaseOut struct {
@@ -868,7 +868,7 @@ func (e *Env) releaseDisplay(ctx context.Context, id, reason string) error {
 	switch reason {
 	case "blocked":
 		update = append(update, "--status", "blocked")
-	case "human", "scope", "stale":
+	case "human", "scope", "abandoned":
 		update = append(update, "--status", "open")
 	}
 	if _, err := e.BD.Run(ctx, update...); err != nil {
@@ -879,7 +879,7 @@ func (e *Env) releaseDisplay(ctx context.Context, id, reason string) error {
 			return err
 		}
 	}
-	label := map[string]string{"human": "needs:human", "scope": "bops:hold", "stale": "bops:hold", "done": "bops:landing"}[reason]
+	label := map[string]string{"human": "needs:human", "scope": "bops:hold", "abandoned": "bops:hold", "done": "bops:landing"}[reason]
 	if label != "" {
 		if _, err := e.BD.Run(ctx, "label", "add", id, label); err != nil {
 			return err

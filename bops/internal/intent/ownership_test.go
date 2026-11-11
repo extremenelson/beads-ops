@@ -705,7 +705,7 @@ func TestReleaseDeletesTheRefAndWritesTheLedger(t *testing.T) {
 		{"blocked", "blocked", ""},
 		{"human", "open", "needs:human"},
 		{"scope", "open", "bops:hold"},
-		{"stale", "open", "bops:hold"},
+		{"abandoned", "open", "bops:hold"},
 	} {
 		t.Run(tc.reason, func(t *testing.T) {
 			remote, bd := bareRemote(t), newBD()
@@ -727,6 +727,24 @@ func TestReleaseDeletesTheRefAndWritesTheLedger(t *testing.T) {
 				t.Error("hold should be gone")
 			}
 		})
+	}
+}
+
+func TestReleaseRefusesTheOldStaleReason(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	before := len(bd.calls)
+	out, err := intent.Release(bg, a.env, "x-1", "stale")
+	if out != nil || err == nil || !strings.Contains(err.Error(), "reason must be one of") {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if len(bd.calls) != before {
+		t.Errorf("ledger touched: %v", bd.calls[before:])
+	}
+	if _, ok := a.store.Entry("x-1"); !ok {
+		t.Error("the hold must survive")
 	}
 }
 
@@ -773,7 +791,7 @@ func TestReleaseWithoutAHoldIsRefused(t *testing.T) {
 	remote, bd := bareRemote(t), newBD()
 	bd.add("x-1").Labels = []string{"run:A"}
 	b := client(t, remote, "B", bd)
-	out, err := intent.Release(bg, b.env, "x-1", "stale")
+	out, err := intent.Release(bg, b.env, "x-1", "abandoned")
 	if err != nil || out.Outcome != intent.OutcomeRefused || !out.Negative() {
 		t.Fatalf("%+v, %v", out, err)
 	}
@@ -845,7 +863,7 @@ func TestStrandedHoldIsNotRefreshedAndCanBeReleased(t *testing.T) {
 		t.Errorf("a stranded hold must not be kept alive: %v", bd.calls)
 	}
 
-	rel, err := intent.Release(bg, fresh.env, "x-1", "stale")
+	rel, err := intent.Release(bg, fresh.env, "x-1", "abandoned")
 	if err != nil || rel.Outcome != intent.OutcomeReleased {
 		t.Fatalf("%+v, %v", rel, err)
 	}

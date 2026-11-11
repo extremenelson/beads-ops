@@ -85,7 +85,7 @@ at=<iso8601>
 | `pool:<name>` | humans / `bd` | partition; absence = default pool |
 | `needs:<cap>` | humans | required machine capability (`gpu`, `macos`, `net:internal`, …) |
 | `needs:human` | humans / `release --reason human` | excluded from `next` until removed |
-| `bops:hold` | `release --reason stale|scope` | cooling-off; excluded from `next` for `hold_minutes` (default 120). A label has no timestamp, so the window runs from the bead's `updated_at`: a later write extends it, and a bead with no `updated_at` stays held |
+| `bops:hold` | `release --reason abandoned|scope` | cooling-off; excluded from `next` for `hold_minutes` (default 120). A label has no timestamp, so the window runs from the bead's `updated_at`: a later write extends it, and a bead with no `updated_at` stays held |
 
 ### 3.2 Comments (append-only events)
 
@@ -95,7 +95,7 @@ Each `bops` write adds exactly one comment whose first line is a typed event, so
 bops:claimed run=<ulid> actor=<actor> machine=<name> [takeover=<old-run> | resumed=<old-run>]
 bops:note run=<ulid>
 <free text, ≥1 line; last paragraph SHOULD start with NEXT: / BLOCKER: / KEY DECISION: / REF:>
-bops:released run=<ulid> reason=<done|blocked|scope|stale|human> 
+bops:released run=<ulid> reason=<done|blocked|scope|abandoned|human> 
 bops:landed run=<ulid> ref=<url> sha=<sha>
 bops:heartbeat run=<ulid>            (only if lease heartbeats are configured to be recorded)
 ```
@@ -174,7 +174,7 @@ Each rule has an id, a severity (`fail`|`warn`), and a one-line rationale; `--st
 | W09 | warn | last `bops:note` ends with a `NEXT:` paragraph (resume readability) |
 | W10 | warn | no sibling bead with the same title (duplicate smell) |
 | W11 | fail | no dependency cycle reachable (delegates to `bd dep cycles`) |
-| W12 | fail | not labelled `bops:hold` (cooling off after a scope/stale release) |
+| W12 | fail | not labelled `bops:hold` (cooling off after a scope/abandoned release) |
 | W13 | fail | in this run's pool: a run serves exactly one pool; unlabelled beads are the default pool, and a pooled run never takes default-pool beads |
 | W14 | fail | no claim ref held by another run, as seen at the last `sync` (evaluated by `next`, which has the refs) |
 
