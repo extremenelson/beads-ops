@@ -1,6 +1,7 @@
 (ns kestrel.skills.beads
   "bd CLI as Kestrel's durable task memory. Policy per docs/PROCESS.md.
-   DRAFT — not yet run against a live bd. See README.md for what to verify."
+   DRAFT — not yet run against a live bd or bops. See README.md for what to
+   verify."
   (:require [babashka.process :as p]
             [cheshire.core :as json]
             [clojure.string :as str]
@@ -84,21 +85,44 @@
 
 ;; --- session protocol (§2) ------------------------------------------------
 
+(defn parse-sync
+  "Pure: turn `bops sync --json`'s exit code and parsed document into a result
+   map (bops/commands.json `sync`).
+     exit 0 -> {:synced true :pulled :pushed :revision :unpublished
+                :lost-claims [...] :stranded-holds [...] :warnings [...]}
+     else   -> {:synced false :offline true :exit .. :code .. :error ..}
+   bops retries a Dolt lock once itself, so there is no transient exit 3 now.
+   :lost-claims are beads someone took from this run: stop working them.
+   Every map keeps the raw document as :doc."
+  [exit doc]
+  (if (= 0 exit)
+    {:synced true :exit exit :doc doc
+     :pulled (boolean (:pulled doc)) :pushed (boolean (:pushed doc))
+     :revision (:revision doc) :unpublished (:unpublished doc)
+     :lost-claims (vec (:lost_claims doc))
+     :stranded-holds (vec (:stranded_holds doc))
+     :warnings (vec (:warnings doc))}
+    {:synced false :offline true :exit exit :doc doc
+     :code (:code doc)
+     :error (or (:error doc) "bops sync produced no JSON result")}))
+
 (defn sync!
-  "bd sync; exit 3 is transient and treated as ok. Never throws — returns a map."
-  []
-  (let [{:keys [exit out]} (p/sh {:continue true} ["bd" "sync" "--json"])]
-    (case exit
-      0 {:synced true}
-      3 {:synced false :transient true}
-      {:synced false :offline true :exit exit :out out})))
+  "`bops sync`: fetch the claim refs, pull, heartbeat this run's holds, finish
+   pending ref deletes, push. Never throws: returns the `parse-sync` map, with
+   {:synced false :offline true :code ..} when bops could not run."
+  ([] (sync! {}))
+  ([cfg]
+   (let [{:keys [exit doc err]} (bops cfg "sync")]
+     (assoc (parse-sync exit doc) :err err))))
 
 (defn session-start
   "Returns {:sync .. :in-progress [...] :ready [...] :resume bead-or-nil}.
-   in_progress beats ready. Skips needs-human and foreign-machine beads.
-   Throws if the resume target is in_progress with no NEXT in its handoff."
-  [{:keys [actor machine-label]}]
-  (let [sync-result (sync!)
+   in_progress beats ready. Skips beads labelled needs-human (PROCESS.md) or
+   needs:human (`bops release --reason human`), and foreign-machine beads.
+   :sync is `sync!`'s map. Throws if the resume target is in_progress with no
+   NEXT in its handoff."
+  [{:keys [actor machine-label] :as cfg}]
+  (let [sync-result (sync! cfg)
         _           (try (bd "gate" "check") (catch Exception _ nil))
         in-prog     (bd "list" "--status" "in_progress")
         ready       (bd "ready")
@@ -107,7 +131,7 @@
                               (or (empty? bound) (contains? ls machine-label))))
         mine        (filter #(= actor (:assignee %)) in-prog)
         eligible    (->> ready
-                         (remove #(some #{"needs-human"} (:labels %)))
+                         (remove #(some #{"needs-human" "needs:human"} (:labels %)))
                          (filter machine?))
         resume      (or (first (sort-by :priority mine))
                         (first (sort-by :priority eligible)))]
@@ -127,41 +151,70 @@
     (try (json/parse-string out true)
          (catch Exception _ {:workable false :fails ["lint produced no JSON"]}))))
 
-(defn parse-claim
-  "Pure: turn `bops claim --json`'s exit code and parsed document into a result
-   map (SPEC §4 ownership outcomes, bops/commands.json `claim`).
-     exit 0, outcome claimed|held -> {:outcome :claimed|:held ...}   you own it
-     exit 3, outcome lost         -> {:outcome :lost :holder {:actor :run :age_minutes}}
-     exit 3, outcome refused      -> {:outcome :refused :reason \"...\"}
-     anything else                -> {:outcome :error :code .. :error .. :exit ..}
-   :error is a run that could not complete (exit 1, or 2 for usage): `code` is
-   the stable code (unreachable, git_auth, lock_unsupported, no_origin,
-   remote_mismatch, ...) and :bops-outcome is bops's own outcome (unreachable
-   carries :retry and :side-effects). Every map keeps the raw document as :doc."
-  [exit doc]
+(def ^:private positive-outcomes
+  "Exit-0 outcomes per ownership command (SPEC §4 ownership outcomes)."
+  {"claim" #{"claimed" "held"} "release" #{"released"} "land" #{"landed"}})
+
+(defn parse-outcome
+  "Pure: turn an ownership command's (`claim`, `release`, `land`) exit code and
+   parsed `--json` document into a result map (SPEC §4 ownership outcomes,
+   bops/commands.json).
+     exit 0, claimed|held|released|landed -> {:outcome :claimed|:held|:released|:landed ...}
+     exit 3, outcome lost    -> {:outcome :lost :holder {:actor :run :age_minutes}}
+     exit 3, outcome refused -> {:outcome :refused :reason \"...\"}
+     anything else           -> {:outcome :error :code .. :error .. :exit ..}
+   A positive outcome that is not the command's own (say `landed` from claim)
+   is :error. :reason on a refusal is release's `detail` (release's own
+   `reason` is the release reason, kept as :release-reason) or claim's and
+   land's `reason`. :error is a run that could not complete (exit 1, or 2 for
+   usage): `code` is the stable code (unreachable, git_auth, lock_unsupported,
+   no_origin, remote_mismatch, ...) and :bops-outcome is bops's own outcome
+   (unreachable carries :retry and :side-effects). Every map keeps the raw
+   document as :doc."
+  [command exit doc]
   (let [outcome (:outcome doc)
-        base    {:id (:id doc) :run (:run doc) :exit exit :doc doc
-                 :warnings (vec (:warnings doc))}]
+        base    (cond-> {:command command :id (:id doc) :run (:run doc) :exit exit
+                         :doc doc :warnings (vec (:warnings doc))}
+                  (= "release" command) (assoc :release-reason (:reason doc)))]
     (cond
-      (and (= 0 exit) (#{"claimed" "held"} outcome))
-      (assoc base :outcome (keyword outcome)
-             :claimed-at (:claimed_at doc)
-             :ledger-pending (boolean (:ledger_pending doc)))
+      (and (= 0 exit) (contains? (positive-outcomes command) outcome))
+      (cond-> (assoc base :outcome (keyword outcome)
+                     :ledger-pending (boolean (:ledger_pending doc)))
+        (= "claim" command)   (assoc :claimed-at (:claimed_at doc))
+        (= "release" command) (assoc :ref-pending (boolean (:ref_pending doc)))
+        (= "land" command)    (assoc :landed (:landed doc)))
 
       (and (= 3 exit) (= "lost" outcome))
       (assoc base :outcome :lost :holder (:holder doc))
 
       (and (= 3 exit) (= "refused" outcome))
-      (assoc base :outcome :refused :reason (:reason doc)
+      (assoc base :outcome :refused
+             :reason (if (= "release" command) (:detail doc) (:reason doc))
              :age-minutes (:age_minutes doc) :stale-minutes (:stale_minutes doc))
 
       :else
       (assoc base :outcome :error
              :bops-outcome outcome
              :code (:code doc)
-             :error (or (:error doc) "bops claim produced no JSON result")
+             :error (or (:error doc) (str "bops " command " produced no JSON result"))
              :retry (:retry doc)
              :side-effects (:side_effects doc)))))
+
+(defn parse-claim   [exit doc] (parse-outcome "claim" exit doc))
+(defn parse-release [exit doc] (parse-outcome "release" exit doc))
+(defn parse-land    [exit doc] (parse-outcome "land" exit doc))
+
+(defn- owned!
+  "Run an ownership command and parse it. Throws ex-info \"bops <command>
+   could not run\" (the parse map plus :id and :err as data) on :error;
+   otherwise returns the parse map, :lost and :refused included."
+  [cfg command id & args]
+  (let [{:keys [exit doc err]} (apply bops cfg command id args)
+        result (parse-outcome command exit doc)]
+    (when (= :error (:outcome result))
+      (throw (ex-info (str "bops " command " could not run")
+                      (assoc result :id id :err err))))
+    result))
 
 (defn claim!
   "Lint, then `bops claim <id>`, which takes the bead through the claim lock
@@ -172,18 +225,12 @@
    Throws ex-info, like `bd` and the lint check, when the bead is not workable
    (\"bead not workable\") or when bops could not run (\"bops claim could not
    run\", with the parse map as data: :code, :error, :exit, :retry,
-   :side-effects). Never falls back to `bd update --claim`.
-   Releasing, landing and closing still go through raw bd here (see README)."
+   :side-effects). Never falls back to `bd update --claim`."
   [cfg id]
   (let [{:keys [workable fails] :as r} (lint cfg id)]
     (when-not workable
       (throw (ex-info "bead not workable" {:id id :fails fails :lint r})))
-    (let [{:keys [exit doc err]} (bops cfg "claim" id)
-          result (parse-claim exit doc)]
-      (when (= :error (:outcome result))
-        (throw (ex-info "bops claim could not run"
-                        (assoc result :id id :err err))))
-      result)))
+    (owned! cfg "claim" id)))
 
 (defn handoff! [id handoff]
   (m/assert Handoff handoff)
@@ -195,24 +242,74 @@
   (:id (one (bd "create" title "-t" (or type "task") "-p" (str (or priority 2))
                 "--deps" (str "discovered-from:" from)))))
 
-(defn block! [id reason]
-  (bd "update" id "--status" "blocked" "--append-notes" (str "BLOCKER: " reason)))
+(defn block!
+  "`bops release <id> --reason blocked`: deletes the claim ref, drops this
+   run's hold, clears the assignee and sets status blocked. Returns the
+   `parse-release` map:
+     :released -> given back; then appends \"BLOCKER: <reason>\" to the notes
+                  with raw bd, because `bops release` takes no text on its
+                  command line (contract 1 implements no --text)
+     :lost     -> someone else holds it (:holder); nothing is written
+     :refused  -> this run does not hold it (:reason); nothing is written
+   Throws ex-info \"bops release could not run\" (:code, :error, :exit,
+   :retry, :side-effects) on exit 1 or 2, and bd's ex-info if the note write
+   fails after a release (the bead is then blocked without its BLOCKER note)."
+  [cfg id reason]
+  (let [result (owned! cfg "release" id "--reason" "blocked")]
+    (when (= :released (:outcome result))
+      (bd "update" id "--append-notes" (str "BLOCKER: " reason)))
+    result))
 
-(defn gate-human! [id reason]
-  (bd "gate" "create" "--type" "human" "--blocks" id "--reason" reason)
-  (bd "label" "add" id "needs-human"))
+(defn gate-human!
+  "`bops release <id> --reason human`: deletes the claim ref, drops this run's
+   hold, clears the assignee, reopens the bead and labels it needs:human.
+   Returns the `parse-release` map. Only on :released does it then, with raw
+   bd, create the human gate (`bd gate create --type human`; bops has no gate
+   command in contract 1) and add the PROCESS.md `needs-human` label, which
+   scripts/bd-lint-claim.sh row 8 checks. :lost and :refused write nothing.
+   Throws ex-info \"bops release could not run\" on exit 1 or 2, and bd's
+   ex-info if a gate or label write fails after the release."
+  [cfg id reason]
+  (let [result (owned! cfg "release" id "--reason" "human")]
+    (when (= :released (:outcome result))
+      (bd "gate" "create" "--type" "human" "--blocks" id "--reason" reason)
+      (bd "label" "add" id "needs-human"))
+    result))
 
 (defn close!
-  "Refuses to close epics (§2.5). Returns the new ready front."
-  [{:keys [id issue_type]} reason]
+  "Finish a bead: `bops land <id> --ref <url> --sha <sha>` records the PR/MR as
+   evidence, then `bops release <id> --reason done` gives the claim back.
+   close! does NOT close the bead: SPEC §2 says only `bops sweep` or a human
+   closes, and sweep closes it once the PR is merged. After a :released result
+   this run holds nothing; the claim ref stays as state=landing (SPEC §3.0),
+   the bead stays in_progress with label bops:landing, and `bops sweep`
+   deletes the ref and closes the bead after the merge.
+   Refuses epics (§2.5) before any write. `opts` is {:ref url :sha commit
+   :verify bool} (:verify passes --verify, checking the sha on the forge).
+   Returns the `parse-release` map with :land (the `parse-land` map) added, or,
+   when land comes back :lost or :refused, that land map: release is then not
+   run. Throws ex-info \"bops land could not run\" or \"bops release could not
+   run\" (:code, :error, :exit, ...) on exit 1 or 2; a release failure after a
+   landing leaves the evidence recorded; while this run still holds the bead,
+   rerunning close! with the same ref and sha lands again without writing
+   (bops treats a repeat landing as a no-op) and retries the release."
+  [cfg {:keys [id issue_type]} {:keys [ref sha verify]}]
   (when (= "epic" issue_type)
     (throw (ex-info "agents do not close epics" {:id id})))
-  (bd "close" id "--reason" reason)
-  (bd "ready"))
+  (when-not (and (seq ref) (seq sha))
+    (throw (ex-info "close! needs :ref (PR/MR URL) and :sha" {:id id})))
+  (let [land (apply owned! cfg "land" id "--ref" ref "--sha" sha
+                    (when verify ["--verify"]))]
+    (if (= :landed (:outcome land))
+      (assoc (owned! cfg "release" id "--reason" "done") :land land)
+      land)))
 
 (comment
   (def cfg {:actor "kestrel@debian-box" :machine-label "debian-box"})
   (session-start cfg)
   (claim! cfg "bd-a1b2")   ; => {:outcome :claimed ...} | :lost | :refused
   (handoff! "bd-a1b2" {:completed "parser" :in-progress "emitter" :next "run make test-emit"})
+  (close! cfg {:id "bd-a1b2" :issue_type "task"}
+          {:ref "https://github.com/o/r/pull/7" :sha "0123abc"})   ; => {:outcome :released :land {...}}
+  (block! cfg "bd-a1b2" "waiting on vendor API key")             ; => {:outcome :released ...}
   )

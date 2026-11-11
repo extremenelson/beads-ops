@@ -19,7 +19,7 @@ Anything beyond these four (slash commands, autonomous loops, worktree dispatch)
 |---|---|---|
 | [`claude-code/`](claude-code/) | **Reference.** Maintainer uses daily | 1 (hooks), 2–4 (CLAUDE.md policy + lint alias) |
 | [`hermes/`](hermes/) | Maintainer's stack; hook surface unverified | 1 via AGENTS.md, 2–4 via policy block |
-| [`kestrel/`](kestrel/) | Maintainer's Clojure orchestrator; draft, not yet run against live `bd` or `bops`; claims through `bops claim` | 1–4 programmatically |
+| [`kestrel/`](kestrel/) | Maintainer's Clojure orchestrator; draft, not yet run against live `bd` or `bops`; claims, lands, releases and syncs through `bops` | 1–4 programmatically |
 | Aider, Cursor, Codex, OpenCode, Gemini CLI, Copilot CLI, Kiro… | **Wanted** | `bd setup <harness>` gives you point 1; the rest is a policy block in the file that harness reads |
 
 ## Writing a new binding
