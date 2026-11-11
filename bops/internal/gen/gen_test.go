@@ -5,6 +5,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	bops "github.com/extremenelson/beads-ops/bops"
@@ -13,6 +14,46 @@ import (
 )
 
 var update = flag.Bool("update", false, "rewrite golden files (a diff here is a contract review)")
+
+// TestDocsArgsAsTheCommandsTakeThem: the docs render each arg the way the
+// command line takes it (manifest.Arg.Flag): the id positional, stdin|file
+// text as --file, never --id or --text.
+func TestDocsArgsAsTheCommandsTakeThem(t *testing.T) {
+	m, err := manifest.Parse(bops.ManifestJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := gen.Docs(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := string(out)
+	for _, bad := range []string{"| `--id` |", "| `--text` |", "| stdin|file"} {
+		if strings.Contains(doc, bad) {
+			t.Errorf("docs contain %q", bad)
+		}
+	}
+	section := func(name string) string {
+		s := doc[strings.Index(doc, "## `bops "+name+"`"):]
+		if i := strings.Index(s[1:], "\n## "); i >= 0 {
+			s = s[:i+1]
+		}
+		return s
+	}
+	for _, c := range []struct{ cmd, want string }{
+		{"claim", "| `<id>` (positional) | string |"},
+		{"note", "| `--file <path>` |"},
+		{"release", "| `--file <path>` \\| `--file -` |"},
+		{"release", "| `--reason` | enum:"},
+	} {
+		if !strings.Contains(section(c.cmd), c.want) {
+			t.Errorf("bops %s: docs lack %q", c.cmd, c.want)
+		}
+	}
+	if strings.Contains(section("release"), "| `--file <path>` |") {
+		t.Errorf("bops release: its optional text also takes --file -")
+	}
+}
 
 func TestGolden(t *testing.T) {
 	m, err := manifest.Parse(bops.ManifestJSON)

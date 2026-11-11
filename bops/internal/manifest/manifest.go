@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 )
 
 // Manifest is the parsed commands.json.
@@ -44,6 +45,21 @@ type Arg struct {
 	Default any      `json:"default,omitempty"`
 	Values  []string `json:"values,omitempty"`
 	Doc     string   `json:"doc,omitempty"`
+}
+
+// Flag names the command-line flag that carries the argument called name, or
+// "" when it is positional. The bead id is positional; text typed stdin|file
+// (stdin|file? when optional) is read through --file, never an argument;
+// every other argument is a flag of its own name.
+func (a Arg) Flag(name string) string {
+	switch {
+	case name == "id":
+		return ""
+	case strings.HasPrefix(a.Type, "stdin|file"):
+		return "file"
+	default:
+		return name
+	}
 }
 
 // Retry describes a bounded retry policy.

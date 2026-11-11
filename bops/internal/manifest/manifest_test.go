@@ -23,6 +23,25 @@ func TestEmbeddedManifestIsValid(t *testing.T) {
 	}
 }
 
+func TestArgFlag(t *testing.T) {
+	cases := []struct {
+		name string
+		typ  string
+		want string
+	}{
+		{"id", "string", ""},
+		{"text", "stdin|file", "file"},
+		{"text", "stdin|file?", "file"},
+		{"reason", "enum", "reason"},
+		{"dry-run", "bool", "dry-run"},
+	}
+	for _, c := range cases {
+		if got := (manifest.Arg{Type: c.typ}).Flag(c.name); got != c.want {
+			t.Errorf("Arg{%q}.Flag(%q) = %q, want %q", c.typ, c.name, got, c.want)
+		}
+	}
+}
+
 func TestValidateRejects(t *testing.T) {
 	cases := map[string]string{
 		"dup":        `{"contract":1,"commands":[{"name":"a","intent":"x","kind":"read","output":{},"surfaces":{"cc":[]}},{"name":"a","intent":"x","kind":"read","output":{},"surfaces":{"cc":[]}}]}`,

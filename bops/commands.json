@@ -67,7 +67,7 @@
         "text": { "type": "stdin|file?", "doc": "Optional. Read only when asked: --file <path>, or --file - for stdin. Never on the command line. Recorded below the event line of the release's bops:released comment; a lost or refused release writes none of it." }
       },
       "effects": { "blocked": "status→blocked", "human": "+needs-human", "scope": "+bops:hold", "abandoned": "+bops:hold", "done": "none; await land/sweep" },
-      "wraps": ["git fetch refs/bops/claims/<id>", "git push (lease): state=landing on done, delete otherwise", "bd update <id> --assignee ''", "bd label remove <id> run:*", "bd comments add <id>", "bd dolt push"],
+      "wraps": ["git fetch refs/bops/claims/<id>", "git push (lease): state=landing on done, delete otherwise", "bd update <id> --assignee ''", "bd label remove <id> run:*", "bd comments add <id> <event> (no text), or bd comments add <id> -f <file> (event line, then the --file text)", "bd dolt push"],
       "outcomes": { "released": 0, "lost": 3, "refused": 3, "unreachable": 1 },
       "output": { "id": "string", "reason": "string", "outcome": "string", "ledger_pending": "bool?", "ref_pending": "bool?", "holder": "object?", "detail": "string?", "warnings": "string[]?" },
       "surfaces": { "cc": ["skill"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": false } }
