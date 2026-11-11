@@ -23,8 +23,10 @@ import (
 	"github.com/extremenelson/beads-ops/bops/internal/runstate"
 )
 
+// DefaultRemote is the lock remote when Lock.Remote is empty (lock.remote).
+const DefaultRemote = "origin"
+
 const (
-	remote     = "origin"
 	claimsRoot = "refs/bops/claims/"
 	seenRoot   = "refs/bops/seen/"
 )
@@ -52,8 +54,8 @@ const (
 	CodeJournal         = "state_write_failed"
 	CodeHoldNotRecorded = "hold_not_recorded"
 	CodeGit             = "git_failed"
-	CodeNoOrigin        = "no_origin"
-	CodeRemoteMismatch  = "remote_mismatch"
+	CodeNoOrigin        = "no_origin"       // the lock remote is missing (named for the default)
+	CodeRemoteMismatch  = "remote_mismatch" // the lock remote is not the Dolt remote
 )
 
 // Error carries a stable code. SHA is set when a ref may remain on the remote
@@ -99,7 +101,19 @@ type Lock struct {
 	Run     string
 	Actor   string
 	Now     func() time.Time
+	Remote  string // git remote that holds the refs; empty means DefaultRemote
 }
+
+// remote is the git remote every lock call names.
+func (l *Lock) remote() string {
+	if l.Remote != "" {
+		return l.Remote
+	}
+	return DefaultRemote
+}
+
+// RemoteName is the git remote the lock uses, for messages.
+func (l *Lock) RemoteName() string { return l.remote() }
 
 // Result describes a ref write that reached a decision.
 type Result struct {
@@ -158,13 +172,13 @@ func (l *Lock) Replace(ctx context.Context, id, expected, state string) (*Result
 		case found && live == sha:
 			return l.won(ctx, id, sha, expected) // the reply was lost, not the push
 		case found && live == expected:
-			return nil, failure(out, pushErr) // nothing changed and nobody else wrote
+			return nil, l.failure(out, pushErr) // nothing changed and nobody else wrote
 		case found:
 			return l.lost(ctx, id)
 		case expected != "":
 			return l.lost(ctx, id) // the ref this run leased on has been deleted
 		case st == noStatus && attempt > 0:
-			return nil, failure(out, pushErr)
+			return nil, l.failure(out, pushErr)
 		case attempt == 0:
 			continue // a holder may have released between the push and the re-read
 		}
@@ -225,7 +239,7 @@ func (l *Lock) Delete(ctx context.Context, id, expected string) (*Result, error)
 		case err != nil:
 			return nil, err
 		case found && live == expected:
-			return nil, failure(out, pushErr)
+			return nil, l.failure(out, pushErr)
 		case found:
 			if err := l.Journal.Drop(id); err != nil {
 				return nil, &Error{Code: CodeJournal, Err: err}
@@ -295,9 +309,9 @@ func (l *Lock) Live(ctx context.Context, id string) (sha string, found bool, err
 	if err := ValidateID(id); err != nil {
 		return "", false, err
 	}
-	out, runErr := l.Git.Run(ctx, Cmd{Args: []string{"ls-remote", remote, claimsRoot + id}})
+	out, runErr := l.Git.Run(ctx, Cmd{Args: []string{"ls-remote", l.remote(), claimsRoot + id}})
 	if runErr != nil {
-		return "", false, failure(out, runErr)
+		return "", false, l.failure(out, runErr)
 	}
 	for _, line := range strings.Split(out.Stdout, "\n") {
 		if f := strings.Fields(line); len(f) == 2 && f[1] == claimsRoot+id {
@@ -315,11 +329,11 @@ func (l *Lock) Read(ctx context.Context, id string) (*Ref, error) {
 		return nil, nil
 	}
 	spec := "+" + claimsRoot + id + ":" + seenRoot + id
-	if out, err := l.Git.Run(ctx, Cmd{Args: []string{"fetch", "--no-tags", remote, spec}}); err != nil {
+	if out, err := l.Git.Run(ctx, Cmd{Args: []string{"fetch", "--no-tags", l.remote(), spec}}); err != nil {
 		if strings.Contains(out.Stderr, "couldn't find remote ref") {
 			return nil, nil // deleted between the two calls
 		}
-		return nil, localFailure(out, err)
+		return nil, l.localFailure(out, err)
 	}
 	refs, err := l.seen(ctx, seenRoot+id)
 	if err != nil {
@@ -336,8 +350,8 @@ func (l *Lock) Read(ctx context.Context, id string) (*Ref, error) {
 // Fetch refreshes the local copy of every claim from the remote.
 func (l *Lock) Fetch(ctx context.Context) error {
 	spec := "+" + claimsRoot + "*:" + seenRoot + "*"
-	if out, err := l.Git.Run(ctx, Cmd{Args: []string{"fetch", "--no-tags", "--prune", remote, spec}}); err != nil {
-		return localFailure(out, err)
+	if out, err := l.Git.Run(ctx, Cmd{Args: []string{"fetch", "--no-tags", "--prune", l.remote(), spec}}); err != nil {
+		return l.localFailure(out, err)
 	}
 	return nil
 }
@@ -350,7 +364,7 @@ func (l *Lock) Seen(ctx context.Context) ([]Ref, error) {
 func (l *Lock) seen(ctx context.Context, pattern string) ([]Ref, error) {
 	out, err := l.Git.Run(ctx, Cmd{Args: []string{"for-each-ref", "--format=%(objectname)%09%(refname)%09%(contents)%00", pattern}})
 	if err != nil {
-		return nil, localFailure(out, err)
+		return nil, l.localFailure(out, err)
 	}
 	refs := []Ref{}
 	for _, rec := range strings.Split(out.Stdout, "\x00") {
@@ -395,7 +409,7 @@ const (
 // applies to lock pushes only (D19). An empty sha deletes the ref.
 func (l *Lock) push(ctx context.Context, ref, sha, expected string) (pushStatus, Output, error) {
 	out, err := l.Git.Run(ctx, Cmd{Args: []string{
-		"push", "--porcelain", "--no-verify", remote,
+		"push", "--porcelain", "--no-verify", l.remote(),
 		"--force-with-lease=" + ref + ":" + expected,
 		sha + ":" + ref,
 	}})
@@ -430,11 +444,11 @@ var authSigns = []string{
 }
 
 // failure classifies a remote git call that did not reach a decision.
-func failure(out Output, err error) error {
+func (l *Lock) failure(out Output, err error) error {
 	stderr := strings.ToLower(out.Stderr)
 	for _, sign := range authSigns {
 		if strings.Contains(stderr, sign) {
-			return &Error{Code: CodeAuth, Err: fmt.Errorf("git could not authenticate to %s: %s; check credentials with `git ls-remote %s`", remote, Scrub(out.Stderr), remote)}
+			return &Error{Code: CodeAuth, Err: fmt.Errorf("git could not authenticate to %s: %s; check credentials with `git ls-remote %s`", l.remote(), Scrub(out.Stderr), l.remote())}
 		}
 	}
 	if err == nil {
@@ -444,18 +458,19 @@ func failure(out Output, err error) error {
 }
 
 // localFailure also separates contention on a local ref from a network fault.
-func localFailure(out Output, err error) error {
+func (l *Lock) localFailure(out Output, err error) error {
 	if strings.Contains(out.Stderr, "cannot lock ref") {
 		return &Error{Code: CodeContention, Err: fmt.Errorf("%w: %s", err, Scrub(out.Stderr))}
 	}
-	return failure(out, err)
+	return l.failure(out, err)
 }
 
-// RemoteURL returns the URL the lock pushes to.
+// RemoteURL returns the URL the lock pushes to. A missing lock remote is
+// CodeNoOrigin, whatever the remote is named.
 func (l *Lock) RemoteURL(ctx context.Context) (string, error) {
-	out, err := l.Git.Run(ctx, Cmd{Args: []string{"remote", "get-url", remote}})
+	out, err := l.Git.Run(ctx, Cmd{Args: []string{"remote", "get-url", l.remote()}})
 	if err != nil {
-		return "", &Error{Code: CodeNoOrigin, Err: fmt.Errorf("the lock needs a git remote named %s: %s", remote, Scrub(out.Stderr))}
+		return "", &Error{Code: CodeNoOrigin, Err: fmt.Errorf("the lock needs a git remote named %s (lock.remote): %s", l.remote(), Scrub(out.Stderr))}
 	}
 	return strings.TrimSpace(out.Stdout), nil
 }

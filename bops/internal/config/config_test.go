@@ -81,6 +81,21 @@ func TestPrecedenceEnvOverUserOverRepo(t *testing.T) {
 	}
 }
 
+func TestLockRemote(t *testing.T) {
+	c, err := newWorld(t, "", "").load()
+	if err != nil || c.LockRemote != "origin" {
+		t.Fatalf("default lock.remote = %q, %v; want origin", c.LockRemote, err)
+	}
+	w := newWorld(t, `{"lock":{"remote":"upstream"}}`, "")
+	if c, err = w.load(); err != nil || c.LockRemote != "upstream" {
+		t.Fatalf("repo lock.remote = %q, %v; want upstream", c.LockRemote, err)
+	}
+	w.env["BOPS_LOCK_REMOTE"] = "team_mirror-2"
+	if c, err = w.load(); err != nil || c.LockRemote != "team_mirror-2" {
+		t.Fatalf("env lock.remote = %q, %v; want team_mirror-2 over the file", c.LockRemote, err)
+	}
+}
+
 func TestUserConfigFallsBackToHomeDotConfig(t *testing.T) {
 	w := newWorld(t, "", "")
 	home := t.TempDir()
@@ -113,6 +128,13 @@ func TestRejectsBadConfig(t *testing.T) {
 		{"invalid json", `{"pool":`, nil, `.bops.json`},
 		{"bad env int", "", map[string]string{"BOPS_STALE_MINUTES": "2h"}, `BOPS_STALE_MINUTES: want a whole number of minutes`},
 		{"bad env bool", "", map[string]string{"BOPS_LINT_STRICT": "yes please"}, `BOPS_LINT_STRICT: want true or false`},
+		{"empty lock remote", `{"lock":{"remote":""}}`, nil, `lock.remote: want a git remote name`},
+		{"lock remote not a string", `{"lock":{"remote":7}}`, nil, `lock.remote: want a string`},
+		{"lock remote looks like a flag", `{"lock":{"remote":"-upstream"}}`, nil, `lock.remote: want a git remote name`},
+		{"lock remote is a URL", "", map[string]string{"BOPS_LOCK_REMOTE": "git@github.com:a/b.git"}, `BOPS_LOCK_REMOTE: lock.remote: want a git remote name`},
+		{"lock remote with a space", "", map[string]string{"BOPS_LOCK_REMOTE": "my remote"}, `BOPS_LOCK_REMOTE`},
+		{"lock remote with dots", "", map[string]string{"BOPS_LOCK_REMOTE": "a..b"}, `BOPS_LOCK_REMOTE`},
+		{"lock remote ending .lock", "", map[string]string{"BOPS_LOCK_REMOTE": "up.lock"}, `BOPS_LOCK_REMOTE`},
 	} {
 		w := newWorld(t, tc.repo, "")
 		for k, v := range tc.env {

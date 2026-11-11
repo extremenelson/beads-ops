@@ -664,6 +664,42 @@ func TestRemoteCheck(t *testing.T) {
 	}
 }
 
+// With lock.remote set, the lock and the ledger check both use that remote,
+// whatever origin points at.
+func TestRemoteCheckUsesTheLockRemote(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	elsewhere := bareRemote(t)
+	git(t, a.dir, "remote", "rename", "origin", "upstream")
+	git(t, a.dir, "remote", "add", "origin", elsewhere)
+	a.env.Lock.Remote = "upstream"
+
+	// origin matches the Dolt remote, but the lock remote does not.
+	bd.remotes = `[{"name":"origin","url":"git+file://` + elsewhere + `"}]`
+	if _, err := intent.Claim(bg, a.env, "x-1", false); lock.CodeOf(err) != lock.CodeRemoteMismatch || !strings.Contains(err.Error(), "upstream") {
+		t.Fatalf("err = %v, want remote_mismatch naming upstream", err)
+	}
+	if liveSHA(t, a, "x-1") != "" {
+		t.Error("no ref may be written to the wrong remote")
+	}
+
+	bd.remotes = `[{"name":"origin","url":"git+file://` + remote + `"}]`
+	mustClaim(t, a, "x-1")
+	if got, live := git(t, remote, "rev-parse", "refs/bops/claims/x-1"), liveSHA(t, a, "x-1"); got == "" || got != live {
+		t.Errorf("ref on upstream = %q, want %q", got, live)
+	}
+	if left := git(t, elsewhere, "for-each-ref", "refs/bops/"); left != "" {
+		t.Errorf("origin got a ref: %s", left)
+	}
+
+	bd.add("x-2")
+	a.env.Lock.Remote = "mirror"
+	if _, err := intent.Claim(bg, a.env, "x-2", false); lock.CodeOf(err) != lock.CodeNoOrigin || !strings.Contains(err.Error(), "mirror") {
+		t.Fatalf("err = %v, want no_origin naming mirror", err)
+	}
+}
+
 func TestReleaseDeletesTheRefAndWritesTheLedger(t *testing.T) {
 	for _, tc := range []struct{ reason, status, label string }{
 		{"blocked", "blocked", ""},

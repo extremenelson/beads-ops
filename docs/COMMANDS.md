@@ -16,7 +16,7 @@ Exit codes: **0** = done, or a read's verdict; **1** = could not run: remote or 
 | `lint` | Is this bead workable? | read |
 | `sync` | Pull, heartbeat, push — with the one retry | write |
 | `session-start` | Orient a fresh agent session | read+sync |
-| `doctor` | Can the claim lock work against origin? | read |
+| `doctor` | Can the claim lock work against its remote (lock.remote, default origin)? | read |
 | `gates` | What is blocking this bead's path? | read |
 | `deps` | Blockers, dependents, longest path | read |
 | `version` | Report bops, contract, and detected bd | read |
@@ -66,7 +66,7 @@ Take this bead for this run
 | `--id` | string |  |  |
 | `--resume` | bool | `false` | Take back a landing bead for PR rework. Only the ref's actor can. |
 
-Preconditions: assignee is empty OR --force; status in (open, ready); no run: label; origin matches the Dolt remote.
+Preconditions: assignee is empty OR --force; status in (open, ready); no run: label; the lock remote (lock.remote, default origin) matches the Dolt remote.
 
 Wraps: `git push refs/bops/claims/<id> (create-only)`, `bd dolt pull`, `bd update <id> --claim`, `bd label add <id> run:<ulid>`, `bd comments add <id>`, `bd dolt push`.
 
@@ -327,11 +327,11 @@ Output:
 
 ## `bops doctor`
 
-Can the claim lock work against origin?
+Can the claim lock work against its remote (lock.remote, default origin)?
 
 Never: write a claim ref or the ledger, leave its probe ref behind silently (a failed delete is a warning naming the command).
 
-Wraps: `origin: git remote get-url origin`, `fetch: git ls-remote origin refs/bops/claims/*`, `push: git push --dry-run (create-only) refs/bops/doctor/<nonce>`, `lock: git push (create-only) refs/bops/doctor/<nonce>, then a second create-only push that must be refused`, `git push (lease): delete the probe ref`.
+Wraps: `origin: git remote get-url <lock.remote>`, `fetch: git ls-remote <lock.remote> refs/bops/claims/*`, `push: git push --dry-run (create-only) refs/bops/doctor/<nonce>`, `lock: git push (create-only) refs/bops/doctor/<nonce>, then a second create-only push that must be refused`, `git push (lease): delete the probe ref`.
 
 Output:
 
