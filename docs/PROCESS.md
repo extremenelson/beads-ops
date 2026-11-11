@@ -306,6 +306,14 @@ Beads is Dolt-backed; `.beads/issues.jsonl` is an export for viewers, not the so
 - **Upgrades:** every machine on a ledger runs a `bops` that knows the lock before anyone claims with it; an older binary ignores the lock. Do not run `bd reclaim` on a `bops` ledger, by hand or on a timer: it ignores the lock.
 - **Local record:** each clone keeps `$XDG_STATE_HOME/bops/<hash>/events.jsonl` (default `~/.local/state/bops/…`), one line per step and outcome. Read it first when an outcome needs explaining.
 
+**Committing the export.** On bd 1.3.4, `.beads/issues.jsonl` on disk can be behind the ledger, and the pre-commit hook does not fix the commit. Auto-export runs at most once per 60 s, so a claim made right after another write is not in the file. Plain `bd export` prints to stdout. The hook rewrites the file after `git add` without staging it. To commit a current export:
+
+1. Run `bd export -o .beads/issues.jsonl`. `-o` is required.
+2. Run `git add .beads/issues.jsonl && git commit`, with no bd write between the two steps. Use a plain commit, not `-a` or `-- <paths>`.
+3. Run `git status --short -- .beads/issues.jsonl`. It must print nothing. If it shows ` M`, export again and run `git add .beads/issues.jsonl && git commit --amend --no-edit`.
+
+From a linked worktree, run step 1 from the worktree root. The hook there also rewrites the main checkout's `.beads/issues.jsonl`. That file is only an export, so ignore the change or discard it. Root cause and reproduction: [research/2026-11-beads-hook-export-skew.md](research/2026-11-beads-hook-export-skew.md) (bops-7fw).
+
 Never `export BEADS_DIR` globally — it overrides every project's own `.beads/`. Use it per-command for the user-level `~/.beads` only.
 
 ---
