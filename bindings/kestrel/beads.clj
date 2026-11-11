@@ -42,6 +42,20 @@
                              (try (json/parse-string err true) (catch Exception _ nil))))))
     (json/parse-string out true)))
 
+(defn bops
+  "Run bops with --json. Never throws on exit status: returns
+   {:exit n :doc parsed-json-or-nil :err stderr}, because exit 3 is a verdict
+   (lost, refused), not a failure. `cfg` supplies :bops-path (default \"bops\")
+   and :actor, passed as BEADS_ACTOR so the claim ref and the ledger assignee
+   match what `session-start` filters on."
+  [{:keys [bops-path actor] :or {bops-path "bops"}} & args]
+  (let [opts (cond-> {:continue true}
+               actor (assoc :extra-env {"BEADS_ACTOR" actor}))
+        {:keys [exit out err]} (p/sh opts (concat [bops-path] args ["--json"]))]
+    {:exit exit
+     :err  err
+     :doc  (try (json/parse-string out true) (catch Exception _ nil))}))
+
 (defn- one [x] (if (sequential? x) (first x) x))
 
 ;; --- handoff notes (§4) ---------------------------------------------------
@@ -113,15 +127,63 @@
     (try (json/parse-string out true)
          (catch Exception _ {:workable false :fails ["lint produced no JSON"]}))))
 
+(defn parse-claim
+  "Pure: turn `bops claim --json`'s exit code and parsed document into a result
+   map (SPEC §4 ownership outcomes, bops/commands.json `claim`).
+     exit 0, outcome claimed|held -> {:outcome :claimed|:held ...}   you own it
+     exit 3, outcome lost         -> {:outcome :lost :holder {:actor :run :age_minutes}}
+     exit 3, outcome refused      -> {:outcome :refused :reason \"...\"}
+     anything else                -> {:outcome :error :code .. :error .. :exit ..}
+   :error is a run that could not complete (exit 1, or 2 for usage): `code` is
+   the stable code (unreachable, git_auth, lock_unsupported, no_origin,
+   remote_mismatch, ...) and :bops-outcome is bops's own outcome (unreachable
+   carries :retry and :side-effects). Every map keeps the raw document as :doc."
+  [exit doc]
+  (let [outcome (:outcome doc)
+        base    {:id (:id doc) :run (:run doc) :exit exit :doc doc
+                 :warnings (vec (:warnings doc))}]
+    (cond
+      (and (= 0 exit) (#{"claimed" "held"} outcome))
+      (assoc base :outcome (keyword outcome)
+             :claimed-at (:claimed_at doc)
+             :ledger-pending (boolean (:ledger_pending doc)))
+
+      (and (= 3 exit) (= "lost" outcome))
+      (assoc base :outcome :lost :holder (:holder doc))
+
+      (and (= 3 exit) (= "refused" outcome))
+      (assoc base :outcome :refused :reason (:reason doc)
+             :age-minutes (:age_minutes doc) :stale-minutes (:stale_minutes doc))
+
+      :else
+      (assoc base :outcome :error
+             :bops-outcome outcome
+             :code (:code doc)
+             :error (or (:error doc) "bops claim produced no JSON result")
+             :retry (:retry doc)
+             :side-effects (:side_effects doc)))))
+
 (defn claim!
-  "Lint, then claim. Throws with the lint fails if not workable.
-  Uses `bd update --claim`, which bypasses the bops claim lock (PROCESS §1);
-  bead bops-ecs moves it to `bops claim`."
+  "Lint, then `bops claim <id>`, which takes the bead through the claim lock
+   (refs/bops/claims/<id>). Returns the `parse-claim` map:
+     :claimed / :held  -> you own the bead; work it
+     :lost             -> someone else holds it (:holder); pick another bead
+     :refused          -> a claim precondition failed (:reason); pick another bead
+   Throws ex-info, like `bd` and the lint check, when the bead is not workable
+   (\"bead not workable\") or when bops could not run (\"bops claim could not
+   run\", with the parse map as data: :code, :error, :exit, :retry,
+   :side-effects). Never falls back to `bd update --claim`.
+   Releasing, landing and closing still go through raw bd here (see README)."
   [cfg id]
   (let [{:keys [workable fails] :as r} (lint cfg id)]
     (when-not workable
       (throw (ex-info "bead not workable" {:id id :fails fails :lint r})))
-    (bd "update" id "--claim")))
+    (let [{:keys [exit doc err]} (bops cfg "claim" id)
+          result (parse-claim exit doc)]
+      (when (= :error (:outcome result))
+        (throw (ex-info "bops claim could not run"
+                        (assoc result :id id :err err))))
+      result)))
 
 (defn handoff! [id handoff]
   (m/assert Handoff handoff)
@@ -151,6 +213,6 @@
 (comment
   (def cfg {:actor "kestrel@debian-box" :machine-label "debian-box"})
   (session-start cfg)
-  (claim! cfg "bd-a1b2")
+  (claim! cfg "bd-a1b2")   ; => {:outcome :claimed ...} | :lost | :refused
   (handoff! "bd-a1b2" {:completed "parser" :in-progress "emitter" :next "run make test-emit"})
   )

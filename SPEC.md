@@ -64,7 +64,7 @@ at=<iso8601>
 - `actor` is unauthenticated free text (`BEADS_ACTOR`, else git `user.name`, else the OS user), and anyone with push access can write these refs. The actor check on `claim --resume` is a safety check, not authentication.
 - A ref message is untrusted input: unknown keys are ignored, size is bounded, and an unreadable or future `at` never counts as stale.
 - Staleness is `stale_minutes` (§10, default 120) from the ref's `at`. `note` refreshes `at`. Set it in the committed `.bops.json` so every machine on a ledger measures the same window: a machine with a shorter one takes over claims sooner.
-- **The guarantee covers claims made through `bops`.** A raw `bd update --claim` writes no ref and bypasses the lock. `/bead-loop` and the Kestrel binding still claim through raw `bd` until bead `bops-ecs` moves them, so they are outside the guarantee. Every machine on a ledger must run a `bops` that knows the lock before the first claim on it.
+- **The guarantee covers claims made through `bops`.** A raw `bd update --claim` writes no ref and bypasses the lock. The Kestrel binding claims through `bops claim`. `/bead-loop` still claims through raw `bd` until bead `bops-t8j` moves it, so it is outside the guarantee. Every machine on a ledger must run a `bops` that knows the lock before the first claim on it.
 
 **`lock.mode: none` (one machine only).** A ledger used on a single machine, with or without a git remote, can turn the lock off in the committed `.bops.json` (`{"lock": {"mode": "none"}}`, §10). No command then reads or writes a claim ref, contacts a remote for locking, or refuses with `no_origin` or `remote_mismatch`; ownership is the ledger alone, as for a claim with no ref:
 

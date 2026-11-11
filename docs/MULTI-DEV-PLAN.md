@@ -324,7 +324,7 @@ Observability: the systemd journal for the timer is the metric source. `journalc
 | Git host drops `refs/dolt/data` | Hub gone | Any recent clone is a full replica; re-push |
 | `.beads/` on a cloud-synced folder | I/O 522 errors, corruption | Prerequisite check; `bd doctor` warns |
 | Crashed agent holds a claim forever | Work blocked for the team | `bops` ledger: `bops claim --force` after 120 idle minutes (PROCESS §12). Without `bops`: lease + `bd heartbeat` + timer-driven `bd reclaim` |
-| Two machines claim one bead | Both agents work it; one loses silently at sync | `bops claim`; raw `bd` claims, `/bead-loop` and the Kestrel binding still bypass it |
+| Two machines claim one bead | Both agents work it; one loses silently at sync | `bops claim`; raw `bd` claims and `/bead-loop` still bypass it (bead `bops-t8j`) |
 | Exit-3 storms (push races) | Nothing lost, but sync stalls | Raise `--attempts`; if chronic with many writers, move to option 3 |
 
 ---

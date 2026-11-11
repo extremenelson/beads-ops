@@ -50,7 +50,7 @@ echo "NEXT: write the parser test" | bops note bd-a1b2
 bops release bd-a1b2 --reason done        # or blocked|scope|abandoned|human
 ```
 
-`bops claim` takes a bead through a git ref on your remote (`refs/bops/claims/<id>`), so two machines can never both hold it. `bd update --claim` cannot promise that across machines. Claims made with raw `bd`, including `/bead-loop` and the Kestrel binding today, bypass the lock. When something gets stuck, [`PROCESS.md` §12](docs/PROCESS.md#12-recovery-runbook-bops-ledgers) is the runbook.
+`bops claim` takes a bead through a git ref on your remote (`refs/bops/claims/<id>`), so two machines can never both hold it. `bd update --claim` cannot promise that across machines. Claims made with raw `bd` bypass the lock. The Kestrel binding claims through `bops claim`; `/bead-loop` still claims through raw `bd` until bead `bops-t8j` moves it. When something gets stuck, [`PROCESS.md` §12](docs/PROCESS.md#12-recovery-runbook-bops-ledgers) is the runbook.
 
 For a team on many machines, follow [`docs/MULTI-DEV-PLAN.md`](docs/MULTI-DEV-PLAN.md) phases 0–5.
 
