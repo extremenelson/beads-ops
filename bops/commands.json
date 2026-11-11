@@ -129,7 +129,7 @@
       "intent": "Pull, heartbeat, push — with the one retry",
       "kind": "write",
       "args": { "no-push": { "type": "bool", "default": false } },
-      "wraps": ["git fetch --prune refs/bops/claims/*", "bd dolt pull", "bd heartbeat <id> (held claims)", "bd dolt push"],
+      "wraps": ["git fetch --prune refs/bops/claims/*", "bd dolt pull", "bd heartbeat <id> (held claims)", "bd update <id> --assignee '' --status open; bd label remove <id> run:<ulid> (this run's claim whose ref is gone and that nobody took)", "bd dolt push"],
       "retry": { "on": "dolt lock", "times": 1, "after_ms": 5000 },
       "output": { "pulled": "bool", "pushed": "bool", "revision": "string", "unpublished": "int", "stranded_holds": "string[]", "lost_claims": "string[]", "warnings": "string[]?" },
       "surfaces": { "cc": ["skill", "hook:Stop"], "codex": ["skill"], "clj": "fn" }

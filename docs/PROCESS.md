@@ -430,7 +430,7 @@ The old holder's next `bops sync` lists the bead in `lost_claims` and drops it. 
 
 **You were displaced** (`lost` from `note`, `land` or `release`, or the bead in `lost_claims`). Stop working on that bead. Push your branch, and put what you learned where the new holder will see it: a comment on the bead, or the text from `saved_to`.
 
-**A ledger claim with no ref.** The assignee and `run:` label are set but there is no claim ref: a raw `bd update --claim`, a claim made before the lock, or a ref deleted with no new holder. A plain claim refuses it and `--force` waits 120 minutes from `updated_at`. If the assignee is you, clear the display yourself instead of waiting:
+**A ledger claim with no ref.** The assignee and `run:` label are set but there is no claim ref: a raw `bd update --claim`, a claim made before the lock, or a ref deleted with no new holder. A plain claim refuses it and `--force` waits 120 minutes from `updated_at`. When the ref of a `bops` claim is deleted and nobody takes the bead, the holder's next `bops sync` returns it to the pool by itself and lists it in `lost_claims`. For a raw `bd` claim, or a holder whose clone is gone, if the assignee is you, clear the display yourself instead of waiting:
 
 ```bash
 bd update <id> --assignee '' --status open

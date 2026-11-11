@@ -147,7 +147,7 @@ The non-holder path for `--reason stale` is removed, so only the holder can rele
 2. `delete_pending`: retry the delete, treating an absent ref as done.
 3. Stranded: report it, and do not refresh or heartbeat it, so a dead worktree cannot keep a lock alive.
 4. Legacy, with no sha: leave it alone.
-5. Ref absent or different: report it in `lost_claims[]` and drop the hold.
+5. Ref absent or different: report it in `lost_claims[]` and drop the hold. If the ref is absent and the bead is still in progress under this run's `run:` label and not `bops:landing`, also return it to the pool (assignee cleared, status open, label removed), because nobody holds it (`bops-ss6.25`).
 6. `ledger_pending`: retry the ledger writes, checking the bead before each one.
 7. Every remaining hold: compare the ledger with the ref and, if they differ, rewrite the display with `bd update --assignee --status --force` and the labels. This also undoes a displaced run's unpublished release once that run has pushed.
 

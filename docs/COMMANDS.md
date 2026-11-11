@@ -287,7 +287,7 @@ Pull, heartbeat, push — with the one retry
 
 Retry: on dolt lock, 1 time(s), after 5000 ms.
 
-Wraps: `git fetch --prune refs/bops/claims/*`, `bd dolt pull`, `bd heartbeat <id> (held claims)`, `bd dolt push`.
+Wraps: `git fetch --prune refs/bops/claims/*`, `bd dolt pull`, `bd heartbeat <id> (held claims)`, `bd update <id> --assignee '' --status open; bd label remove <id> run:<ulid> (this run's claim whose ref is gone and that nobody took)`, `bd dolt push`.
 
 Output:
 

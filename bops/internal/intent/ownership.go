@@ -766,8 +766,33 @@ type SyncOut struct {
 
 type cloneHold struct {
 	id       string
+	run      string
 	stranded bool
 	entry    runstate.Entry
+}
+
+// clearOwnDisplay returns a bead to the pool when this clone's claim ref is
+// gone and nobody took it: otherwise the ledger keeps showing a claim nobody
+// holds, which a plain claim refuses and --force waits 120 minutes on. It
+// acts only on a bead still in progress under this run's label. Another
+// run's claim repairs the display itself; a landing bead with no ref is
+// sweep's crash-recovery case; a closed bead is done.
+func (e *Env) clearOwnDisplay(ctx context.Context, h cloneHold) error {
+	cur, err := e.show(ctx, h.id)
+	if err != nil {
+		return err
+	}
+	if h.run == "" || cur.Status != "in_progress" || !cur.HasLabel("run:"+h.run) || cur.HasLabel("bops:landing") {
+		return nil
+	}
+	if _, err := e.BD.Run(ctx, "update", h.id, "--assignee", "", "--status", "open"); err != nil {
+		return err
+	}
+	if _, err := e.BD.Run(ctx, "label", "remove", h.id, "run:"+h.run); err != nil {
+		return err
+	}
+	e.event("sync", h.id, "display_cleared", OutcomeLost, "", nil)
+	return nil
 }
 
 // allHolds lists every hold in this clone, this worktree's first.
@@ -776,7 +801,7 @@ func (e *Env) allHolds() []cloneHold {
 	seen := map[string]bool{}
 	for _, id := range e.Run.HeldIDs() {
 		seen[id] = true
-		holds = append(holds, cloneHold{id: id, entry: e.Run.Held[id]})
+		holds = append(holds, cloneHold{id: id, run: e.Run.ID, entry: e.Run.Held[id]})
 	}
 	if e.Store == nil {
 		return holds
@@ -784,7 +809,7 @@ func (e *Env) allHolds() []cloneHold {
 	for _, h := range e.Store.Holds() {
 		if !seen[h.ID] {
 			seen[h.ID] = true
-			holds = append(holds, cloneHold{id: h.ID, stranded: h.Stranded, entry: h.Entry})
+			holds = append(holds, cloneHold{id: h.ID, run: h.Run, stranded: h.Stranded, entry: h.Entry})
 		}
 	}
 	return holds
@@ -862,6 +887,11 @@ func (e *Env) syncHold(ctx context.Context, h cloneHold, refs map[string]lock.Re
 		e.event("sync", h.id, "ref_check", OutcomeLost, live, nil)
 		if err := e.Lock.Journal.Drop(h.id); err != nil {
 			out.Warnings = append(out.Warnings, h.id+": "+err.Error())
+		}
+		if !found {
+			if err := e.clearOwnDisplay(ctx, h); err != nil {
+				out.Warnings = append(out.Warnings, h.id+": claim display not cleared: "+err.Error())
+			}
 		}
 		return false
 	}
