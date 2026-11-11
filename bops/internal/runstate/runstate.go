@@ -171,6 +171,9 @@ func Open(start string, mode Mode) (*Store, error) {
 		return nil, err
 	}
 	s.run = s.st.Runs[worktree]
+	if a := os.Getenv("BEADS_ACTOR"); a != "" {
+		s.run.Actor = a // the environment names who is acting now, not who created the run
+	}
 	if mode == Read {
 		s.Close()
 	}
@@ -311,7 +314,7 @@ func (s *Store) update(fn func()) error {
 }
 
 // refresh re-reads the file while keeping s.run the same pointer, because
-// callers hold it. Pool and caps are per-process overrides and stay.
+// callers hold it. Pool, caps and actor are per-process overrides and stay.
 func (s *Store) refresh() error {
 	if err := s.read(); err != nil {
 		return err
@@ -320,9 +323,9 @@ func (s *Store) refresh() error {
 		return nil
 	}
 	if fresh := s.st.Runs[s.worktree]; fresh != nil {
-		pool, caps := s.run.Pool, s.run.Caps
+		pool, caps, actor := s.run.Pool, s.run.Caps, s.run.Actor
 		*s.run = *fresh
-		s.run.Pool, s.run.Caps = pool, caps
+		s.run.Pool, s.run.Caps, s.run.Actor = pool, caps, actor
 	}
 	s.st.Runs[s.worktree] = s.run
 	return nil

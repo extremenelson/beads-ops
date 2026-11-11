@@ -266,9 +266,7 @@ func Claim(ctx context.Context, env *Env, id string, force bool) (*ClaimOut, err
 		return nil, err
 	}
 	if why := notClaimable(cur); why != "" {
-		out.Outcome, out.Reason = OutcomeRefused, why
-		env.event("claim", id, "precondition", OutcomeRefused, "", nil)
-		return out, nil
+		return env.refuseOrLose(ctx, id, why, out), nil
 	}
 	res, err := env.Lock.Acquire(ctx, id)
 	if err != nil {
@@ -277,6 +275,11 @@ func Claim(ctx context.Context, env *Env, id string, force bool) (*ClaimOut, err
 	}
 	out.Warnings = append(out.Warnings, res.Warnings...)
 	if res.Outcome == lock.Lost {
+		if res.Holder != nil && res.Holder.Run == env.Run.ID {
+			out.Outcome = OutcomeHeld // two commands in one worktree raced
+			env.event("claim", id, "ref_create", OutcomeHeld, res.Holder.SHA, nil)
+			return out, nil
+		}
 		out.Outcome, out.Holder = OutcomeLost, env.holder(res.Holder)
 		env.event("claim", id, "ref_create", OutcomeLost, "", nil)
 		return out, nil
@@ -302,6 +305,24 @@ func Claim(ctx context.Context, env *Env, id string, force bool) (*ClaimOut, err
 	}
 	env.event("claim", id, "ledger", "written", res.SHA, nil)
 	return out, nil
+}
+
+// refuseOrLose explains a bead the ledger says is taken. Worktrees of one clone
+// share a ledger, so a racing command can see the winner's assignee before the
+// ref would have told it. If a live claim exists, the ref gives the real answer.
+func (e *Env) refuseOrLose(ctx context.Context, id, why string, out *ClaimOut) *ClaimOut {
+	if ref, err := e.Lock.Read(ctx, id); err == nil && ref != nil && ref.State == lock.StateHeld {
+		if ref.Run == e.Run.ID {
+			out.Outcome = OutcomeHeld
+		} else {
+			out.Outcome, out.Holder = OutcomeLost, e.holder(ref)
+		}
+		e.event("claim", id, "precondition", out.Outcome, ref.SHA, nil)
+		return out
+	}
+	out.Outcome, out.Reason = OutcomeRefused, why
+	e.event("claim", id, "precondition", OutcomeRefused, "", nil)
+	return out
 }
 
 // alreadyHeld handles a repeat claim, including one whose first attempt never

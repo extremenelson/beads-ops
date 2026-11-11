@@ -407,6 +407,40 @@ func TestRepeatClaimAdoptsAPushThatLanded(t *testing.T) {
 	}
 }
 
+// Two commands in one worktree can race. The loser's own run holds the bead.
+func TestLosingToThisRunIsHeld(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	other := &lock.Lock{Git: a.git, Journal: newMemJournal(), Run: "A", Actor: "tester"}
+	if _, err := other.Acquire(bg, "x-1"); err != nil {
+		t.Fatal(err)
+	}
+	out, err := intent.Claim(bg, a.env, "x-1", false)
+	if err != nil || out.Outcome != intent.OutcomeHeld || out.Negative() {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if bd.wrote("x-1") {
+		t.Errorf("no second set of ledger writes: %v", bd.calls)
+	}
+}
+
+// A note moves the claim's age forward, so working steadily is not stale.
+func TestNotingKeepsAClaimFromGoingStale(t *testing.T) {
+	a, b, _, _ := pair(t, "x-1")
+	start := time.Now().UTC().Add(-150 * time.Minute)
+	a.env.Lock.Now = func() time.Time { return start }
+	mustClaim(t, a, "x-1")
+	a.env.Lock.Now = func() time.Time { return start.Add(90 * time.Minute) }
+	if out, err := intent.Note(bg, a.env, "x-1", "w\n\nNEXT: x"); err != nil || out.Outcome != intent.OutcomeNoted {
+		t.Fatal(out, err)
+	}
+	out, err := intent.Claim(bg, b.env, "x-1", true)
+	if err != nil || out.Outcome != intent.OutcomeRefused {
+		t.Fatalf("a run that noted an hour ago must not be stale: %+v, %v", out, err)
+	}
+}
+
 func TestPreconditionsRefuseBeforeAnyRef(t *testing.T) {
 	remote, bd := bareRemote(t), newBD()
 	bd.add("assigned").Assignee = "someone"
@@ -425,6 +459,39 @@ func TestPreconditionsRefuseBeforeAnyRef(t *testing.T) {
 	if out, _ := intent.Claim(bg, a.env, "assigned", false); !strings.Contains(out.Reason, "claim --force") {
 		t.Errorf("reason should name the recovery: %q", out.Reason)
 	}
+}
+
+// A shared ledger can show the winner's assignee before the ref is consulted.
+func TestAssignedBeadReportsWhatTheRefSays(t *testing.T) {
+	t.Run("another run holds it", func(t *testing.T) {
+		a, b, _, bdB := pair(t, "x-1")
+		mustClaim(t, a, "x-1")
+		bdB.beads["x-1"].Assignee = "tester"
+		out, err := intent.Claim(bg, b.env, "x-1", false)
+		if err != nil || out.Outcome != intent.OutcomeLost || out.Holder == nil || out.Holder.Run != "A" {
+			t.Fatalf("%+v, %v", out, err)
+		}
+	})
+	t.Run("this run holds it", func(t *testing.T) {
+		remote, bd := bareRemote(t), newBD()
+		bd.add("x-1").Assignee = "tester"
+		a := client(t, remote, "A", bd)
+		other := &lock.Lock{Git: a.git, Journal: newMemJournal(), Run: "A", Actor: "tester"}
+		if _, err := other.Acquire(bg, "x-1"); err != nil {
+			t.Fatal(err)
+		}
+		out, err := intent.Claim(bg, a.env, "x-1", false)
+		if err != nil || out.Outcome != intent.OutcomeHeld {
+			t.Fatalf("%+v, %v", out, err)
+		}
+	})
+	t.Run("a landing ref stays refused", func(t *testing.T) {
+		a, _ := landed(t)
+		out, err := intent.Claim(bg, a.env, "x-1", false)
+		if err != nil || out.Outcome != intent.OutcomeRefused {
+			t.Fatalf("%+v, %v", out, err)
+		}
+	})
 }
 
 func TestPullShowingTheBeadTakenGivesTheRefBack(t *testing.T) {

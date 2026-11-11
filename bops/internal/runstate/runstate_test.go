@@ -373,6 +373,22 @@ func TestStrandedHoldIsFinishedFromAnotherWorktree(t *testing.T) {
 	}
 }
 
+func TestBeadsActorOverridesTheSavedActor(t *testing.T) {
+	root, _ := repo(t)
+	open(t, root, Read)
+	t.Setenv("BEADS_ACTOR", "someone-else")
+	s := open(t, root, Read)
+	if s.Run().Actor != "someone-else" {
+		t.Fatalf("actor = %q", s.Run().Actor)
+	}
+	if err := s.Intend("x-1", "aaa"); err != nil {
+		t.Fatal(err)
+	}
+	if s.Run().Actor != "someone-else" {
+		t.Errorf("a journal write reverted the actor to %q", s.Run().Actor)
+	}
+}
+
 func TestSaveNeedsWriteMode(t *testing.T) {
 	root, _ := repo(t)
 	if err := open(t, root, Read).Save(); err == nil {
