@@ -237,6 +237,8 @@ func runDoctor(t *testing.T, prepare func(clone string)) (int, map[string]any) {
 	t.Helper()
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // doctor reads lock.mode
+	t.Setenv("BOPS_LOCK_MODE", "")
 	root := t.TempDir()
 	git(t, root, "init", "-q", "--bare", "remote.git")
 	git(t, root, "clone", "-q", "remote.git", "clone")
@@ -281,6 +283,32 @@ func TestDoctorFailingCheckExitsNonZero(t *testing.T) {
 		t.Fatalf("exit %d: %v", code, got)
 	}
 	if failed, _ := got["failed"].([]any); len(failed) != 1 || failed[0] != "origin" {
+		t.Errorf("failed = %v", got["failed"])
+	}
+}
+
+// With lock.mode none there is no lock to check, even with no remote at all.
+func TestDoctorSkipsWhenTheLockIsOff(t *testing.T) {
+	code, got := runDoctor(t, func(clone string) {
+		git(t, clone, "remote", "remove", "origin")
+		if err := os.WriteFile(filepath.Join(clone, ".bops.json"), []byte(`{"lock":{"mode":"none"}}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if code != exitVerdict || got["ok"] != true {
+		t.Fatalf("exit %d: %v", code, got)
+	}
+	checks, _ := got["checks"].([]any)
+	if len(checks) != 4 {
+		t.Fatalf("checks = %v", checks)
+	}
+	for _, c := range checks {
+		m := c.(map[string]any)
+		if m["status"] != "skip" || !strings.Contains(m["detail"].(string), "lock.mode is none") {
+			t.Errorf("check %v", m)
+		}
+	}
+	if failed, _ := got["failed"].([]any); len(failed) != 0 {
 		t.Errorf("failed = %v", got["failed"])
 	}
 }

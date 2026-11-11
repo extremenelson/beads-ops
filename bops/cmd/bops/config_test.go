@@ -18,7 +18,7 @@ func configDir(t *testing.T, repoJSON string) {
 	t.Chdir(dir)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	for _, k := range []string{"BOPS_POOL", "BOPS_CAPS", "BOPS_STALE_MINUTES", "BOPS_HOLD_MINUTES"} {
+	for _, k := range []string{"BOPS_POOL", "BOPS_CAPS", "BOPS_STALE_MINUTES", "BOPS_HOLD_MINUTES", "BOPS_LOCK_MODE"} {
 		t.Setenv(k, "")
 	}
 	if repoJSON != "" {
@@ -53,6 +53,18 @@ func TestNewEnvDefaultsTo120Minutes(t *testing.T) {
 	defer store.Close()
 	if env.StaleAfter != 120*time.Minute || env.HoldFor != 120*time.Minute {
 		t.Errorf("stale=%v hold=%v, want 120m each", env.StaleAfter, env.HoldFor)
+	}
+}
+
+func TestNewEnvTurnsTheLockOff(t *testing.T) {
+	configDir(t, `{"lock":{"mode":"none"}}`)
+	env, store, err := newEnv(runstate.Read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if !env.LockOff {
+		t.Error("lock.mode none in .bops.json did not turn the lock off")
 	}
 }
 
