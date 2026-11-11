@@ -772,6 +772,91 @@ func TestNoDoltRemote(t *testing.T) {
 	})
 }
 
+// saysNoDoltRemote checks that text names the missing Dolt remote and both
+// fixes: add one, or set lock.mode none.
+func saysNoDoltRemote(t *testing.T, what, text string) {
+	t.Helper()
+	for _, want := range []string{"no Dolt remote", "bd dolt remote add", "lock.mode"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("%s: %q does not say %q", what, text, want)
+		}
+	}
+}
+
+// A claim made before claims refused a missing Dolt remote, or a Dolt remote
+// removed later, leaves a ref-mode hold whose ledger has nowhere to go. Sync,
+// session-start and sweep name that cause instead of bd's "no remote"; land
+// and release finish and warn that the ledger was not published.
+func TestRefModeWithNoDoltRemoteNamesTheCause(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	bd.add("x-2")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	mustClaim(t, a, "x-2")
+	doltWithNoRemote(bd)
+	calls := len(bd.calls)
+
+	sy, err := intent.Sync(bg, a.env, false)
+	if lock.CodeOf(err) != lock.CodeRemoteMismatch || sy == nil || sy.Pulled {
+		t.Fatalf("sync: %+v, %v; want remote_mismatch", sy, err)
+	}
+	saysNoDoltRemote(t, "sync", err.Error())
+
+	ss, err := intent.SessionStart(bg, a.env)
+	if lock.CodeOf(err) != lock.CodeRemoteMismatch || ss == nil || ss.Synced {
+		t.Fatalf("session-start: %+v, %v; want remote_mismatch", ss, err)
+	}
+	saysNoDoltRemote(t, "session-start", err.Error())
+
+	sw, err := intent.Sweep(bg, a.env, mergedForge{}, false)
+	if lock.CodeOf(err) != lock.CodeRemoteMismatch || sw == nil {
+		t.Fatalf("sweep: %+v, %v; want remote_mismatch", sw, err)
+	}
+	saysNoDoltRemote(t, "sweep", err.Error())
+
+	land, err := intent.Land(bg, a.env, "x-1", intent.LandOpts{Ref: prRef, SHA: prSHA})
+	if err != nil || land.Outcome != intent.OutcomeLanded || bd.beads["x-1"].Metadata == nil {
+		t.Fatalf("land: %+v, %v", land, err)
+	}
+	saysUnpublished(t, "land", land.Warnings)
+	saysNoDoltRemote(t, "land", strings.Join(land.Warnings, "\n"))
+
+	rel, err := intent.Release(bg, a.env, "x-2", "scope")
+	if err != nil || rel.Outcome != intent.OutcomeReleased || rel.RefPending {
+		t.Fatalf("release: %+v, %v", rel, err)
+	}
+	if liveSHA(t, a, "x-2") != "" || bd.beads["x-2"].Assignee != "" {
+		t.Errorf("release did not give the bead back: ref %q, assignee %q", liveSHA(t, a, "x-2"), bd.beads["x-2"].Assignee)
+	}
+	saysUnpublished(t, "release", rel.Warnings)
+	saysNoDoltRemote(t, "release", strings.Join(rel.Warnings, "\n"))
+
+	for _, c := range bd.calls[calls:] {
+		if c[0] == "dolt" && (c[1] == "pull" || c[1] == "push") {
+			t.Errorf("with no Dolt remote, ran bd %v", c)
+		}
+	}
+}
+
+// A Dolt remote list that cannot be read keeps sync's old behaviour: it pulls,
+// and bd's own failure is the error.
+func TestRefModeSyncWithAnUnreadableRemoteListPulls(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	bd.fail = func(args []string) error {
+		if args[0] == "dolt" && args[1] == "remote" {
+			return errors.New("bd dolt remote list: exit status 1")
+		}
+		return nil
+	}
+	if out, err := intent.Sync(bg, a.env, false); err != nil || !out.Pulled || !out.Pushed {
+		t.Fatalf("sync: %+v, %v", out, err)
+	}
+}
+
 func TestReleaseDeletesTheRefAndWritesTheLedger(t *testing.T) {
 	for _, tc := range []struct{ reason, status, label string }{
 		{"blocked", "blocked", ""},

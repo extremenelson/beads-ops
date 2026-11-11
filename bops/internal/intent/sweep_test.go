@@ -127,7 +127,10 @@ func TestSweepNothingToCloseDoesNotPush(t *testing.T) {
 	if _, err := intent.Sweep(context.Background(), sweepEnv(t, b), &fakeForge{}, false); err != nil {
 		t.Fatal(err)
 	}
-	if len(b.Calls) != 2 {
+	// The Dolt remote list is read before the pull (lock.mode ref names a
+	// missing one); beyond it, only the pull and the list.
+	calls := slices.DeleteFunc(slices.Clone(b.Calls), func(c []string) bool { return strings.Join(c, " ") == "dolt remote list --json" })
+	if len(calls) != 2 {
 		t.Errorf("calls = %v", b.Calls)
 	}
 }

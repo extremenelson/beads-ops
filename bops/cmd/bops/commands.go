@@ -382,8 +382,13 @@ func selectForge(ctx context.Context, fs *flag.FlagSet, cfg config.Config, run f
 	return forge.Select(ctx, name, cfg.LockRemote, run)
 }
 
+// doctorBD answers doctor's one bd call, the Dolt remote list. Tests replace it.
+var doctorBD bdx.Runner = bdx.Exec{}
+
 // cmdDoctor checks the lock remote (lock.remote, default origin), read and
-// push access, and lock support. It needs no ledger and no run state. With
+// push access, lock support, and that a Dolt remote is on the same
+// repository. It needs no run state, and reads the ledger only for its Dolt
+// remote list. With
 // lock.mode none every check is skipped. A failed check exits 1 with the first failure's
 // code, and the document still lists every check.
 func cmdDoctor(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
@@ -408,6 +413,7 @@ func cmdDoctor(ctx context.Context, m *manifest.Manifest, args []string, asJSON 
 	} else {
 		l := &lock.Lock{Git: lock.Exec{Dir: root}, Run: "doctor", Actor: "bops-doctor", Remote: cfg.LockRemote}
 		out = l.Doctor(ctx)
+		out.Add(intent.DoltRemoteCheck(ctx, doctorBD, l)) // the ledger must sit beside the lock
 	}
 	for _, c := range out.Checks {
 		if c.Status == lock.CheckFail {
