@@ -74,7 +74,7 @@ func (e *Env) setLedgerPending(id string, pending bool) {
 
 // checkRemote refuses a lock that would live apart from the ledger.
 func (e *Env) checkRemote(ctx context.Context) error {
-	origin, err := e.Lock.RemoteURL(ctx)
+	url, err := e.Lock.RemoteURL(ctx)
 	if err != nil {
 		return err
 	}
@@ -90,11 +90,11 @@ func (e *Env) checkRemote(ctx context.Context) error {
 		return nil
 	}
 	for _, r := range remotes {
-		if lock.SameRemote(origin, r.URL) {
+		if lock.SameRemote(url, r.URL) {
 			return nil
 		}
 	}
-	return &lock.Error{Code: lock.CodeRemoteMismatch, Err: fmt.Errorf("git origin %s is not the Dolt remote %s, so the lock would not be shared with the ledger", origin, remotes[0].URL)}
+	return &lock.Error{Code: lock.CodeRemoteMismatch, Err: fmt.Errorf("lock remote %s (%s) is not the Dolt remote %s, so the lock would not be shared with the ledger; point it at the ledger's repository or set lock.remote", e.Lock.RemoteName(), url, remotes[0].URL)}
 }
 
 func (e *Env) show(ctx context.Context, id string) (*ledger.Issue, error) {

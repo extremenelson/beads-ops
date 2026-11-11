@@ -52,7 +52,7 @@ Reviews in this session came from Claude subagents, because Codex was not instal
 
 ### The lock
 
-One ref per bead: `refs/bops/claims/<id>` on `origin`. The value is a commit on the empty tree, made with `git commit-tree`, whose message holds one `key=value` per line, split on the first `=` (D20):
+One ref per bead: `refs/bops/claims/<id>` on the lock remote, the git remote named by `lock.remote` (SPEC §10, default `origin`; bead `bops-epv`). Below, `<remote>` is that name. The value is a commit on the empty tree, made with `git commit-tree`, whose message holds one `key=value` per line, split on the first `=` (D20):
 
 ```
 run=<ulid>
@@ -70,10 +70,10 @@ Inputs and identity:
 - Lock commits use the fixed author and committer `bops <bops@invalid>`, so `user.email` is never published and machines without git identity still work.
 - A ref message is untrusted input. Unknown keys are ignored, size is limited, and a malformed `at` is unknown, which never counts as stale.
 - `actor` is unauthenticated free text, and anyone with push access can write these refs. The actor check on `--resume` is a safety check, not authentication.
-- Claim resolves `origin` and compares it with the Dolt remote, normalizing scheme, the `git+` prefix, ssh and https spellings, and `.git`. A mismatch or a missing `origin` refuses with a stable code, because the lock must live beside the ledger.
+- Claim resolves the lock remote's URL and compares it with the Dolt remote, normalizing scheme, the `git+` prefix, ssh and https spellings, and `.git`. A mismatch refuses with `remote_mismatch` and a missing lock remote with `no_origin` (the code keeps its name whatever the remote is called), because the lock must live beside the ledger. `bops doctor` checks the same remote.
 - Lock git calls set `GIT_TERMINAL_PROMPT=0`, and add SSH `BatchMode` by extending the resolved SSH command. Setting `GIT_SSH_COMMAND` outright would replace the user's `core.sshCommand` (probed).
 
-Every lock push is `git push --porcelain --no-verify origin --force-with-lease=<ref>:<expected> <sha>:<ref>`, with an empty `<expected>` for create-only. `--no-verify` applies only to these pushes (D19). **Never pass `-f`: it cancels the lease, and a wrong lease then succeeds (measured).**
+Every lock push is `git push --porcelain --no-verify <remote> --force-with-lease=<ref>:<expected> <sha>:<ref>`, with an empty `<expected>` for create-only. `--no-verify` applies only to these pushes (D19). **Never pass `-f`: it cancels the lease, and a wrong lease then succeeds (measured).**
 
 Measured on GitHub with two clones pushing at once: exactly one winner in 40 of 40 create races and 20 of 20 takeover races. See `bops/testdata/README.md`.
 
@@ -98,7 +98,7 @@ The retry separates a forge that refuses custom refs from a holder who released 
 
 `internal/lock` works through a `Git` interface and a `Journal` interface that `runstate.Store` satisfies. Refnames and the message format stay inside the package.
 
-**Reading locks.** `git fetch --prune origin +refs/bops/claims/*:refs/bops/seen/*` then `git for-each-ref` gives every ref's sha, run, actor, state and age. `sync` does this, so `next` reads the local copy without the network. Commands that win or delete a ref update `refs/bops/seen/<id>` with `git update-ref`. A `lost` result and `--force` fetch the holder's ref with `git fetch origin +refs/bops/claims/<id>:refs/bops/seen/<id>`, because `ls-remote` returns only a sha and `update-ref` refuses an object that is not present locally (probed). That gives `lost` its actor, run and age, and it means the next `next` skips that bead. Fetch and `update-ref` run outside the state lock, so contention on a local ref is classified separately from `unreachable`.
+**Reading locks.** `git fetch --prune <remote> +refs/bops/claims/*:refs/bops/seen/*` then `git for-each-ref` gives every ref's sha, run, actor, state and age. `sync` does this, so `next` reads the local copy without the network. Commands that win or delete a ref update `refs/bops/seen/<id>` with `git update-ref`. A `lost` result and `--force` fetch the holder's ref with `git fetch <remote> +refs/bops/claims/<id>:refs/bops/seen/<id>`, because `ls-remote` returns only a sha and `update-ref` refuses an object that is not present locally (probed). That gives `lost` its actor, run and age, and it means the next `next` skips that bead. Fetch and `update-ref` run outside the state lock, so contention on a local ref is classified separately from `unreachable`.
 
 **Local state.** Each clone has one state file and write lock, with a run per worktree (D17, D24). `Held` changes from a list of ids to a journal, the single owner of hold state: id to `{sha, intended, phase, ledger_pending, delete_pending}`, with phase `pushing` or `held`. The file gains a version and still decodes a legacy `held` list. Legacy holds have no sha and are never reported lost.
 

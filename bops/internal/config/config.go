@@ -26,6 +26,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -42,6 +43,7 @@ type Config struct {
 	LintStrict      bool     // lint.strict: promote warnings to failures
 	LintDisable     []string // lint.disable[]: rule ids to skip (loaded, not yet applied)
 	NoteRequireNext bool     // note.require_next (loaded, not yet applied)
+	LockRemote      string   // lock.remote: git remote that holds the claim refs
 }
 
 // DefaultMinutes is the default for hold_minutes and stale_minutes.
@@ -49,7 +51,7 @@ const DefaultMinutes = 120
 
 // Default is the configuration with no files and no environment.
 func Default() Config {
-	return Config{HoldMinutes: DefaultMinutes, StaleMinutes: DefaultMinutes, Forge: "auto"}
+	return Config{HoldMinutes: DefaultMinutes, StaleMinutes: DefaultMinutes, Forge: "auto", LockRemote: "origin"}
 }
 
 // StaleAfter is stale_minutes as a duration.
@@ -66,6 +68,7 @@ const (
 	kMinutes
 	kBool
 	kForge
+	kRemote
 )
 
 type key struct {
@@ -83,9 +86,18 @@ var keys = []key{
 	{"lint.strict", kBool, func(c *Config) any { return &c.LintStrict }},
 	{"lint.disable", kStrings, func(c *Config) any { return &c.LintDisable }},
 	{"note.require_next", kBool, func(c *Config) any { return &c.NoteRequireNext }},
+	{"lock.remote", kRemote, func(c *Config) any { return &c.LockRemote }},
 }
 
 var forges = []string{"auto", "github", "gitlab", "none"}
+
+// remoteName is a plausible git remote name: one refname segment that cannot
+// be read as a flag or a URL.
+var remoteName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
+
+func validRemote(v string) bool {
+	return remoteName.MatchString(v) && !strings.Contains(v, "..") && !strings.HasSuffix(v, ".") && !strings.HasSuffix(v, ".lock")
+}
 
 // EnvName is the environment variable for a key path: lint.strict is
 // BOPS_LINT_STRICT.
@@ -227,7 +239,7 @@ func strictJSON(b []byte, v any) error {
 
 func setJSON(c *Config, k key, raw json.RawMessage) error {
 	switch k.kind {
-	case kString, kForge:
+	case kString, kForge, kRemote:
 		var s string
 		if err := json.Unmarshal(raw, &s); err != nil {
 			return fmt.Errorf("%s: want a string", k.path)
@@ -269,6 +281,11 @@ func setString(c *Config, k key, v string) error {
 			}
 		}
 		return fmt.Errorf("%s: want one of %s, got %q", k.path, strings.Join(forges, ", "), v)
+	case kRemote:
+		if !validRemote(v) {
+			return fmt.Errorf("%s: want a git remote name such as origin, got %q", k.path, v)
+		}
+		*k.ref(c).(*string) = v
 	case kStrings:
 		var ss []string
 		for _, s := range strings.Split(v, ",") {

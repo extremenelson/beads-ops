@@ -301,7 +301,7 @@ Beads is Dolt-backed; `.beads/issues.jsonl` is an export for viewers, not the so
 - **Server mode** (`bd init --server`, external `dolt sql-server`) only if two agents need to *write concurrently on the same machine*. Hermes + Kestrel on one box, each in its own session, is still sequential enough for embedded. Revisit if claims start failing.
 - **Per-machine work:** label it (`gpu-3090`, `debian-box`). Autonomous loops filter `bd ready --json` by their own machine label plus unlabeled work.
 - **Worktrees:** `bd worktree create .worktrees/<name> --branch feature/<name>` shares the repo's `.beads/` automatically; one worktree per concurrently active agent. `bd where` when anything looks wrong. Each worktree is its own `bops` run, so two agents on one clone cannot both hold a bead.
-- **The claim lock** (`bops` ledgers) is `refs/bops/claims/<id>` on the same remote as `refs/dolt/data`; `bops claim` refuses if git `origin` and the Dolt remote differ. Claim, release, land and sweep need the network. `note` works offline and refreshes the lock when it can. `bops sync` fetches every claim ref, repairs the assignee display from them, finishes deletes and ledger writes that failed, and reports `lost_claims` (someone took a bead from you) and `stranded_holds` (a worktree that no longer exists).
+- **The claim lock** (`bops` ledgers) is `refs/bops/claims/<id>` on the lock remote (`lock.remote`, default `origin`), which must be the same repository as `refs/dolt/data`; `bops claim` refuses if that remote is missing or is not the Dolt remote, and `bops doctor` checks it. Claim, release, land and sweep need the network. `note` works offline and refreshes the lock when it can. `bops sync` fetches every claim ref, repairs the assignee display from them, finishes deletes and ledger writes that failed, and reports `lost_claims` (someone took a bead from you) and `stranded_holds` (a worktree that no longer exists).
 - **Upgrades:** every machine on a ledger runs a `bops` that knows the lock before anyone claims with it; an older binary ignores the lock. Do not run `bd reclaim` on a `bops` ledger, by hand or on a timer: it ignores the lock.
 - **Local record:** each clone keeps `$XDG_STATE_HOME/bops/<hash>/events.jsonl` (default `~/.local/state/bops/…`), one line per step and outcome. Read it first when an outcome needs explaining.
 
@@ -395,7 +395,7 @@ Integration points in Kestrel:
 
 ## 12. Recovery runbook (`bops` ledgers)
 
-Every procedure here was run once against two clones of a scratch ledger and real `bd` 1.3.4 on 2026-11-10. The two-machine run for `bops/v0.1.0` repeats them across machines. The claim ref is ownership and the ledger is its display (§2.2), so most stuck states are fixed by reading the ref and then running one `bops` command.
+The commands below say `origin`; if `lock.remote` (SPEC §10) names another remote, use that name instead. Every procedure here was run once against two clones of a scratch ledger and real `bd` 1.3.4 on 2026-11-10. The two-machine run for `bops/v0.1.0` repeats them across machines. The claim ref is ownership and the ledger is its display (§2.2), so most stuck states are fixed by reading the ref and then running one `bops` command.
 
 **Read a claim.** Who holds a bead, in what state, since when:
 
@@ -415,7 +415,8 @@ git log -1 --format=%B refs/bops/seen/<id>     # run=, actor=, state=held|landin
 | exit 1, `outcome: unreachable` | The remote could not be reached | Follow `retry` (30 s, at most 3 times), then rerun the same command. A rerun settles anything half done; the claim comes back `claimed` or `held` |
 | `ledger_pending: true` or `ref_pending: true` | The ledger push or ref delete failed after the claim decided | `bops sync` until both are gone. The claim is valid meanwhile |
 | `bops sync` keeps failing to push the ledger | Dolt push rejected or locked | `bd dolt pull`, then `bd dolt push`, and read the error. An exit 2 merge conflict is [MULTI-DEV-PLAN §6](MULTI-DEV-PLAN.md) |
-| `code: remote_mismatch` or `no_origin` | git `origin` is not the Dolt remote | Compare `git remote get-url origin` with `bd dolt remote list` and point `origin` at the same repository |
+| `code: no_origin` | No git remote has the lock remote's name (`lock.remote`, default `origin`) | `git remote -v`; add the remote, or set `lock.remote` in `.bops.json` (or `BOPS_LOCK_REMOTE`) to the remote beside the ledger |
+| `code: remote_mismatch` | The lock remote is not the Dolt remote | Compare `git remote get-url <lock.remote>` with `bd dolt remote list`, and point that remote (or `lock.remote`) at the ledger's repository |
 | `code: lock_unsupported` | The forge rejects pushes to `refs/bops/*` | Check the forge's ref rules or protections; there is no fallback in v0.1.0 |
 | `code: state_write_failed` | The state directory is not writable | Fix permissions on `~/.local/state/bops/`. Nothing was pushed: the journal is written before the ref |
 | `code: hold_not_recorded`, error names a sha | The ref was won but the state file was not written | Fix the state directory, then remove the ref as an orphan (below), using that sha |

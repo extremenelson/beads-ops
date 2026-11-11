@@ -30,7 +30,7 @@ Non-goals: `bops` is not a tracker, not a sync protocol, not a merge tool, and n
 | **ready** | `bd ready` says all blocking deps are satisfied and status permits work | workable |
 | **workable** | ready **and** passes the lint rules in §6 (has acceptance, not human-gated, machine-eligible, no stale claim, …) | ready |
 | **claim** | taking a bead for a run by creating its claim ref with a create-only push; the ref *is* the lock, and the assignee and `run:` label are a display of it | lease |
-| **claim ref** | `refs/bops/claims/<id>` on `origin`, naming the holder's run, actor, state (`held` or `landing`) and time (§3.0) | assignee |
+| **claim ref** | `refs/bops/claims/<id>` on the lock remote (`lock.remote`, default `origin`), naming the holder's run, actor, state (`held` or `landing`) and time (§3.0) | assignee |
 | **holder** | the run the claim ref names; only the holder may note, land or release | assignee |
 | **lease** | beads' node-local TTL on a claim (`bd heartbeat` / `bd reclaim`); not committed to Dolt, and not used by `bops` to decide ownership | claim |
 | **run** | one worktree's execution of an agent loop on one machine; identified by a ULID kept in per-clone state and shown as a `run:` label | session |
@@ -49,7 +49,7 @@ All keys are namespaced so that `bops` can coexist with any other tooling on the
 
 ### 3.0 The claim lock (ownership)
 
-One git ref per claimed bead, `refs/bops/claims/<id>`, on the same remote as the Dolt ledger. `claim` refuses with `remote_mismatch` or `no_origin` when git `origin` and the Dolt remote differ. The ref's value is a commit on the empty tree, authored `bops <bops@invalid>`, whose message is one `key=value` per line:
+One git ref per claimed bead, `refs/bops/claims/<id>`, on the lock remote: the git remote named by `lock.remote` (§10, default `origin`), which must be the same repository as the Dolt ledger. `claim` refuses with `no_origin` when no git remote has that name, and with `remote_mismatch` when its URL is not the Dolt remote. `doctor` checks the same remote. The ref's value is a commit on the empty tree, authored `bops <bops@invalid>`, whose message is one `key=value` per line:
 
 ```
 run=<ulid>
@@ -135,7 +135,7 @@ The manifest is [`bops/commands.json`](bops/commands.json). It is embedded in th
 | `refused` | 3 | false | A precondition failed; pick another bead. `reason` says which (`detail` on `release`, whose `reason` is the release reason) |
 | `unreachable` | 1 | false | Could not verify; stop or retry. `retry` bounds it and `side_effects` says what may have been written |
 
-**Stable codes** (`code` on a result that could not run, and in `events.jsonl`): `unreachable` (remote not reached), `git_auth` (credentials refused), `lock_unsupported` (the forge rejects custom refs), `ref_contention` (a local ref update collided), `state_write_failed` (the state file could not be written), `hold_not_recorded` (the ref was won but the hold could not be saved; the result names the sha and how to recover), `no_origin` and `remote_mismatch` (git `origin` missing or not the Dolt remote), `bad_id` (not a bead id), `bad_message` (an unreadable claim ref), `git_failed` (any other git error).
+**Stable codes** (`code` on a result that could not run, and in `events.jsonl`): `unreachable` (remote not reached), `git_auth` (credentials refused), `lock_unsupported` (the forge rejects custom refs), `ref_contention` (a local ref update collided), `state_write_failed` (the state file could not be written), `hold_not_recorded` (the ref was won but the hold could not be saved; the result names the sha and how to recover), `no_origin` (lock remote missing: no git remote named `lock.remote`, default `origin`) and `remote_mismatch` (the lock remote is not the Dolt remote), `bad_id` (not a bead id), `bad_message` (an unreadable claim ref), `git_failed` (any other git error).
 
 ## 5. Ordering rules for `next`
 
@@ -203,9 +203,9 @@ Bindings carry `contract=<n>` and refuse to run against a mismatched `bops versi
 
 ## 10. Configuration
 
-`.bops.json` in repo root (committed) merged with `$XDG_CONFIG_HOME/bops/config.json` (per user) and `BOPS_*` env. Keys: `pool`, `caps[]`, `hold_minutes`, `stale_minutes`, `forge`, `lint.strict`, `lint.disable[]`, `note.require_next` (bool).
+`.bops.json` in repo root (committed) merged with `$XDG_CONFIG_HOME/bops/config.json` (per user) and `BOPS_*` env. Keys: `pool`, `caps[]`, `hold_minutes`, `stale_minutes`, `forge`, `lint.strict`, `lint.disable[]`, `note.require_next` (bool), `lock.remote`.
 
-Precedence, lowest to highest: built-in defaults, `.bops.json` in the worktree root, the per-user file (`~/.config/bops/config.json` when `XDG_CONFIG_HOME` is unset), `BOPS_*` env, then command flags. Each layer sets only the keys it names; a missing file is skipped. Nested keys are JSON objects (`{"lint": {"strict": true}}`), and each key's variable is `BOPS_` plus its path in upper case with `.` as `_` (`BOPS_STALE_MINUTES`, `BOPS_LINT_STRICT`); a list in the environment is comma-separated and an empty variable is unset. An unknown key, a wrong type, a non-integer or non-positive minute count, or a `forge` outside `auto|github|gitlab|none` fails the command (exit 1) naming the file or variable. The loader is `bops/internal/config`.
+Precedence, lowest to highest: built-in defaults, `.bops.json` in the worktree root, the per-user file (`~/.config/bops/config.json` when `XDG_CONFIG_HOME` is unset), `BOPS_*` env, then command flags. Each layer sets only the keys it names; a missing file is skipped. Nested keys are JSON objects (`{"lint": {"strict": true}}`), and each key's variable is `BOPS_` plus its path in upper case with `.` as `_` (`BOPS_STALE_MINUTES`, `BOPS_LINT_STRICT`); a list in the environment is comma-separated and an empty variable is unset. An unknown key, a wrong type, a non-integer or non-positive minute count, a `forge` outside `auto|github|gitlab|none`, or a `lock.remote` that is not a plausible git remote name (a letter or digit, then up to 99 letters, digits, `.`, `_` or `-`; no `..`, not ending in `.` or `.lock`) fails the command (exit 1) naming the file or variable. The loader is `bops/internal/config`.
 
 | Key | Default | Applied by |
 |---|---|---|
@@ -215,6 +215,7 @@ Precedence, lowest to highest: built-in defaults, `.bops.json` in the worktree r
 | `forge` | `auto` | loaded and validated; `land` and `sweep` still take only `--forge` |
 | `lint.strict`, `lint.disable[]` | `false`, none | loaded and validated; not applied yet (`lint --strict` is the flag) |
 | `note.require_next` | `false` | loaded and validated; not applied yet |
+| `lock.remote` | `origin` | every command that reads or writes claim refs, the ledger check (§3.0) and `doctor` (`BOPS_LOCK_REMOTE`) |
 
 Other environment `bops` reads: `BEADS_ACTOR` (actor), `BOPS_MACHINE` (machine name, else the hostname), `XDG_STATE_HOME` (§3.4), and `BOPS_INTEGRATION` / `BOPS_RACE_TRIALS` in tests.
 
