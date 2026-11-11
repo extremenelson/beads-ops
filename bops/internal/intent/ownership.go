@@ -773,7 +773,7 @@ type cloneHold struct {
 
 // clearOwnDisplay returns a bead to the pool when this clone's claim ref is
 // gone and nobody took it: otherwise the ledger keeps showing a claim nobody
-// holds, which a plain claim refuses and --force waits 120 minutes on. It
+// holds, which a plain claim refuses and --force waits stale_minutes on. It
 // acts only on a bead still in progress under this run's label. Another
 // run's claim repairs the display itself; a landing bead with no ref is
 // sweep's crash-recovery case; a closed bead is done.

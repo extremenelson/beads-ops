@@ -420,7 +420,7 @@ git log -1 --format=%B refs/bops/seen/<id>     # run=, actor=, state=held|landin
 | `code: state_write_failed` | The state directory is not writable | Fix permissions on `~/.local/state/bops/`. Nothing was pushed: the journal is written before the ref |
 | `code: hold_not_recorded`, error names a sha | The ref was won but the state file was not written | Fix the state directory, then remove the ref as an orphan (below), using that sha |
 
-**The holder is gone (crash, machine off).** Once the claim ref's `at` is 120 minutes old (`note` refreshes it):
+**The holder is gone (crash, machine off).** Once the claim ref's `at` is `stale_minutes` old (default 120, set in `.bops.json`; SPEC §10; `note` refreshes it). The 120 below is that default:
 
 ```bash
 bops claim --force <id>      # refused before 120 minutes, and on a landing ref

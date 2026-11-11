@@ -32,8 +32,12 @@ type Env struct {
 	Now   func() time.Time
 	Sleep func(time.Duration) // injectable for the sync retry
 	// StaleAfter is how long a claim may go without a heartbeat/update
-	// before `next` treats it as stale. Default 2h.
+	// before `next` treats it as stale and `claim --force` may take it
+	// (config stale_minutes). Default 2h.
 	StaleAfter time.Duration
+	// HoldFor is how long bops:hold keeps a bead out of `next` (config
+	// hold_minutes). Zero means the 120 minute default.
+	HoldFor time.Duration
 }
 
 // HoldStore is the part of the clone's state that spans worktrees.
@@ -113,7 +117,7 @@ func Next(ctx context.Context, env *Env, o NextOpts) (*NextOut, error) {
 	}
 	// Parents with an in-progress sibling come first in the ordering.
 	activeParents, listErr := parentsInProgress(ctx, env)
-	lenv := LintEnv{Pool: env.Run.Pool, Caps: env.caps(), Now: env.now(), StaleAfter: env.staleAfter()}
+	lenv := LintEnv{Pool: env.Run.Pool, Caps: env.caps(), Now: env.now(), StaleAfter: env.staleAfter(), HoldFor: env.HoldFor}
 	out := &NextOut{Candidates: []Candidate{}}
 	if listErr != nil { // it only affects the order, so a read still answers
 		out.Warnings = append(out.Warnings, "ordering ignores work in progress: "+listErr.Error())

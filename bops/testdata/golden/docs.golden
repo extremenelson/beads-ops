@@ -61,7 +61,7 @@ Take this bead for this run
 
 | Arg | Type | Default | Doc |
 |---|---|---|---|
-| `--force` | bool | `false` | Take over a claim stale for 120 minutes, or an orphan. Refused on a landing bead. |
+| `--force` | bool | `false` | Take over a claim idle for stale_minutes (default 120), or an orphan. Refused on a landing bead. |
 | `--id` | string |  |  |
 | `--resume` | bool | `false` | Take back a landing bead for PR rework. Only the ref's actor can. |
 
@@ -211,7 +211,7 @@ Claims nobody is working
 | Arg | Type | Default | Doc |
 |---|---|---|---|
 | `--all-machines` | bool | `true` | false hides claims and orphans from other machines. |
-| `--older-than` | duration | `2h` | Idle longer than this is stale. Age is from the claim ref's at, which note refreshes; a claim with no ref uses updated_at, heartbeat_at and its newest bops: comment. |
+| `--older-than` | duration | `stale_minutes` | Idle longer than this is stale; defaults to the stale_minutes config (120). Age is from the claim ref's at, which note refreshes; a claim with no ref uses updated_at, heartbeat_at and its newest bops: comment. |
 
 Wraps: `git fetch --prune refs/bops/claims/* (the last sync's copy if offline, with a warning)`, `bd list --status in_progress --limit 0 --json`, `bd comments <id> --json`.
 
@@ -307,7 +307,7 @@ Output:
 
 Orient a fresh agent session
 
-Wraps: `sync --no-push`, `stale --older-than 2h (count, all machines)`, `next (count of workable)`, `bd prime --mcp --max-memory-chars 600 (capped at 3000 bytes)`.
+Wraps: `sync --no-push`, `stale (stale_minutes; count, all machines)`, `next (count of workable)`, `bd prime --mcp --max-memory-chars 600 (capped at 3000 bytes)`.
 
 Output:
 

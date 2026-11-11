@@ -63,7 +63,7 @@ at=<iso8601>
 - **The ref decides; the ledger displays.** The assignee, `run:` label and `bops:landing` label are written best effort after the ref, can lag it (`ledger_pending`), and are repaired by `sync`. No ownership decision reads them.
 - `actor` is unauthenticated free text (`BEADS_ACTOR`, else git `user.name`, else the OS user), and anyone with push access can write these refs. The actor check on `claim --resume` is a safety check, not authentication.
 - A ref message is untrusted input: unknown keys are ignored, size is bounded, and an unreadable or future `at` never counts as stale.
-- Staleness is a fixed 120 minutes from the ref's `at` in v0.1.0. `note` refreshes `at`. `stale_minutes` in §10 has no loader yet.
+- Staleness is `stale_minutes` (§10, default 120) from the ref's `at`. `note` refreshes `at`. Set it in the committed `.bops.json` so every machine on a ledger measures the same window: a machine with a shorter one takes over claims sooner.
 - **The guarantee covers claims made through `bops`.** A raw `bd update --claim` writes no ref and bypasses the lock. `/bead-loop` and the Kestrel binding still claim through raw `bd` until bead `bops-ecs` moves them, so they are outside the guarantee. Every machine on a ledger must run a `bops` that knows the lock before the first claim on it.
 
 ### 3.1 Labels (machine-readable state)
@@ -205,7 +205,18 @@ Bindings carry `contract=<n>` and refuse to run against a mismatched `bops versi
 
 `.bops.json` in repo root (committed) merged with `$XDG_CONFIG_HOME/bops/config.json` (per user) and `BOPS_*` env. Keys: `pool`, `caps[]`, `hold_minutes`, `stale_minutes`, `forge`, `lint.strict`, `lint.disable[]`, `note.require_next` (bool).
 
-v0.1.0 has no config loader (bead `bops-2cn`): `hold_minutes` and `stale_minutes` are fixed at 120, `pool` and `caps` come from flags, and `forge` from `--forge`. The environment it reads is `BEADS_ACTOR` (actor), `BOPS_MACHINE` (machine name, else the hostname), `XDG_STATE_HOME` (§3.4), and `BOPS_INTEGRATION` / `BOPS_RACE_TRIALS` in tests.
+Precedence, lowest to highest: built-in defaults, `.bops.json` in the worktree root, the per-user file (`~/.config/bops/config.json` when `XDG_CONFIG_HOME` is unset), `BOPS_*` env, then command flags. Each layer sets only the keys it names; a missing file is skipped. Nested keys are JSON objects (`{"lint": {"strict": true}}`), and each key's variable is `BOPS_` plus its path in upper case with `.` as `_` (`BOPS_STALE_MINUTES`, `BOPS_LINT_STRICT`); a list in the environment is comma-separated and an empty variable is unset. An unknown key, a wrong type, a non-integer or non-positive minute count, or a `forge` outside `auto|github|gitlab|none` fails the command (exit 1) naming the file or variable. The loader is `bops/internal/config`.
+
+| Key | Default | Applied by |
+|---|---|---|
+| `stale_minutes` | 120 | `next` (W06s), `claim --force`, `stale` when `--older-than` is not given, `session-start` |
+| `hold_minutes` | 120 | `next` and `lint` (W12) |
+| `pool`, `caps[]` | none | every command's run; `next --pool/--caps` override |
+| `forge` | `auto` | loaded and validated; `land` and `sweep` still take only `--forge` |
+| `lint.strict`, `lint.disable[]` | `false`, none | loaded and validated; not applied yet (`lint --strict` is the flag) |
+| `note.require_next` | `false` | loaded and validated; not applied yet |
+
+Other environment `bops` reads: `BEADS_ACTOR` (actor), `BOPS_MACHINE` (machine name, else the hostname), `XDG_STATE_HOME` (§3.4), and `BOPS_INTEGRATION` / `BOPS_RACE_TRIALS` in tests.
 
 ## 11. Versioning and compatibility
 
