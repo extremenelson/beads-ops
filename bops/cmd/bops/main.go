@@ -52,6 +52,15 @@ func run(args []string, stdout, stderr *os.File) int {
 	defer cancel()
 
 	switch name {
+	case "version", "manifest":
+		for _, a := range rest {
+			if a != "--json" {
+				fmt.Fprintf(stderr, "usage: bops %s [--json]\n", name)
+				return exitUsage
+			}
+		}
+	}
+	switch name {
 	case "version":
 		return cmdVersion(ctx, m, wantJSON, stdout, stderr)
 	case "manifest":

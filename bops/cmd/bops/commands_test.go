@@ -187,3 +187,36 @@ func TestParseAnyOrderRejectsUnknownFlag(t *testing.T) {
 		t.Error("want an error for an unknown flag")
 	}
 }
+
+// Commands that take no bead id refuse a stray argument as usage (exit 2)
+// before any bd or git call. With PATH empty and no repository, a command
+// that ran anyway would fail with exit 1 instead.
+func TestStrayArgumentsAreUsageErrors(t *testing.T) {
+	m, err := manifest.Parse(bops.ManifestJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := []string{"manifest"}
+	for _, c := range m.Commands {
+		if _, takesID := c.Args["id"]; !takesID {
+			names = append(names, c.Name)
+		}
+	}
+	t.Chdir(t.TempDir())
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	for _, name := range names {
+		for _, args := range [][]string{{name, "bops-1"}, {name, "--json", "bops-1"}} {
+			stdout, _ := os.CreateTemp(t.TempDir(), "out")
+			stderr, _ := os.CreateTemp(t.TempDir(), "err")
+			code := run(args, stdout, stderr)
+			msg, _ := os.ReadFile(stderr.Name())
+			if code != exitUsage || !strings.Contains(string(msg), "usage: bops "+name) {
+				t.Errorf("%v: exit %d, stderr %q; want usage", args, code, msg)
+			}
+		}
+	}
+	if len(names) < 7 {
+		t.Errorf("only %d commands checked: %v", len(names), names)
+	}
+}

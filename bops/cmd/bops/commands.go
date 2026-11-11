@@ -151,7 +151,8 @@ func cmdNext(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 	pool := fs.String("pool", "", "serve only pool:<pool>")
 	caps := fs.String("caps", "", "comma-separated capabilities this run offers")
 	fs.Bool("json", false, "")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: bops next [--n 3] [--pool <name>] [--caps a,b] [--include-unworkable]")
 		return exitUsage
 	}
 	env, store, err := newEnv(runstate.Read)
@@ -304,7 +305,8 @@ func cmdSync(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 	fs.SetOutput(stderr)
 	noPush := fs.Bool("no-push", false, "pull and heartbeat only")
 	fs.Bool("json", false, "")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: bops sync [--no-push]")
 		return exitUsage
 	}
 	env, store, err := newEnv(runstate.Read)
