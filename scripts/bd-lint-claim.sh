@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # bd-lint-claim.sh — pre-claim workability lint for a bead (PROCESS.md §3.6/§3.7)
 #
+# SUPERSEDED by `bops lint <id>`. Kept for repos and bindings that do not use bops yet.
+#
 # Usage:  bd-lint-claim.sh <bead-id> [--actor NAME] [--machine LABEL] [--no-sync] [--strict] [--json]
 # Exit:   0 workable  |  1 fix the bead first  |  2 tool/shape error
 #
@@ -103,7 +105,10 @@ else
 fi
 
 # ---------------------------------------------------------------- row 8: needs-human
-if printf '%s' "$LABELS" | grep -qw "needs-human"; then
+# Legacy spelling: early bops wrote needs:human. Read it as needs-human until
+# bops v0.2.0 drops it too (SPEC §3.1, PROCESS §3.5 has the relabel command).
+LEGACY_NEEDS_HUMAN="needs:human"
+if printf '%s' "$LABELS" | tr ' ' '\n' | grep -qxF -e "needs-human" -e "$LEGACY_NEEDS_HUMAN"; then
   fail "8 labeled needs-human — not for autonomous pickup"
 else
   pass "8 not needs-human"

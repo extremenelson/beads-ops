@@ -7,24 +7,50 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/extremenelson/beads-ops/bops/internal/bdx"
+	"github.com/extremenelson/beads-ops/bops/internal/forge"
 	"github.com/extremenelson/beads-ops/bops/internal/ledger"
+	"github.com/extremenelson/beads-ops/bops/internal/lock"
 	"github.com/extremenelson/beads-ops/bops/internal/runstate"
 )
 
 // Env is everything an intent needs besides its arguments.
 type Env struct {
-	BD    bdx.Runner
-	Run   *runstate.Run
-	Now   func() time.Time
-	Sleep func(time.Duration) // injectable for the sync retry
+	BD  bdx.Runner
+	Run *runstate.Run
+	// Store is the clone's hold state across worktrees. Nil means only Run.
+	Store HoldStore
+	// Lock decides who holds a bead. Next works without it; writes need it.
+	// With LockOff its journal still records holds, but no ref is read or
+	// written.
+	Lock *lock.Lock
+	// LockOff is lock.mode none: ownership is decided by the ledger alone
+	// (bd update --claim, the assignee and run: label, updated_at), with no
+	// git ref and no network for locking. Only for a ledger on one machine.
+	LockOff bool
+	Now     func() time.Time
+	Sleep   func(time.Duration) // injectable for the sync retry
 	// StaleAfter is how long a claim may go without a heartbeat/update
-	// before `next` treats it as stale. Default 2h.
+	// before `next` treats it as stale and `claim --force` may take it
+	// (config stale_minutes). Default 2h.
 	StaleAfter time.Duration
+	// HoldFor is how long bops:hold keeps a bead out of `next` (config
+	// hold_minutes). Zero means the 120 minute default.
+	HoldFor time.Duration
+}
+
+// HoldStore is the part of the clone's state that spans worktrees.
+type HoldStore interface {
+	Holds() []runstate.Hold
+	SetLedgerPending(id string, pending bool) error
+	Log(ev runstate.Event)
 }
 
 func (e *Env) now() time.Time {
@@ -73,6 +99,7 @@ type NextOut struct {
 	Candidates     []Candidate `json:"candidates"`
 	ExcludedCount  int         `json:"excluded_count"`
 	LedgerRevision string      `json:"ledger_revision"`
+	Warnings       []string    `json:"warnings,omitempty"`
 }
 
 // NextOpts are the `next` arguments.
@@ -95,18 +122,24 @@ func Next(ctx context.Context, env *Env, o NextOpts) (*NextOut, error) {
 		return nil, err
 	}
 	// Parents with an in-progress sibling come first in the ordering.
-	activeParents := map[string]bool{}
-	if ipRaw, err := env.BD.Run(ctx, "list", "--status", "in_progress", "--json"); err == nil {
-		if ip, err := ledger.DecodeIssues(ipRaw); err == nil {
-			for _, i := range ip {
-				if i.Parent != "" {
-					activeParents[i.Parent] = true
-				}
-			}
+	activeParents, listErr := parentsInProgress(ctx, env)
+	lenv := LintEnv{Pool: env.Run.Pool, Caps: env.caps(), Now: env.now(), StaleAfter: env.staleAfter(), HoldFor: env.HoldFor}
+	out := &NextOut{Candidates: []Candidate{}}
+	if listErr != nil { // it only affects the order, so a read still answers
+		out.Warnings = append(out.Warnings, "ordering ignores work in progress: "+listErr.Error())
+	}
+	claims := map[string]lock.Ref{}
+	if env.LockOff {
+		out.Warnings = append(out.Warnings, lock.OffWarning)
+	} else if env.Lock != nil {
+		seen, err := env.Lock.Seen(ctx)
+		if err != nil {
+			out.Warnings = append(out.Warnings, "could not read local claims: "+err.Error())
+		}
+		for _, r := range seen {
+			claims[r.ID] = r
 		}
 	}
-	lenv := LintEnv{Pool: env.Run.Pool, Caps: env.caps(), Now: env.now(), StaleAfter: env.staleAfter()}
-	out := &NextOut{Candidates: []Candidate{}}
 	type scored struct {
 		c Candidate
 		i ledger.Issue
@@ -134,6 +167,10 @@ func Next(ctx context.Context, env *Env, o NextOpts) (*NextOut, error) {
 		}
 		for _, w := range lr.Warns {
 			c.Why = append(c.Why, w.ID+" (warn): "+w.Rule)
+		}
+		if r, ok := claims[i.ID]; ok && r.Run != env.Run.ID {
+			c.Workable = false
+			c.WhyNot = append(c.WhyNot, fmt.Sprintf("W14: claimed by %s", r.Actor))
 		}
 		if !c.Workable {
 			if i.IssueType != "epic" {
@@ -171,160 +208,440 @@ func Next(ctx context.Context, env *Env, o NextOpts) (*NextOut, error) {
 	return out, nil
 }
 
-// --------------------------------------------------------------- claim
-
-// ClaimOut is the `claim` output.
-type ClaimOut struct {
-	ID         string    `json:"id"`
-	Run        string    `json:"run"`
-	ClaimedAt  time.Time `json:"claimed_at"`
-	ReadbackOK bool      `json:"readback_ok"`
-}
-
-// Claim takes a bead for this run: CAS on empty assignee, run label,
-// typed comment, readback, push. Any failure before the push leaves the
-// ledger as it was except where noted in the returned error.
-func Claim(ctx context.Context, env *Env, id string, force bool) (*ClaimOut, error) {
-	showRaw, err := env.BD.Run(ctx, "show", id, "--json")
+// parentsInProgress finds the parents that already have work in flight.
+func parentsInProgress(ctx context.Context, env *Env) (map[string]bool, error) {
+	parents := map[string]bool{}
+	raw, err := env.BD.Run(ctx, "list", "--status", "in_progress", "--json")
 	if err != nil {
-		return nil, err
+		return parents, err
 	}
-	cur, err := ledger.DecodeIssue(showRaw)
+	issues, err := ledger.DecodeIssues(raw)
 	if err != nil {
-		return nil, err
+		return parents, err
 	}
-	if !force {
-		if cur.Assignee != "" {
-			return nil, fmt.Errorf("%w: %s is assigned to %q", ErrPrecondition, id, cur.Assignee)
-		}
-		if runs := cur.LabelsWithPrefix("run:"); len(runs) > 0 {
-			return nil, fmt.Errorf("%w: %s carries run:%s", ErrPrecondition, id, runs[0])
-		}
-		if cur.Status != "open" && cur.Status != "ready" {
-			return nil, fmt.Errorf("%w: %s is %s", ErrPrecondition, id, cur.Status)
+	for _, i := range issues {
+		if i.Parent != "" {
+			parents[i.Parent] = true
 		}
 	}
-	args := []string{"update", id, "--claim"}
-	if !force {
-		args = append(args, "--if-assignee", "")
-	}
-	if _, err := env.BD.Run(ctx, args...); err != nil {
-		return nil, err
-	}
-	run := env.Run.ID
-	if _, err := env.BD.Run(ctx, "label", "add", id, "run:"+run); err != nil {
-		return nil, fmt.Errorf("claimed but could not add run label: %w", err)
-	}
-	ev := fmt.Sprintf("bops:claimed run=%s actor=%s machine=%s", run, env.Run.Actor, env.Run.Machine)
-	if _, err := env.BD.Run(ctx, "comments", "add", id, ev); err != nil {
-		return nil, fmt.Errorf("claimed but could not record event: %w", err)
-	}
-	out := &ClaimOut{ID: id, Run: run, ClaimedAt: env.now()}
-	if rb, err := env.BD.Run(ctx, "show", id, "--json"); err == nil {
-		if got, err := ledger.DecodeIssue(rb); err == nil {
-			out.ReadbackOK = got.Assignee != "" && got.HasLabel("run:"+run)
-		}
-	}
-	if !out.ReadbackOK {
-		return out, fmt.Errorf("%w: readback after claim did not show assignee + run label", ErrPrecondition)
-	}
-	env.Run.Hold(id)
-	if _, err := env.BD.Run(ctx, "dolt", "push"); err != nil {
-		return out, fmt.Errorf("claimed locally; push failed: %w", err)
-	}
-	return out, nil
+	return parents, nil
 }
 
-// ------------------------------------------------------------- release
+// ---------------------------------------------------------------- note
 
-// ReleaseReasons are the allowed `--reason` values.
-var ReleaseReasons = []string{"done", "blocked", "scope", "stale", "human"}
-
-// ReleaseOut is the `release` output.
-type ReleaseOut struct {
-	ID     string `json:"id"`
-	Reason string `json:"reason"`
+// NoteOut is the `note` output.
+type NoteOut struct {
+	ID        string   `json:"id"`
+	Outcome   string   `json:"outcome"`
+	CommentID string   `json:"comment_id,omitempty"`
+	Warnings  []string `json:"warnings"`
+	Holder    *Holder  `json:"holder,omitempty"`
+	Reason    string   `json:"reason,omitempty"`
+	SavedTo   string   `json:"saved_to,omitempty"` // where a refused note's text went
 }
 
-// Release gives a claim back with a classified reason (SPEC §4 effects).
-func Release(ctx context.Context, env *Env, id, reason string) (*ReleaseOut, error) {
-	if !contains(ReleaseReasons, reason) {
-		return nil, fmt.Errorf("release: reason must be one of %s", strings.Join(ReleaseReasons, "|"))
+// Negative reports a run that worked and an answer of no.
+func (o *NoteOut) Negative() bool { return o != nil && negative(o.Outcome) }
+
+// OutcomeNoted and OutcomeLanded are the successes of note and land.
+const (
+	OutcomeNoted  = "noted"
+	OutcomeLanded = "landed"
+)
+
+// noteEndings are the prefixes a note's last paragraph should start with,
+// so a fresh agent can resume from it (W09).
+var noteEndings = []string{"NEXT:", "BLOCKER:", "KEY DECISION:", "REF:"}
+
+// Note records where this run has got to and keeps the claim. The text goes
+// to bd through a private file, never as a command-line argument.
+func Note(ctx context.Context, env *Env, id, text string) (*NoteOut, error) {
+	if strings.TrimSpace(text) == "" {
+		return nil, fmt.Errorf("%w: note text is empty", ErrPrecondition)
 	}
-	showRaw, err := env.BD.Run(ctx, "show", id, "--json")
-	if err != nil {
+	if err := lock.ValidateID(id); err != nil {
 		return nil, err
 	}
-	cur, err := ledger.DecodeIssue(showRaw)
-	if err != nil {
-		return nil, err
+	out := &NoteOut{ID: id, Warnings: []string{}}
+	if _, held := env.Run.Held[id]; !held {
+		return out.refuse(OutcomeRefused, id+" is not held by this run", nil, text), nil
 	}
-	runs := cur.LabelsWithPrefix("run:")
-	if len(runs) > 0 && !contains(runs, env.Run.ID) && reason != "stale" {
-		return nil, fmt.Errorf("%w: %s is held by run %s, not this run (use --reason stale to reclaim)", ErrPrecondition, id, runs[0])
-	}
-	if _, err := env.BD.Run(ctx, "update", id, "--assignee", ""); err != nil {
-		return nil, err
-	}
-	for _, r := range runs {
-		if _, err := env.BD.Run(ctx, "label", "remove", id, "run:"+r); err != nil {
-			return nil, fmt.Errorf("unassigned but could not remove run label: %w", err)
-		}
-	}
-	switch reason {
-	case "blocked":
-		if _, err := env.BD.Run(ctx, "update", id, "--status", "blocked"); err != nil {
-			return nil, err
-		}
-	case "human":
-		if _, err := env.BD.Run(ctx, "label", "add", id, "needs:human"); err != nil {
-			return nil, err
-		}
-	case "scope", "stale":
-		if _, err := env.BD.Run(ctx, "label", "add", id, "bops:hold"); err != nil {
-			return nil, err
-		}
-	}
-	ev := fmt.Sprintf("bops:released run=%s reason=%s", env.Run.ID, reason)
-	if _, err := env.BD.Run(ctx, "comments", "add", id, ev); err != nil {
-		return nil, fmt.Errorf("released but could not record event: %w", err)
-	}
-	env.Run.Drop(id)
-	if _, err := env.BD.Run(ctx, "dolt", "push"); err != nil {
-		return &ReleaseOut{id, reason}, fmt.Errorf("released locally; push failed: %w", err)
-	}
-	return &ReleaseOut{id, reason}, nil
-}
-
-// ---------------------------------------------------------------- sync
-
-// SyncOut is the `sync` output.
-type SyncOut struct {
-	Pulled      bool   `json:"pulled"`
-	Pushed      bool   `json:"pushed"`
-	Revision    string `json:"revision"`
-	Unpublished int    `json:"unpublished"`
-}
-
-// Sync pulls, heartbeats held claims, and pushes, retrying once after a
-// Dolt lock error (SPEC §4 retry policy).
-func Sync(ctx context.Context, env *Env, noPush bool) (*SyncOut, error) {
-	out := &SyncOut{}
-	if _, err := withLockRetry(ctx, env, "dolt", "pull"); err != nil {
-		return out, err
-	}
-	out.Pulled = true
-	for _, id := range env.Run.Held {
-		_, _ = env.BD.Run(ctx, "heartbeat", id) // best effort; lease is advisory
-	}
-	if noPush {
+	if done := env.refreshClaim(ctx, id, text, out); done {
 		return out, nil
 	}
-	if _, err := withLockRetry(ctx, env, "dolt", "push"); err != nil {
-		return out, err
+	path, cleanup, err := writeTemp(fmt.Sprintf("bops:note run=%s\n%s", env.Run.ID, text))
+	if err != nil {
+		return nil, err
 	}
-	out.Pushed = true
+	defer cleanup()
+	added, err := env.BD.Run(ctx, "comments", "add", id, "-f", path, "--json")
+	if err != nil {
+		return nil, err
+	}
+	out.Outcome = OutcomeNoted
+	if out.CommentID, err = ledger.DecodeCommentID(added); err != nil {
+		out.Warnings = append(out.Warnings, "note saved, but its comment id is unknown: "+err.Error())
+	}
+	if !endsWithHandoff(text) {
+		out.Warnings = append(out.Warnings, "W09: last paragraph should start with "+strings.Join(noteEndings, " "))
+	}
+	// The comment is already saved, so a lost lease is reported, not fatal.
+	if _, err := env.BD.Run(ctx, "heartbeat", id); err != nil {
+		out.Warnings = append(out.Warnings, "heartbeat failed: "+err.Error())
+	}
 	return out, nil
+}
+
+// refuse records why a note was not applied and keeps its text, so the work
+// it describes is not lost with the claim.
+func (o *NoteOut) refuse(outcome, why string, holder *Holder, text string) *NoteOut {
+	o.Outcome, o.Reason, o.Holder = outcome, why, holder
+	f, err := os.CreateTemp("", "bops-note-*") // created mode 0600
+	if err != nil {
+		o.Warnings = append(o.Warnings, "note text could not be saved: "+err.Error())
+		return o
+	}
+	defer f.Close()
+	if _, err := f.WriteString(text); err != nil {
+		o.Warnings = append(o.Warnings, "note text could not be saved: "+err.Error())
+		return o
+	}
+	o.SavedTo = f.Name()
+	return o
+}
+
+// refreshClaim replaces this run's ref so its age shows activity (D27). A
+// network failure is only a warning, because a note must work offline. It
+// reports true if the note must stop, having lost the claim.
+func (e *Env) refreshClaim(ctx context.Context, id, text string, out *NoteOut) bool {
+	if e.LockOff {
+		return false // no ref to refresh; the comment and heartbeat show activity
+	}
+	entry, owned, err := e.checkHold(ctx, id)
+	if err != nil {
+		out.Warnings = append(out.Warnings, "claim not refreshed: "+err.Error())
+		return false
+	}
+	lost := func(holder *Holder) bool {
+		out.refuse(OutcomeLost, id+" is no longer held by this run", holder, text)
+		e.event("note", id, "ref_refresh", OutcomeLost, "", nil)
+		return true
+	}
+	if !owned {
+		holder, err := e.dropLost(ctx, id)
+		if err != nil {
+			out.Warnings = append(out.Warnings, err.Error())
+		}
+		return lost(holder)
+	}
+	if entry.Legacy() {
+		return false
+	}
+	res, err := e.Lock.Replace(ctx, id, entry.SHA, lock.StateHeld)
+	if err != nil {
+		out.Warnings = append(out.Warnings, "claim not refreshed: "+err.Error())
+		e.event("note", id, "ref_refresh", "pending", entry.SHA, err)
+		return false
+	}
+	if res.Outcome == lock.Lost {
+		if err := e.Lock.Journal.Drop(id); err != nil {
+			out.Warnings = append(out.Warnings, err.Error())
+		}
+		return lost(e.holder(res.Holder))
+	}
+	e.event("note", id, "ref_refresh", OutcomeNoted, res.SHA, nil)
+	return false
+}
+
+// writeTemp puts text for bd in a private file, so it stays off the command line.
+func writeTemp(body string) (path string, cleanup func(), err error) {
+	f, err := os.CreateTemp("", "bops-*") // created mode 0600
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup = func() { _ = os.Remove(f.Name()) }
+	_, err = f.WriteString(body)
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return f.Name(), cleanup, nil
+}
+
+func endsWithHandoff(text string) bool {
+	paragraphs := strings.Split(strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n")), "\n\n")
+	last := strings.TrimSpace(paragraphs[len(paragraphs)-1])
+	for _, prefix := range noteEndings {
+		if strings.HasPrefix(last, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// ---------------------------------------------------------------- land
+
+// contractVersion is recorded in metadata.bops (SPEC §3.3).
+const contractVersion = 1
+
+var hexSHA = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
+
+// LandOut is the `land` output.
+type LandOut struct {
+	ID       string        `json:"id"`
+	Outcome  string        `json:"outcome"`
+	Landed   ledger.Landed `json:"landed,omitzero"`
+	Holder   *Holder       `json:"holder,omitempty"`
+	Reason   string        `json:"reason,omitempty"`
+	Warnings []string      `json:"warnings,omitempty"`
+}
+
+// Negative reports a run that worked and an answer of no.
+func (o *LandOut) Negative() bool { return o != nil && negative(o.Outcome) }
+
+// LandOpts are the `land` arguments. Verify is nil unless the caller asked
+// for --verify, so land touches a forge only on request.
+type LandOpts struct {
+	Ref, SHA string
+	Verify   forge.Forge
+}
+
+// Land records evidence that work reached its destination. It never merges,
+// pushes a branch, or closes the bead.
+func Land(ctx context.Context, env *Env, id string, o LandOpts) (*LandOut, error) {
+	u, err := url.Parse(o.Ref)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || strings.ContainsAny(o.Ref, " \t\r\n") {
+		return nil, fmt.Errorf("%w: ref %q is not an http(s) URL", ErrPrecondition, o.Ref)
+	}
+	if !hexSHA.MatchString(o.SHA) {
+		return nil, fmt.Errorf("%w: sha %q is not a lowercase hex commit id", ErrPrecondition, o.SHA)
+	}
+	if err := lock.ValidateID(id); err != nil {
+		return nil, err
+	}
+	if _, held := env.Run.Held[id]; !held {
+		return &LandOut{ID: id, Outcome: OutcomeRefused, Reason: id + " is not held by this run"}, nil
+	}
+	var warnings []string
+	if env.LockOff {
+		warnings = []string{lock.OffWarning}
+	} else {
+		_, owned, err := env.checkHold(ctx, id)
+		if err != nil {
+			return &LandOut{ID: id, Outcome: OutcomeUnreachable}, err
+		}
+		if !owned {
+			holder, err := env.dropLost(ctx, id)
+			if err != nil {
+				return nil, err
+			}
+			env.event("land", id, "ref_check", OutcomeLost, "", nil)
+			return &LandOut{ID: id, Outcome: OutcomeLost, Holder: holder, Reason: id + " is no longer held by this run"}, nil
+		}
+	}
+	cur, err := env.show(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if env.LockOff {
+		if holder := env.ledgerHolder(cur); holder != nil {
+			if err := env.Lock.Journal.Drop(id); err != nil {
+				return nil, err
+			}
+			env.event("land", id, "ledger_check", OutcomeLost, "", nil)
+			return &LandOut{ID: id, Outcome: OutcomeLost, Holder: holder, Reason: id + " is no longer held by this run", Warnings: warnings}, nil
+		}
+	}
+	if o.Verify != nil {
+		head, err := o.Verify.RefSHA(ctx, o.Ref)
+		if err != nil {
+			return nil, fmt.Errorf("could not verify %s: %w", o.Ref, err)
+		}
+		if !strings.HasPrefix(head, o.SHA) {
+			return nil, fmt.Errorf("%w: %s is at %s, not %s", ErrPrecondition, o.Ref, head, o.SHA)
+		}
+	}
+	entry := ledger.Landed{Ref: o.Ref, SHA: o.SHA, Run: env.Run.ID, At: env.now().Format(time.RFC3339)}
+	merged, existing, err := ledger.MergeLanded(cur, entry, contractVersion)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil { // a repeat of the same landing writes nothing
+		return &LandOut{ID: id, Outcome: OutcomeLanded, Landed: *existing, Warnings: warnings}, nil
+	}
+	path, cleanup, err := writeTemp(string(merged))
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	if _, err := env.BD.Run(ctx, "update", id, "--metadata", "@"+path); err != nil {
+		return nil, err
+	}
+	out := &LandOut{ID: id, Outcome: OutcomeLanded, Landed: entry, Warnings: warnings}
+	ev := fmt.Sprintf("bops:landed run=%s ref=%s sha=%s", env.Run.ID, o.Ref, o.SHA)
+	if _, err := env.BD.Run(ctx, "comments", "add", id, ev); err != nil {
+		return out, fmt.Errorf("landed but could not record event: %w", err)
+	}
+	if env.unpublished(ctx) {
+		out.Warnings = append(out.Warnings, noDoltRemoteWarning)
+		return out, nil
+	}
+	// bd's push "succeeds" with no remote, so say the landing stayed here.
+	if w := env.noLedgerRemoteWarning(ctx); w != "" {
+		out.Warnings = append(out.Warnings, w)
+		return out, nil
+	}
+	if _, err := env.BD.Run(ctx, "dolt", "push"); err != nil {
+		return out, fmt.Errorf("landed locally; push failed: %w", err)
+	}
+	return out, nil
+}
+
+// --------------------------------------------------------------- sweep
+
+// SweepOut is the `sweep` output.
+type SweepOut struct {
+	DryRun     bool     `json:"dry_run"`
+	Closed     []string `json:"closed"`
+	WouldClose []string `json:"would_close"`
+	Pending    []string `json:"pending"`
+	Unknown    []string `json:"unknown"`
+	Warnings   []string `json:"warnings,omitempty"`
+}
+
+type sweepCandidate struct {
+	issue *ledger.Issue
+	last  ledger.Landed
+}
+
+// Sweep closes beads whose latest landed ref has merged and deletes their
+// locks. It never deletes a lock it did not just read:
+//
+//	pull --> list --> merged? --> fetch refs --> delete with a lease --> close
+//
+// The delete comes first on purpose. Its lease is the one point that decides
+// between a sweep and a resume. Once it wins no resume can succeed, and closing
+// first could leave a closed bead with a live holder.
+func Sweep(ctx context.Context, env *Env, f forge.Forge, dryRun bool) (*SweepOut, error) {
+	out := &SweepOut{DryRun: dryRun, Closed: []string{}, WouldClose: []string{}, Pending: []string{}, Unknown: []string{}}
+	publish := !dryRun
+	if publish && env.unpublished(ctx) {
+		publish = false
+		out.Warnings = append(out.Warnings, noDoltRemoteWarning)
+	}
+	if publish {
+		if err := env.noLedgerRemote(ctx); err != nil {
+			return out, err // the cause, not bd's "no remote" from the pull
+		}
+		if _, err := withLockRetry(ctx, env, "dolt", "pull"); err != nil {
+			return out, err
+		}
+	}
+	raw, err := env.BD.Run(ctx, "list", "--status", "in_progress", "--limit", "0", "--json")
+	if err != nil {
+		return nil, err
+	}
+	issues, err := ledger.DecodeIssues(raw)
+	if err != nil {
+		return nil, err
+	}
+	merged := []sweepCandidate{}
+	for k := range issues {
+		i := &issues[k]
+		landed, err := i.Landed()
+		if err != nil {
+			out.Unknown = append(out.Unknown, i.ID)
+			continue
+		}
+		if len(landed) == 0 {
+			continue
+		}
+		last := landed[len(landed)-1]
+		switch f.IsMerged(ctx, last.Ref) {
+		case forge.No:
+			out.Pending = append(out.Pending, i.ID)
+		case forge.Unknown:
+			out.Unknown = append(out.Unknown, i.ID)
+		case forge.Yes:
+			merged = append(merged, sweepCandidate{i, last})
+		}
+	}
+	if env.LockOff {
+		out.Warnings = append(out.Warnings, lock.OffWarning)
+	}
+	if len(merged) == 0 {
+		return out, nil
+	}
+	refs := map[string]lock.Ref{} // with the lock off, every bead takes the no-ref path
+	if !env.LockOff {
+		if err := env.Lock.Fetch(ctx); err != nil {
+			for _, c := range merged {
+				out.Unknown = append(out.Unknown, c.issue.ID)
+			}
+			return out, err
+		}
+		seen, err := env.Lock.Seen(ctx)
+		if err != nil {
+			return out, err
+		}
+		for _, r := range seen {
+			refs[r.ID] = r
+		}
+	}
+	var failures []error
+	for _, c := range merged {
+		if err := env.sweepOne(ctx, c, refs, dryRun, out); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	if len(out.Closed) > 0 && publish {
+		if err := env.pushLedger(ctx); err != nil {
+			failures = append(failures, fmt.Errorf("closed locally; push failed: %w", err))
+		}
+	}
+	return out, errors.Join(failures...)
+}
+
+func (e *Env) sweepOne(ctx context.Context, c sweepCandidate, refs map[string]lock.Ref, dryRun bool, out *SweepOut) error {
+	id := c.issue.ID
+	ref, found := refs[id]
+	switch {
+	case !found && !c.issue.HasLabel("bops:landing"):
+		out.Pending = append(out.Pending, id)
+		return nil
+	case found && (ref.State != lock.StateLanding || ref.Run != c.last.Run):
+		out.Pending = append(out.Pending, id) // resumed, or reclaimed since it landed
+		return nil
+	}
+	if dryRun {
+		out.WouldClose = append(out.WouldClose, id)
+		return nil
+	}
+	if found {
+		res, err := e.Lock.Delete(ctx, id, ref.SHA)
+		if err != nil {
+			out.Unknown = append(out.Unknown, id)
+			e.event("sweep", id, "ref_delete", OutcomeUnreachable, ref.SHA, err)
+			return err
+		}
+		if res.Outcome != lock.Gone {
+			out.Pending = append(out.Pending, id)
+			e.event("sweep", id, "ref_delete", OutcomeLost, ref.SHA, nil)
+			return nil
+		}
+		e.event("sweep", id, "ref_delete", "deleted", ref.SHA, nil)
+	}
+	reason := fmt.Sprintf("merged via %s (%s)", c.last.Ref, c.last.SHA)
+	if _, err := e.BD.Run(ctx, "close", id, "--reason", reason); err != nil {
+		out.Unknown = append(out.Unknown, id) // a later sweep finds no ref and closes it
+		return err
+	}
+	out.Closed = append(out.Closed, id)
+	e.event("sweep", id, "close", "closed", "", nil)
+	return nil
 }
 
 func withLockRetry(ctx context.Context, env *Env, args ...string) ([]byte, error) {
@@ -340,7 +657,21 @@ func withLockRetry(ctx context.Context, env *Env, args ...string) ([]byte, error
 	return b, err
 }
 
+// lockErrors are the contention messages in the bd 1.3.4 binary. Matching the
+// bare word "lock" also matched "blocked" and "clock".
+var lockErrors = []string{
+	"database is locked",
+	"locked by another dolt process",
+	"lock already held by another process",
+	"lock timeout exceeded",
+}
+
 func isLockError(err error) bool {
 	s := strings.ToLower(err.Error())
-	return strings.Contains(s, "lock")
+	for _, m := range lockErrors {
+		if strings.Contains(s, m) {
+			return true
+		}
+	}
+	return false
 }

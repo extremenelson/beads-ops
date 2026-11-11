@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -23,6 +24,9 @@ const (
 	exitVerdict = 0
 	exitCantRun = 1
 	exitUsage   = 2
+	// exitNegative means bops ran and the answer was no: the bead is someone
+	// else's or a precondition failed. `bops claim x && work` must not proceed.
+	exitNegative = 3
 )
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
@@ -44,9 +48,18 @@ func run(args []string, stdout, stderr *os.File) int {
 			wantJSON = true
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), budget(name))
 	defer cancel()
 
+	switch name {
+	case "version", "manifest":
+		for _, a := range rest {
+			if a != "--json" {
+				fmt.Fprintf(stderr, "usage: bops %s [--json]\n", name)
+				return exitUsage
+			}
+		}
+	}
 	switch name {
 	case "version":
 		return cmdVersion(ctx, m, wantJSON, stdout, stderr)
@@ -62,12 +75,24 @@ func run(args []string, stdout, stderr *os.File) int {
 		return cmdNext(ctx, m, rest, wantJSON, stdout, stderr)
 	case "claim":
 		return cmdClaim(ctx, m, rest, wantJSON, stdout, stderr)
+	case "land":
+		return cmdLand(ctx, m, rest, wantJSON, stdout, stderr)
+	case "sweep":
+		return cmdSweep(ctx, m, rest, wantJSON, stdout, stderr)
+	case "note":
+		return cmdNote(ctx, m, rest, wantJSON, stdout, stderr)
 	case "release":
 		return cmdRelease(ctx, m, rest, wantJSON, stdout, stderr)
 	case "sync":
 		return cmdSync(ctx, m, rest, wantJSON, stdout, stderr)
 	case "lint":
 		return cmdLint(ctx, m, rest, wantJSON, stdout, stderr)
+	case "stale":
+		return cmdStale(ctx, m, rest, wantJSON, stdout, stderr)
+	case "session-start":
+		return cmdSessionStart(ctx, m, rest, wantJSON, stdout, stderr)
+	case "doctor":
+		return cmdDoctor(ctx, m, rest, wantJSON, stdout, stderr)
 	}
 	if _, ok := m.Lookup(name); ok {
 		fmt.Fprintf(stderr, "bops %s: specified in contract %d but not yet implemented (did NOT run)\n", name, m.Contract)
@@ -76,6 +101,21 @@ func run(args []string, stdout, stderr *os.File) int {
 	fmt.Fprintf(stderr, "bops: unknown command %q\n", name)
 	usage(stderr, m)
 	return exitUsage
+}
+
+// budget bounds a whole command. Each git and bd call has its own, shorter
+// limit, so a command that uses the network has room to finish. Cancelling a
+// push partway would leave its outcome unknown.
+func budget(name string) time.Duration {
+	switch name {
+	case "sweep": // one forge call per landed bead
+		return 5 * time.Minute
+	case "sync":
+		return 2 * time.Minute
+	case "claim", "release", "note", "session-start", "doctor":
+		return time.Minute
+	}
+	return 30 * time.Second
 }
 
 // isTerminal reports whether f is a character device (stdlib-only; SPEC §11a).
@@ -102,8 +142,18 @@ type versionOut struct {
 	Warning  string `json:"warning,omitempty"`
 }
 
+// resolveVersion prefers a version stamped by ldflags, then the module
+// version `go install` records, then "dev".
+func resolveVersion(stamped string, info *debug.BuildInfo) string {
+	if stamped != "dev" || info == nil || info.Main.Version == "" || info.Main.Version == "(devel)" {
+		return stamped
+	}
+	return info.Main.Version
+}
+
 func cmdVersion(ctx context.Context, m *manifest.Manifest, asJSON bool, stdout, stderr *os.File) int {
-	out := versionOut{Contract: m.Contract, Command: "version", OK: true, Bops: version}
+	info, _ := debug.ReadBuildInfo()
+	out := versionOut{Contract: m.Contract, Command: "version", OK: true, Bops: resolveVersion(version, info)}
 	v, err := bdx.DetectVersion(ctx, bdx.Exec{})
 	switch {
 	case errors.Is(err, bdx.ErrNotFound):

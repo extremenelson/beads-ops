@@ -3,11 +3,10 @@
   "contract": 1,
   "common": {
     "flags": {
-      "json": { "type": "bool", "doc": "Emit one JSON document on stdout. Default when stdout is not a TTY." },
-      "idempotency-key": { "type": "string?", "doc": "Write commands only: a repeat with the same key is a no-op returning the original result." }
+      "json": { "type": "bool", "doc": "Emit one JSON document on stdout. Default when stdout is not a TTY." }
     },
-    "exit": { "0": "verdict produced (may be negative)", "1": "could not run: ledger unreachable, precondition unverifiable, bd error", "2": "usage" },
-    "envelope": { "contract": "int", "command": "string", "ok": "bool" }
+    "exit": { "0": "done, or a read's verdict", "1": "could not run: remote or ledger unreachable, precondition unverifiable, bd error", "2": "usage", "3": "negative verdict on a write: lost or refused, ok:false" },
+    "envelope": { "contract": "int", "command": "string", "ok": "bool", "error": "string?", "code": "string?" }
   },
   "commands": [
     {
@@ -30,7 +29,8 @@
           }
         ],
         "excluded_count": "int",
-        "ledger_revision": "string"
+        "ledger_revision": "string",
+        "warnings": "string[]?"
       },
       "surfaces": { "cc": ["skill", "hook:SessionStart"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": true } }
     },
@@ -38,10 +38,11 @@
       "name": "claim",
       "intent": "Take this bead for this run",
       "kind": "write",
-      "args": { "id": { "type": "string" }, "force": { "type": "bool", "default": false } },
-      "preconditions": ["assignee is empty OR --force", "status in (open, ready)", "no run: label"],
-      "wraps": ["bd update <id> --claim --if-assignee ''", "bd label add <id> run:<ulid>", "bd comments add <id>", "bd dolt push"],
-      "output": { "id": "string", "run": "string", "claimed_at": "string", "readback_ok": "bool" },
+      "args": { "id": { "type": "string" }, "force": { "type": "bool", "default": false, "doc": "Take over a claim idle for stale_minutes (default 120), or an orphan. Refused on a landing bead." }, "resume": { "type": "bool", "default": false, "doc": "Take back a landing bead for PR rework. Only the ref's actor can." } },
+      "preconditions": ["assignee is empty OR --force", "status in (open, ready)", "no run: label", "the lock remote (lock.remote, default origin) matches the Dolt remote (lock.mode ref)"],
+      "wraps": ["git push refs/bops/claims/<id> (create-only)", "bd dolt pull", "bd update <id> --claim", "bd label add <id> run:<ulid>", "bd comments add <id>", "bd dolt push"],
+      "outcomes": { "claimed": 0, "held": 0, "lost": 3, "refused": 3, "unreachable": 1 },
+      "output": { "id": "string", "run": "string", "outcome": "string", "claimed_at": "string?", "readback_ok": "bool?", "ledger_pending": "bool?", "ref_pending": "bool?", "holder": "object?", "reason": "string?", "age_minutes": "int?", "stale_minutes": "int?", "retry": "string?", "side_effects": "string?", "warnings": "string[]?" },
       "surfaces": { "cc": ["skill"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": false } }
     },
     {
@@ -49,10 +50,11 @@
       "intent": "Record where I am, keep the claim",
       "kind": "write",
       "args": { "id": { "type": "string" }, "text": { "type": "stdin|file", "doc": "Never on the command line." } },
-      "preconditions": ["run: label matches current run"],
+      "preconditions": ["this run holds the bead and its ref still matches"],
       "lint": ["last paragraph starts with NEXT:|BLOCKER:|KEY DECISION:|REF: (warn)"],
-      "wraps": ["bd comments add <id>", "bd heartbeat <id>"],
-      "output": { "id": "string", "comment_id": "string", "warnings": "string[]" },
+      "wraps": ["git push refs/bops/claims/<id> (lease; a network failure is a warning)", "bd comments add <id> -f <file>", "bd heartbeat <id>"],
+      "outcomes": { "noted": 0, "lost": 3, "refused": 3 },
+      "output": { "id": "string", "outcome": "string", "comment_id": "string?", "warnings": "string[]", "holder": "object?", "reason": "string?", "saved_to": "string?" },
       "surfaces": { "cc": ["skill", "hook:PreCompact"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": false } }
     },
     {
@@ -61,22 +63,31 @@
       "kind": "write",
       "args": {
         "id": { "type": "string" },
-        "reason": { "type": "enum", "values": ["done", "blocked", "scope", "stale", "human"] },
-        "text": { "type": "stdin|file?" }
+        "reason": { "type": "enum", "values": ["done", "blocked", "scope", "abandoned", "human"] },
+        "text": { "type": "stdin|file?", "doc": "Optional. Read only when asked: --file <path>, or --file - for stdin. Never on the command line. Recorded below the event line of the release's bops:released comment; a lost or refused release writes none of it." }
       },
-      "effects": { "blocked": "status→blocked", "human": "+needs:human", "scope": "+bops:hold", "stale": "+bops:hold", "done": "none; await land/sweep" },
-      "wraps": ["bd update <id> --assignee ''", "bd label remove <id> run:*", "bd comments add <id>", "bd dolt push"],
-      "output": { "id": "string", "reason": "string" },
+      "effects": { "blocked": "status→blocked", "human": "+needs-human", "scope": "+bops:hold", "abandoned": "+bops:hold", "done": "none; await land/sweep" },
+      "wraps": ["git fetch refs/bops/claims/<id>", "git push (lease): state=landing on done, delete otherwise", "bd update <id> --assignee ''", "bd label remove <id> run:*", "bd comments add <id> <event> (no text), or bd comments add <id> -f <file> (event line, then the --file text)", "bd dolt push"],
+      "outcomes": { "released": 0, "lost": 3, "refused": 3, "unreachable": 1 },
+      "output": { "id": "string", "reason": "string", "outcome": "string", "ledger_pending": "bool?", "ref_pending": "bool?", "holder": "object?", "detail": "string?", "warnings": "string[]?" },
       "surfaces": { "cc": ["skill"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": false } }
     },
     {
       "name": "land",
       "intent": "Record that work reached its destination",
       "kind": "write",
-      "args": { "id": { "type": "string" }, "ref": { "type": "url" }, "sha": { "type": "string" } },
+      "args": {
+        "id": { "type": "string" },
+        "ref": { "type": "url" },
+        "sha": { "type": "string" },
+        "verify": { "type": "bool", "default": false },
+        "forge": { "type": "enum", "values": ["auto", "github", "gitlab", "none"], "default": "auto" }
+      },
+      "preconditions": ["this run holds the bead and its ref still matches"],
       "never": ["merge", "push a branch", "close"],
-      "wraps": ["bd comments add <id>", "bd update <id> --metadata (merge bops.landed)", "bd dolt push"],
-      "output": { "id": "string", "landed": { "ref": "string", "sha": "string", "run": "string", "at": "string" } },
+      "wraps": ["bd update <id> --metadata @<file> (merge bops.landed)", "bd comments add <id>", "bd dolt push"],
+      "outcomes": { "landed": 0, "lost": 3, "refused": 3, "unreachable": 1 },
+      "output": { "id": "string", "outcome": "string", "landed": { "ref": "string", "sha": "string", "run": "string", "at": "string" }, "holder": "object?", "reason": "string?", "warnings": "string[]?" },
       "surfaces": { "cc": ["skill"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": false } }
     },
     {
@@ -87,17 +98,17 @@
         "dry-run": { "type": "bool", "default": true },
         "forge": { "type": "enum", "values": ["auto", "github", "gitlab", "none"], "default": "auto" }
       },
-      "wraps": ["forge.is_merged(ref)", "bd close <id> --reason 'merged via <ref> (<sha>)'"],
-      "output": { "closed": "string[]", "pending": "string[]", "unknown": "string[]" },
+      "wraps": ["bd dolt pull", "bd list --status in_progress --limit 0 --json", "forge.is_merged(ref)", "git fetch --prune refs/bops/claims/*", "git push (lease): delete the ref", "bd close <id> --reason 'merged via <ref> (<sha>)'", "bd dolt push"],
+      "output": { "dry_run": "bool", "closed": "string[]", "would_close": "string[]", "pending": "string[]", "unknown": "string[]", "warnings": "string[]?" },
       "surfaces": { "cc": ["skill"], "clj": "fn", "mcp": { "readOnly": false } }
     },
     {
       "name": "stale",
       "intent": "Claims nobody is working",
       "kind": "read",
-      "args": { "older-than": { "type": "duration", "default": "2h" }, "all-machines": { "type": "bool", "default": true } },
-      "wraps": ["bd list --status in_progress --json", "bd comments list <id> --json"],
-      "output": { "stale": [ { "id": "string", "run": "string", "last_event_at": "string", "age_minutes": "int", "same_machine": "bool" } ] },
+      "args": { "older-than": { "type": "duration", "default": "stale_minutes", "doc": "Idle longer than this is stale; defaults to the stale_minutes config (120). Age is from the claim ref's at, which note refreshes; a claim with no ref uses updated_at, heartbeat_at and its newest bops: comment." }, "all-machines": { "type": "bool", "default": true, "doc": "false hides claims and orphans from other machines." } },
+      "wraps": ["git fetch --prune refs/bops/claims/* (the last sync's copy if offline, with a warning)", "bd list --status in_progress --limit 0 --json", "bd comments <id> --json"],
+      "output": { "stale": [ { "id": "string", "run": "string", "actor": "string", "last_event_at": "string", "age_minutes": "int", "same_machine": "bool", "source": "ref|ledger" } ], "orphans": [ { "id": "string", "run": "string", "actor": "string", "at": "string", "age_minutes": "int", "same_machine": "bool" } ], "warnings": "string[]" },
       "surfaces": { "cc": ["skill", "hook:SessionStart"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": true } }
     },
     {
@@ -119,9 +130,9 @@
       "intent": "Pull, heartbeat, push — with the one retry",
       "kind": "write",
       "args": { "no-push": { "type": "bool", "default": false } },
-      "wraps": ["bd dolt pull", "bd heartbeat <id> (held claims)", "bd dolt push"],
+      "wraps": ["git fetch --prune refs/bops/claims/*", "bd dolt pull", "bd heartbeat <id> (held claims)", "bd update <id> --assignee '' --status open; bd label remove <id> run:<ulid> (this run's claim whose ref is gone and that nobody took)", "bd dolt push"],
       "retry": { "on": "dolt lock", "times": 1, "after_ms": 5000 },
-      "output": { "pulled": "bool", "pushed": "bool", "revision": "string", "unpublished": "int" },
+      "output": { "pulled": "bool", "pushed": "bool", "revision": "string", "unpublished": "int", "stranded_holds": "string[]", "lost_claims": "string[]", "warnings": "string[]?" },
       "surfaces": { "cc": ["skill", "hook:Stop"], "codex": ["skill"], "clj": "fn" }
     },
     {
@@ -129,9 +140,19 @@
       "intent": "Orient a fresh agent session",
       "kind": "read+sync",
       "args": {},
-      "wraps": ["sync", "bd prime", "stale --older-than 2h", "bd list --assignee <me> --status in_progress --json"],
-      "output": { "mine": "string[]", "stale": "int", "ready_count": "int", "prime": "string" },
+      "wraps": ["sync --no-push", "stale (stale_minutes; count, all machines)", "next (count of workable)", "bd prime --mcp --max-memory-chars 600 (capped at 3000 bytes)"],
+      "output": { "mine": "string[]", "lost_claims": "string[]", "stranded_holds": "string[]", "stale": "int", "ready_count": "int", "synced": "bool", "prime": "string", "warnings": "string[]" },
       "surfaces": { "cc": ["hook:SessionStart"], "codex": ["hook:SessionStart"], "clj": "fn" }
+    },
+    {
+      "name": "doctor",
+      "intent": "Can the claim lock work against its remote (lock.remote, default origin)?",
+      "kind": "read",
+      "args": {},
+      "never": ["write a claim ref or the ledger", "leave its probe ref behind silently (a failed delete is a warning naming the command)"],
+      "wraps": ["origin: git remote get-url <lock.remote>", "fetch: git ls-remote <lock.remote> refs/bops/claims/*", "push: git push --dry-run (create-only) refs/bops/doctor/<nonce>", "lock: git push (create-only) refs/bops/doctor/<nonce>, then a second create-only push that must be refused", "git push (lease): delete the probe ref", "dolt_remote: bd dolt remote list --json (a Dolt remote on the lock remote's repository, else remote_mismatch)"],
+      "output": { "remote": "string", "probe_ref": "string", "checks": [ { "id": "origin|fetch|push|lock|dolt_remote","status": "ok|fail|skip", "detail": "string", "code": "string?", "next": "string?" } ], "failed": "string[] (any entry: exit 1, code from the first failure)", "warnings": "string[]" },
+      "surfaces": { "cc": ["skill"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": false } }
     },
     {
       "name": "gates",

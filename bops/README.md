@@ -12,6 +12,12 @@ go test ./...             # unit + golden tests; no Dolt required
 go test ./internal/gen -update   # regenerate goldens — review the diff as a contract change
 ```
 
+Install from a checkout with `go install ./cmd/bops`. Once the module is tagged `bops/v0.1.0`:
+
+```bash
+go install github.com/extremenelson/beads-ops/bops/cmd/bops@v0.1.0
+```
+
 Layout:
 
 | Path | Role |
@@ -22,8 +28,10 @@ Layout:
 | `internal/bdx` | The only package that talks to `bd`; `Runner` interface with `Exec` and `Fake` |
 | `internal/gen` | Binding generators (`docs` today; `cc`, `codex`, `hermes`, `clj`, `mcp` to come) |
 | `internal/ledger` | bd JSON types and decoding (the only place field names live) |
+| `internal/forge` | The only package that knows what a pull request is (`gh`, `glab`, or none) |
 | `internal/runstate` | Per-machine run identity and held claims (`$XDG_STATE_HOME/bops/`) |
-| `internal/intent` | The commands: `next`, `claim`, `release`, `sync`, `lint` so far |
+| `internal/config` | `.bops.json`, per-user config and `BOPS_*` env, merged (SPEC §10) |
+| `internal/intent` | The commands: `next`, `claim`, `note`, `land`, `sweep`, `release`, `sync`, `lint` so far |
 | `testdata/golden` | Golden outputs, one per generator target |
 
 Commands named in the manifest but not yet implemented exit 1 with `did NOT run`, so a binding never mistakes "unimplemented" for "nothing to do".

@@ -3,16 +3,23 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/extremenelson/beads-ops/bops/internal/bdx"
+	"github.com/extremenelson/beads-ops/bops/internal/config"
+	"github.com/extremenelson/beads-ops/bops/internal/forge"
 	"github.com/extremenelson/beads-ops/bops/internal/intent"
 	"github.com/extremenelson/beads-ops/bops/internal/ledger"
+	"github.com/extremenelson/beads-ops/bops/internal/lock"
 	"github.com/extremenelson/beads-ops/bops/internal/manifest"
 	"github.com/extremenelson/beads-ops/bops/internal/runstate"
 )
@@ -23,15 +30,24 @@ type envelope struct {
 	Command  string `json:"command"`
 	OK       bool   `json:"ok"`
 	Error    string `json:"error,omitempty"`
+	Code     string `json:"code,omitempty"`
 }
 
-// emit writes the result in JSON or key=value form and maps errors to exit
-// codes: nil → 0; ErrPrecondition and bd errors → 1.
+// verdict is a result that can be a successful run with a negative answer.
+type verdict interface{ Negative() bool }
+
+// emit writes the result in JSON or key=value form and picks the exit code:
+// nil → 0; a negative verdict → 3 with ok:false; any error → 1.
 func emit(m *manifest.Manifest, cmd string, asJSON bool, result any, err error, stdout, stderr *os.File) int {
-	env := envelope{Contract: m.Contract, Command: cmd, OK: err == nil}
+	negative := false
+	if v, ok := result.(verdict); ok && err == nil {
+		negative = v.Negative()
+	}
+	env := envelope{Contract: m.Contract, Command: cmd, OK: err == nil && !negative}
 	if err != nil {
-		env.Error = err.Error()
-		fmt.Fprintf(stderr, "bops %s: %v (did NOT run to completion)\n", cmd, err)
+		env.Error = lock.Scrub(err.Error())
+		env.Code = lock.CodeOf(err)
+		fmt.Fprintf(stderr, "bops %s: %s (did NOT run to completion)\n", cmd, env.Error)
 	}
 	if asJSON {
 		merged := map[string]any{}
@@ -50,8 +66,11 @@ func emit(m *manifest.Manifest, cmd string, asJSON bool, result any, err error, 
 			printKV(stdout, result)
 		}
 	}
-	if err != nil {
+	switch {
+	case err != nil:
 		return exitCantRun
+	case negative:
+		return exitNegative
 	}
 	return exitVerdict
 }
@@ -89,45 +108,76 @@ func printKV(w *os.File, v any) {
 	}
 }
 
-func newEnv(ctx context.Context) (*intent.Env, error) {
-	root, err := os.Getwd()
-	if err != nil {
-		return nil, err
-	}
-	run, err := runstate.Load(root)
-	if err != nil {
-		return nil, fmt.Errorf("run state: %w", err)
-	}
-	if p := os.Getenv("BOPS_POOL"); p != "" {
-		run.Pool = p
-	}
-	if c := os.Getenv("BOPS_CAPS"); c != "" {
-		run.Caps = strings.Split(c, ",")
-	}
-	return &intent.Env{BD: bdx.Exec{}, Run: run}, nil
+// flagSetMade sees each command's FlagSet as it is made. The flags are defined
+// before any parse, so a test that runs a command with -h can read every flag
+// it takes and compare them with the manifest.
+var flagSetMade = func(*flag.FlagSet) {}
+
+func newFlagSet(name string, stderr io.Writer) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	flagSetMade(fs)
+	return fs
 }
 
-func saveRun(env *intent.Env) {
-	if root, err := os.Getwd(); err == nil {
-		_ = env.Run.Save(root)
+// parseAnyOrder lets flags appear before or after the bead id. The flag
+// package alone stops at the first non-flag argument.
+func parseAnyOrder(fs *flag.FlagSet, args []string) error {
+	positional := []string{}
+	for {
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		if fs.NArg() == 0 {
+			break
+		}
+		positional = append(positional, fs.Arg(0))
+		args = fs.Args()[1:]
 	}
+	return fs.Parse(append([]string{"--"}, positional...))
+}
+
+func newEnv(mode runstate.Mode) (*intent.Env, *runstate.Store, error) {
+	root, err := os.Getwd()
+	if err != nil {
+		return nil, nil, err
+	}
+	store, err := runstate.Open(root, mode)
+	if err != nil {
+		return nil, nil, fmt.Errorf("run state: %w", err)
+	}
+	cfg, err := config.Load(store.Worktree(), os.Getenv) // flags override it per command
+	if err != nil {
+		store.Close()
+		return nil, nil, err
+	}
+	run := store.Run()
+	if cfg.Pool != "" {
+		run.Pool = cfg.Pool
+	}
+	if cfg.Caps != nil {
+		run.Caps = cfg.Caps
+	}
+	l := &lock.Lock{Git: lock.Exec{Dir: root}, Journal: store, Run: run.ID, Actor: run.Actor, Remote: cfg.LockRemote}
+	return &intent.Env{BD: bdx.Exec{}, Run: run, Store: store, Lock: l, LockOff: cfg.LockOff(), StaleAfter: cfg.StaleAfter(), HoldFor: cfg.HoldFor()}, store, nil
 }
 
 func cmdNext(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
-	fs := flag.NewFlagSet("next", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := newFlagSet("next", stderr)
 	n := fs.Int("n", 3, "candidates to return")
 	inc := fs.Bool("include-unworkable", false, "also return excluded candidates with why_not")
 	pool := fs.String("pool", "", "serve only pool:<pool>")
 	caps := fs.String("caps", "", "comma-separated capabilities this run offers")
 	fs.Bool("json", false, "")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: bops next [--n 3] [--pool <name>] [--caps a,b] [--include-unworkable]")
 		return exitUsage
 	}
-	env, err := newEnv(ctx)
+	env, store, err := newEnv(runstate.Read)
 	if err != nil {
 		return emit(m, "next", asJSON, nil, err, stdout, stderr)
 	}
+	defer store.Close()
 	if *pool != "" {
 		env.Run.Pool = *pool
 	}
@@ -139,70 +189,302 @@ func cmdNext(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 }
 
 func cmdClaim(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
-	fs := flag.NewFlagSet("claim", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	force := fs.Bool("force", false, "claim even if assigned")
+	fs := newFlagSet("claim", stderr)
+	force := fs.Bool("force", false, "take over an expired claim or an orphan")
+	resume := fs.Bool("resume", false, "take back a landing bead for PR rework")
 	fs.Bool("json", false, "")
-	if err := fs.Parse(args); err != nil || fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: bops claim <id> [--force]")
+	if err := parseAnyOrder(fs, args); err != nil || fs.NArg() != 1 || (*force && *resume) {
+		fmt.Fprintln(stderr, "usage: bops claim <id> [--force | --resume]")
 		return exitUsage
 	}
-	env, err := newEnv(ctx)
+	env, store, err := newEnv(runstate.Read)
 	if err != nil {
 		return emit(m, "claim", asJSON, nil, err, stdout, stderr)
 	}
-	out, err := intent.Claim(ctx, env, fs.Arg(0), *force)
-	saveRun(env)
+	defer store.Close()
+	var out *intent.ClaimOut
+	if *resume {
+		out, err = intent.ClaimResume(ctx, env, fs.Arg(0))
+	} else {
+		out, err = intent.Claim(ctx, env, fs.Arg(0), *force)
+	}
 	return emit(m, "claim", asJSON, out, err, stdout, stderr)
 }
 
-func cmdRelease(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
-	fs := flag.NewFlagSet("release", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	reason := fs.String("reason", "", strings.Join(intent.ReleaseReasons, "|"))
+// noteText reads the note body. It is never taken from an argument.
+func noteText(file string, stdin io.Reader, stdinIsTerminal bool) (string, error) {
+	if file != "" {
+		b, err := os.ReadFile(file)
+		return string(b), err
+	}
+	if stdinIsTerminal {
+		return "", errors.New("no note text: pipe it to stdin or use --file")
+	}
+	b, err := io.ReadAll(stdin)
+	return string(b), err
+}
+
+func cmdNote(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
+	fs := newFlagSet("note", stderr)
+	file := fs.String("file", "", "read the note from this file instead of stdin")
 	fs.Bool("json", false, "")
-	if err := fs.Parse(args); err != nil || fs.NArg() != 1 || *reason == "" {
-		fmt.Fprintln(stderr, "usage: bops release <id> --reason "+strings.Join(intent.ReleaseReasons, "|"))
+	if err := parseAnyOrder(fs, args); err != nil || fs.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: bops note <id> [--file <path>]   (text from stdin or --file)")
 		return exitUsage
 	}
-	env, err := newEnv(ctx)
+	text, err := noteText(*file, os.Stdin, isTerminal(os.Stdin))
+	if err != nil {
+		fmt.Fprintln(stderr, "bops note:", err)
+		return exitUsage
+	}
+	env, store, err := newEnv(runstate.Read)
+	if err != nil {
+		return emit(m, "note", asJSON, nil, err, stdout, stderr)
+	}
+	defer store.Close()
+	out, err := intent.Note(ctx, env, fs.Arg(0), text)
+	return emit(m, "note", asJSON, out, err, stdout, stderr)
+}
+
+func cmdLand(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
+	fs := newFlagSet("land", stderr)
+	ref := fs.String("ref", "", "URL of the merge request")
+	sha := fs.String("sha", "", "commit the work landed as")
+	verify := fs.Bool("verify", false, "check the ref's commit on the forge first")
+	fs.String("forge", "auto", "auto|github|gitlab|none (used with --verify)")
+	fs.Bool("json", false, "")
+	if err := parseAnyOrder(fs, args); err != nil || fs.NArg() != 1 || *ref == "" || *sha == "" {
+		fmt.Fprintln(stderr, "usage: bops land <id> --ref <url> --sha <sha> [--verify] [--forge auto|github|gitlab|none]")
+		return exitUsage
+	}
+	env, store, err := newEnv(runstate.Read)
+	if err != nil {
+		return emit(m, "land", asJSON, nil, err, stdout, stderr)
+	}
+	defer store.Close()
+	opts := intent.LandOpts{Ref: *ref, SHA: *sha}
+	if *verify {
+		cfg, err := loadConfig()
+		if err != nil {
+			return emit(m, "land", asJSON, nil, err, stdout, stderr)
+		}
+		if opts.Verify, err = selectForge(ctx, fs, cfg, forge.Exec); err != nil {
+			fmt.Fprintln(stderr, "bops land:", err)
+			return exitUsage
+		}
+	}
+	out, err := intent.Land(ctx, env, fs.Arg(0), opts)
+	return emit(m, "land", asJSON, out, err, stdout, stderr)
+}
+
+func cmdSweep(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
+	fs := newFlagSet("sweep", stderr)
+	dryRun := fs.Bool("dry-run", true, "report what would close without closing it")
+	fs.String("forge", "auto", "auto|github|gitlab|none")
+	fs.Bool("json", false, "")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: bops sweep [--dry-run=false] [--forge auto|github|gitlab|none]")
+		return exitUsage
+	}
+	cfg, err := loadConfig()
+	if err != nil {
+		return emit(m, "sweep", asJSON, nil, err, stdout, stderr)
+	}
+	f, err := selectForge(ctx, fs, cfg, forge.Exec)
+	if err != nil {
+		fmt.Fprintln(stderr, "bops sweep:", err)
+		return exitUsage
+	}
+	env, store, err := newEnv(runstate.Read)
+	if err != nil {
+		return emit(m, "sweep", asJSON, nil, err, stdout, stderr)
+	}
+	defer store.Close()
+	out, err := intent.Sweep(ctx, env, f, *dryRun)
+	return emit(m, "sweep", asJSON, out, err, stdout, stderr)
+}
+
+// releaseText reads release's optional text. Unlike a note's, it is read from
+// stdin only when asked with --file -: release usually runs with no text, and
+// a caller's stdin may be a pipe that never closes (babashka's p/sh leaves it
+// open), which an unasked read would wait on forever. Never an argument.
+func releaseText(file string, stdin io.Reader) (string, error) {
+	var b []byte
+	var err error
+	switch file {
+	case "":
+		return "", nil
+	case "-":
+		b, err = io.ReadAll(stdin)
+	default:
+		b, err = os.ReadFile(file)
+	}
+	return string(b), err
+}
+
+func cmdRelease(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
+	fs := newFlagSet("release", stderr)
+	reason := fs.String("reason", "", strings.Join(intent.ReleaseReasons, "|"))
+	file := fs.String("file", "", "optional text for the release comment from this file; - reads stdin")
+	fs.Bool("json", false, "")
+	if err := parseAnyOrder(fs, args); err != nil || fs.NArg() != 1 || *reason == "" {
+		fmt.Fprintln(stderr, "usage: bops release <id> --reason "+strings.Join(intent.ReleaseReasons, "|")+" [--file <path> | --file -]")
+		return exitUsage
+	}
+	text, err := releaseText(*file, os.Stdin)
+	if err != nil {
+		fmt.Fprintln(stderr, "bops release:", err)
+		return exitUsage
+	}
+	if *file != "" && strings.TrimSpace(text) == "" {
+		return emit(m, "release", asJSON, nil, fmt.Errorf("%w: release text is empty", intent.ErrPrecondition), stdout, stderr)
+	}
+	env, store, err := newEnv(runstate.Read)
 	if err != nil {
 		return emit(m, "release", asJSON, nil, err, stdout, stderr)
 	}
-	out, err := intent.Release(ctx, env, fs.Arg(0), *reason)
-	saveRun(env)
+	defer store.Close()
+	out, err := intent.ReleaseWithText(ctx, env, fs.Arg(0), *reason, text)
 	return emit(m, "release", asJSON, out, err, stdout, stderr)
 }
 
 func cmdSync(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
-	fs := flag.NewFlagSet("sync", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := newFlagSet("sync", stderr)
 	noPush := fs.Bool("no-push", false, "pull and heartbeat only")
 	fs.Bool("json", false, "")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: bops sync [--no-push]")
 		return exitUsage
 	}
-	env, err := newEnv(ctx)
+	env, store, err := newEnv(runstate.Read)
 	if err != nil {
 		return emit(m, "sync", asJSON, nil, err, stdout, stderr)
 	}
+	defer store.Close()
 	out, err := intent.Sync(ctx, env, *noPush)
 	return emit(m, "sync", asJSON, out, err, stdout, stderr)
 }
 
+func cmdSessionStart(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
+	fs := newFlagSet("session-start", stderr)
+	fs.Bool("json", false, "")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: bops session-start")
+		return exitUsage
+	}
+	env, store, err := newEnv(runstate.Read)
+	if err != nil {
+		return emit(m, "session-start", asJSON, nil, err, stdout, stderr)
+	}
+	defer store.Close()
+	out, err := intent.SessionStart(ctx, env)
+	return emit(m, "session-start", asJSON, out, err, stdout, stderr)
+}
+
+// worktreeRoot is the top of dir's git worktree, where .bops.json lives, or
+// dir itself outside git (doctor then reports the missing remote).
+func worktreeRoot(dir string) string {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel").Output()
+	if top := strings.TrimSpace(string(out)); err == nil && top != "" {
+		return top
+	}
+	return dir
+}
+
+// loadConfig loads the configuration for the worktree holding the current
+// directory.
+func loadConfig() (config.Config, error) {
+	root, err := os.Getwd()
+	if err != nil {
+		return config.Config{}, err
+	}
+	return config.Load(worktreeRoot(root), os.Getenv)
+}
+
+// selectForge applies SPEC §7's precedence: --forge when given on the
+// command line, else the forge config key, else inferred from lock.remote.
+func selectForge(ctx context.Context, fs *flag.FlagSet, cfg config.Config, run forge.Runner) (forge.Forge, error) {
+	name := cfg.Forge
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "forge" {
+			name = f.Value.String()
+		}
+	})
+	return forge.Select(ctx, name, cfg.LockRemote, run)
+}
+
+// doctorBD answers doctor's one bd call, the Dolt remote list. Tests replace it.
+var doctorBD bdx.Runner = bdx.Exec{}
+
+// cmdDoctor checks the lock remote (lock.remote, default origin), read and
+// push access, lock support, and that a Dolt remote is on the same
+// repository. It needs no run state, and reads the ledger only for its Dolt
+// remote list. With
+// lock.mode none every check is skipped. A failed check exits 1 with the first failure's
+// code, and the document still lists every check.
+func cmdDoctor(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
+	fs := newFlagSet("doctor", stderr)
+	fs.Bool("json", false, "")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: bops doctor")
+		return exitUsage
+	}
+	root, err := os.Getwd()
+	if err != nil {
+		return emit(m, "doctor", asJSON, nil, err, stdout, stderr)
+	}
+	cfg, err := config.Load(worktreeRoot(root), os.Getenv)
+	if err != nil {
+		return emit(m, "doctor", asJSON, nil, err, stdout, stderr)
+	}
+	var out *lock.Diagnosis
+	if cfg.LockOff() {
+		out = lock.DoctorOff() // nothing to check, and no remote is touched
+	} else {
+		l := &lock.Lock{Git: lock.Exec{Dir: root}, Run: "doctor", Actor: "bops-doctor", Remote: cfg.LockRemote}
+		out = l.Doctor(ctx)
+		out.Add(intent.DoltRemoteCheck(ctx, doctorBD, l)) // the ledger must sit beside the lock
+	}
+	for _, c := range out.Checks {
+		if c.Status == lock.CheckFail {
+			err = &lock.Error{Code: c.Code, Err: fmt.Errorf("%s failed: %s; next: %s", strings.Join(out.Failed, ", "), c.Detail, c.Next)}
+			break
+		}
+	}
+	return emit(m, "doctor", asJSON, out, err, stdout, stderr)
+}
+
+func cmdStale(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
+	fs := newFlagSet("stale", stderr)
+	older := fs.Duration("older-than", 0, "idle longer than this is stale (default stale_minutes)")
+	all := fs.Bool("all-machines", true, "include claims made on other machines")
+	fs.Bool("json", false, "")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 || *older < 0 {
+		fmt.Fprintln(stderr, "usage: bops stale [--older-than 2h] [--all-machines=false]")
+		return exitUsage
+	}
+	env, store, err := newEnv(runstate.Read)
+	if err != nil {
+		return emit(m, "stale", asJSON, nil, err, stdout, stderr)
+	}
+	defer store.Close()
+	out, err := intent.Stale(ctx, env, intent.StaleOpts{OlderThan: *older, AllMachines: *all})
+	return emit(m, "stale", asJSON, out, err, stdout, stderr)
+}
+
 func cmdLint(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
-	fs := flag.NewFlagSet("lint", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := newFlagSet("lint", stderr)
 	strict := fs.Bool("strict", false, "promote warnings to failures")
 	fs.Bool("json", false, "")
-	if err := fs.Parse(args); err != nil || fs.NArg() != 1 {
+	if err := parseAnyOrder(fs, args); err != nil || fs.NArg() != 1 {
 		fmt.Fprintln(stderr, "usage: bops lint <id> [--strict]")
 		return exitUsage
 	}
-	env, err := newEnv(ctx)
+	env, store, err := newEnv(runstate.Read)
 	if err != nil {
 		return emit(m, "lint", asJSON, nil, err, stdout, stderr)
 	}
+	defer store.Close()
 	raw, err := env.BD.Run(ctx, "show", fs.Arg(0), "--json")
 	if err != nil {
 		return emit(m, "lint", asJSON, nil, err, stdout, stderr)
@@ -215,6 +497,6 @@ func cmdLint(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 	for _, c := range env.Run.Caps {
 		caps[c] = true
 	}
-	res := intent.Lint(issue, intent.LintEnv{Pool: env.Run.Pool, Caps: caps, Now: env.Now(), StaleAfter: 0, Strict: *strict})
+	res := intent.Lint(issue, intent.LintEnv{Pool: env.Run.Pool, Caps: caps, Now: time.Now().UTC(), StaleAfter: 0, HoldFor: env.HoldFor, Strict: *strict})
 	return emit(m, "lint", asJSON, &res, nil, stdout, stderr)
 }

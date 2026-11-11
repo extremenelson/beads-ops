@@ -29,13 +29,33 @@ type LintEnv struct {
 	Caps        map[string]bool
 	Now         time.Time
 	StaleAfter  time.Duration // a run: label with no heartbeat for this long is stale
+	HoldFor     time.Duration // how long bops:hold cools off; zero means defaultHold
 	MaxBodySize int
 	Strict      bool
 	// OpenGates maps bead id -> ids of unsatisfied gates (nil when unknown).
 	OpenGates map[string][]string
 }
 
-const defaultMaxBody = 8 * 1024
+// LabelNeedsHuman takes a bead out of every autonomous loop until a person
+// removes it (SPEC.md §2, PROCESS.md row 8). bops writes only this spelling.
+const LabelNeedsHuman = "needs-human"
+
+// LegacyLabelNeedsHuman is the spelling bops wrote before bops-cgw. Every
+// read treats it as LabelNeedsHuman, so beads released --reason human under
+// the old spelling stay out of the pool. Drop it, and its checks in
+// needsHuman and unmetCaps, once no ledger carries it (PROCESS.md has the
+// relabel command), at the latest in bops v0.2.0.
+const LegacyLabelNeedsHuman = "needs:human"
+
+// needsHuman reports either spelling of the needs-human label.
+func needsHuman(i *ledger.Issue) bool {
+	return i.HasLabel(LabelNeedsHuman) || i.HasLabel(LegacyLabelNeedsHuman)
+}
+
+const (
+	defaultMaxBody = 8 * 1024
+	defaultHold    = 120 * time.Minute // SPEC §3.1 hold_minutes default
+)
 
 // Lint evaluates rules W01–W11 against one bead. W11 (cycles) is delegated
 // to bd at claim time and reported here only when OpenGates reports it.
@@ -62,8 +82,8 @@ func Lint(i *ledger.Issue, env LintEnv) LintResult {
 	default:
 		fail("W02", "status "+i.Status+" does not permit work")
 	}
-	if i.HasLabel("needs:human") {
-		fail("W03", "labelled needs:human")
+	if needsHuman(i) {
+		fail("W03", "labelled "+LabelNeedsHuman)
 	} else {
 		pass("W03")
 	}
@@ -102,7 +122,7 @@ func Lint(i *ledger.Issue, env LintEnv) LintResult {
 	}
 	// W09 (NEXT: paragraph) and W10 (duplicate title) need comments / the
 	// full list and are evaluated by callers that have them; W11 by bd.
-	if i.HasLabel("bops:hold") {
+	if i.HasLabel("bops:hold") && holdActive(i, env) {
 		fail("W12", "labelled bops:hold (cooling off)")
 	} else {
 		pass("W12")
@@ -127,7 +147,7 @@ func Lint(i *ledger.Issue, env LintEnv) LintResult {
 func unmetCaps(i *ledger.Issue, have map[string]bool) []string {
 	var out []string
 	for _, c := range i.LabelsWithPrefix("needs:") {
-		if c == "human" {
+		if "needs:"+c == LegacyLabelNeedsHuman { // W03's, not a capability
 			continue
 		}
 		if !have[c] {
@@ -135,6 +155,17 @@ func unmetCaps(i *ledger.Issue, have map[string]bool) []string {
 		}
 	}
 	return out
+}
+
+// holdActive reports whether a bops:hold label is still cooling off. A label
+// has no timestamp of its own, so the window runs from the bead's updated_at;
+// a later write extends the hold, and a bead with no timestamp stays held.
+func holdActive(i *ledger.Issue, env LintEnv) bool {
+	hold := env.HoldFor
+	if hold == 0 {
+		hold = defaultHold
+	}
+	return i.UpdatedAt.IsZero() || env.Now.Sub(i.UpdatedAt) < hold
 }
 
 func isStale(i *ledger.Issue, env LintEnv) bool {

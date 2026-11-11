@@ -38,6 +38,25 @@ func Lookup(name string) (Generator, bool) {
 	return g, ok
 }
 
+// argCell renders how the command line takes an argument, by the rule in
+// manifest.Arg.Flag: the id as a positional, text typed stdin|file through
+// --file (optional text, stdin|file?, reads stdin only when asked with
+// --file -; required text reads stdin when --file is absent), everything
+// else as a flag of its own name.
+func argCell(name string, a manifest.Arg) string {
+	text := strings.HasPrefix(a.Type, "stdin|file")
+	switch f := a.Flag(name); {
+	case f == "":
+		return "`<" + name + ">` (positional)"
+	case text && strings.HasSuffix(a.Type, "?"):
+		return "`--" + f + " <path>` \\| `--" + f + " -`"
+	case text:
+		return "`--" + f + " <path>`"
+	default:
+		return "`--" + f + "`"
+	}
+}
+
 // Docs renders docs/COMMANDS.md.
 func Docs(m *manifest.Manifest) ([]byte, error) {
 	var b bytes.Buffer
@@ -72,7 +91,7 @@ func Docs(m *manifest.Manifest) ([]byte, error) {
 			b.WriteString("| Arg | Type | Default | Doc |\n|---|---|---|---|\n")
 			for _, an := range c.ArgNames() {
 				a := c.Args[an]
-				typ := a.Type
+				typ := strings.ReplaceAll(a.Type, "|", "\\|")
 				if a.Type == "enum" {
 					typ = "enum: " + strings.Join(a.Values, " \\| ")
 				}
@@ -80,7 +99,7 @@ func Docs(m *manifest.Manifest) ([]byte, error) {
 				if a.Default != nil {
 					def = fmt.Sprintf("`%v`", a.Default)
 				}
-				fmt.Fprintf(&b, "| `--%s` | %s | %s | %s |\n", an, typ, def, a.Doc)
+				fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", argCell(an, a), typ, def, a.Doc)
 			}
 			b.WriteString("\n")
 		}
