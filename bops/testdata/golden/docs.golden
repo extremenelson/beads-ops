@@ -127,7 +127,7 @@ Give the claim back
 |---|---|---|---|
 | `--id` | string |  |  |
 | `--reason` | enum: done \| blocked \| scope \| abandoned \| human |  |  |
-| `--text` | stdin|file? |  |  |
+| `--text` | stdin|file? |  | Optional. Read only when asked: --file <path>, or --file - for stdin. Never on the command line. Recorded below the event line of the release's bops:released comment; a lost or refused release writes none of it. |
 
 Effects by reason: `abandoned` → +bops:hold; `blocked` → status→blocked; `done` → none; await land/sweep; `human` → +needs-human; `scope` → +bops:hold.
 

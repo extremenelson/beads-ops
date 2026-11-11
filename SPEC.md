@@ -96,7 +96,8 @@ Each `bops` write adds exactly one comment whose first line is a typed event, so
 bops:claimed run=<ulid> actor=<actor> machine=<name> [takeover=<old-run> | resumed=<old-run>]
 bops:note run=<ulid>
 <free text, ≥1 line; last paragraph SHOULD start with NEXT: / BLOCKER: / KEY DECISION: / REF:>
-bops:released run=<ulid> reason=<done|blocked|scope|abandoned|human> 
+bops:released run=<ulid> reason=<done|blocked|scope|abandoned|human>
+[<optional free text from --file <path> or --file - (stdin); written only with a successful release>]
 bops:landed run=<ulid> ref=<url> sha=<sha>
 bops:heartbeat run=<ulid>            (only if lease heartbeats are configured to be recorded)
 ```

@@ -928,6 +928,86 @@ func TestReleaseDoneKeepsTheRefAsLanding(t *testing.T) {
 	}
 }
 
+// The text goes in the release's one bops:released comment, through a file,
+// never as an argument.
+func TestReleaseRecordsItsTextInTheReleasedComment(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	comments := len(bd.beads["x-1"].Comments)
+	text := "waiting on the API key\n\nBLOCKER: secret not provisioned"
+	out, err := intent.ReleaseWithText(bg, a.env, "x-1", "blocked", text)
+	if err != nil || out.Outcome != intent.OutcomeReleased {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	b := bd.beads["x-1"]
+	if b.Status != "blocked" || len(b.Comments) != comments+1 {
+		t.Fatalf("ledger = %+v", b)
+	}
+	if got, want := b.Comments[len(b.Comments)-1], "bops:released run=A reason=blocked\n"+text; got != want {
+		t.Errorf("comment = %q, want %q", got, want)
+	}
+	for _, c := range bd.calls {
+		if strings.Contains(strings.Join(c, " "), "BLOCKER") {
+			t.Errorf("text on a command line: %v", c)
+		}
+	}
+}
+
+func TestReleaseWithoutTextKeepsTheOneLineEvent(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	if out, err := intent.ReleaseWithText(bg, a.env, "x-1", "scope", ""); err != nil || out.Outcome != intent.OutcomeReleased {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	c := bd.beads["x-1"].Comments
+	if got := c[len(c)-1]; got != "bops:released run=A reason=scope" {
+		t.Errorf("comment = %q", got)
+	}
+}
+
+func TestReleaseWithBlankTextWritesNothing(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	before := len(bd.calls)
+	out, err := intent.ReleaseWithText(bg, a.env, "x-1", "blocked", " \n\t")
+	if out != nil || !errors.Is(err, intent.ErrPrecondition) {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if len(bd.calls) != before {
+		t.Errorf("ledger touched: %v", bd.calls[before:])
+	}
+	if _, ok := a.store.Entry("x-1"); !ok {
+		t.Error("the hold must survive")
+	}
+}
+
+func TestLostOrRefusedReleaseDoesNotWriteItsText(t *testing.T) {
+	remote := bareRemote(t)
+	bdA, bdB := newBD(), newBD()
+	bdA.add("x-1")
+	bdB.add("x-1")
+	bdA.add("x-2")
+	a, b := client(t, remote, "A", bdA), client(t, remote, "B", bdB)
+	mustClaim(t, a, "x-1")
+	takeOver(t, b, "x-1")
+	writes := len(bdA.calls)
+	if out, err := intent.ReleaseWithText(bg, a.env, "x-1", "blocked", "BLOCKER: x"); err != nil || out.Outcome != intent.OutcomeLost {
+		t.Fatalf("lost: %+v, %v", out, err)
+	}
+	if out, err := intent.ReleaseWithText(bg, a.env, "x-2", "blocked", "BLOCKER: x"); err != nil || out.Outcome != intent.OutcomeRefused {
+		t.Fatalf("refused: %+v, %v", out, err)
+	}
+	if len(bdA.calls) != writes {
+		t.Errorf("wrote: %v", bdA.calls[writes:])
+	}
+}
+
 func TestLandingRewriteFailureWritesNothing(t *testing.T) {
 	remote, bd := bareRemote(t), newBD()
 	bd.add("x-1")

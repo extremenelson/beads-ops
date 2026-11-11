@@ -64,7 +64,7 @@
       "args": {
         "id": { "type": "string" },
         "reason": { "type": "enum", "values": ["done", "blocked", "scope", "abandoned", "human"] },
-        "text": { "type": "stdin|file?" }
+        "text": { "type": "stdin|file?", "doc": "Optional. Read only when asked: --file <path>, or --file - for stdin. Never on the command line. Recorded below the event line of the release's bops:released comment; a lost or refused release writes none of it." }
       },
       "effects": { "blocked": "status→blocked", "human": "+needs-human", "scope": "+bops:hold", "abandoned": "+bops:hold", "done": "none; await land/sweep" },
       "wraps": ["git fetch refs/bops/claims/<id>", "git push (lease): state=landing on done, delete otherwise", "bd update <id> --assignee ''", "bd label remove <id> run:*", "bd comments add <id>", "bd dolt push"],

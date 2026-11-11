@@ -131,6 +131,62 @@ func TestNoteTextRefusesATerminal(t *testing.T) {
 	}
 }
 
+// failReader fails the test if anything reads it: release with no --file must
+// leave stdin alone, since a caller's stdin may be a pipe that never closes.
+type failReader struct{ t *testing.T }
+
+func (r failReader) Read([]byte) (int, error) {
+	r.t.Error("stdin read without --file -")
+	return 0, io.EOF
+}
+
+func TestReleaseTextIsOptionalAndLeavesStdinAlone(t *testing.T) {
+	got, err := releaseText("", failReader{t})
+	if err != nil || got != "" {
+		t.Fatalf("%q, %v", got, err)
+	}
+}
+
+func TestReleaseTextFromStdinWithDash(t *testing.T) {
+	got, err := releaseText("-", strings.NewReader("BLOCKER: x"))
+	if err != nil || got != "BLOCKER: x" {
+		t.Fatalf("%q, %v", got, err)
+	}
+}
+
+func TestReleaseTextFromFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "why")
+	if err := os.WriteFile(path, []byte("from file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := releaseText(path, failReader{t})
+	if err != nil || got != "from file" {
+		t.Fatalf("%q, %v", got, err)
+	}
+	if _, err := releaseText(filepath.Join(t.TempDir(), "nope"), failReader{t}); err == nil {
+		t.Fatal("missing file should fail")
+	}
+}
+
+// An empty --file is a mistake, refused before the run state or the ledger is
+// touched, as an empty note is.
+func TestReleaseRefusesAnEmptyTextFile(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	path := filepath.Join(t.TempDir(), "empty")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _ := os.CreateTemp(t.TempDir(), "out")
+	stderr, _ := os.CreateTemp(t.TempDir(), "err")
+	code := run([]string{"release", "x-1", "--reason", "blocked", "--file", path, "--json"}, stdout, stderr)
+	b, _ := os.ReadFile(stdout.Name())
+	if code != exitCantRun || !strings.Contains(string(b), "release text is empty") {
+		t.Fatalf("exit %d: %s", code, b)
+	}
+}
+
 func TestResolveVersion(t *testing.T) {
 	built := func(v string) *debug.BuildInfo {
 		i := &debug.BuildInfo{}
@@ -406,5 +462,70 @@ func TestDoctorSkipsAnUnreadableDoltRemoteList(t *testing.T) {
 	last := checks[len(checks)-1].(map[string]any)
 	if last["id"] != "dolt_remote" || last["status"] != "skip" {
 		t.Fatalf("check %v", last)
+	}
+}
+
+// TestManifestArgsMatchFlags runs each command with -h, reads the flags its
+// FlagSet defines, and checks them against the command's manifest args: `id`
+// is the positional bead id, a stdin|file arg is the --file flag, and every
+// other arg is a flag of its own name. --json is common to all.
+func TestManifestArgsMatchFlags(t *testing.T) {
+	m, err := manifest.Parse(bops.ManifestJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(t.TempDir())
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	var made *flag.FlagSet
+	saved := flagSetMade
+	flagSetMade = func(fs *flag.FlagSet) { made = fs }
+	t.Cleanup(func() { flagSetMade = saved })
+	checked := 0
+	for _, c := range m.Commands {
+		made = nil
+		stdout, _ := os.CreateTemp(t.TempDir(), "out")
+		stderr, _ := os.CreateTemp(t.TempDir(), "err")
+		code := run([]string{c.Name, "-h"}, stdout, stderr)
+		msg, _ := os.ReadFile(stderr.Name())
+		if code == exitCantRun && strings.Contains(string(msg), "not yet implemented") {
+			continue // gates, deps: specified, with no flags yet to drift from
+		}
+		if code != exitUsage {
+			t.Errorf("%s -h: exit %d, stderr %q; want usage", c.Name, code, msg)
+			continue
+		}
+		want := map[string]bool{}
+		for name, a := range c.Args {
+			switch {
+			case name == "id":
+			case strings.HasPrefix(a.Type, "stdin|file"):
+				want["file"] = true
+			default:
+				want[name] = true
+			}
+		}
+		got := map[string]bool{} // version makes no FlagSet: it takes only --json
+		if made != nil {
+			made.VisitAll(func(f *flag.Flag) {
+				if f.Name != "json" {
+					got[f.Name] = true
+				}
+			})
+		}
+		for name := range want {
+			if !got[name] {
+				t.Errorf("%s: the manifest documents --%s; the command defines no such flag", c.Name, name)
+			}
+		}
+		for name := range got {
+			if !want[name] {
+				t.Errorf("%s: the command defines --%s; the manifest does not document it", c.Name, name)
+			}
+		}
+		checked++
+	}
+	if checked < 12 {
+		t.Errorf("only %d commands checked", checked)
 	}
 }
