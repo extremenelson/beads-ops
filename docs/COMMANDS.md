@@ -64,7 +64,7 @@ Take this bead for this run
 | Arg | Type | Default | Doc |
 |---|---|---|---|
 | `--force` | bool | `false` | Take over a claim idle for stale_minutes (default 120), or an orphan. Refused on a landing bead. |
-| `--id` | string |  |  |
+| `<id>` (positional) | string |  |  |
 | `--resume` | bool | `false` | Take back a landing bead for PR rework. Only the ref's actor can. |
 
 Preconditions: assignee is empty OR --force; status in (open, ready); no run: label; the lock remote (lock.remote, default origin) matches the Dolt remote (lock.mode ref).
@@ -98,8 +98,8 @@ Record where I am, keep the claim
 
 | Arg | Type | Default | Doc |
 |---|---|---|---|
-| `--id` | string |  |  |
-| `--text` | stdin|file |  | Never on the command line. |
+| `<id>` (positional) | string |  |  |
+| `--file <path>` | stdin\|file |  | Never on the command line. |
 
 Preconditions: this run holds the bead and its ref still matches.
 
@@ -125,13 +125,13 @@ Give the claim back
 
 | Arg | Type | Default | Doc |
 |---|---|---|---|
-| `--id` | string |  |  |
+| `<id>` (positional) | string |  |  |
 | `--reason` | enum: done \| blocked \| scope \| abandoned \| human |  |  |
-| `--text` | stdin|file? |  | Optional. Read only when asked: --file <path>, or --file - for stdin. Never on the command line. Recorded below the event line of the release's bops:released comment; a lost or refused release writes none of it. |
+| `--file <path>` \| `--file -` | stdin\|file? |  | Optional. Read only when asked: --file <path>, or --file - for stdin. Never on the command line. Recorded below the event line of the release's bops:released comment; a lost or refused release writes none of it. |
 
 Effects by reason: `abandoned` → +bops:hold; `blocked` → status→blocked; `done` → none; await land/sweep; `human` → +needs-human; `scope` → +bops:hold.
 
-Wraps: `git fetch refs/bops/claims/<id>`, `git push (lease): state=landing on done, delete otherwise`, `bd update <id> --assignee ''`, `bd label remove <id> run:*`, `bd comments add <id>`, `bd dolt push`.
+Wraps: `git fetch refs/bops/claims/<id>`, `git push (lease): state=landing on done, delete otherwise`, `bd update <id> --assignee ''`, `bd label remove <id> run:*`, `bd comments add <id> <event> (no text), or bd comments add <id> -f <file> (event line, then the --file text)`, `bd dolt push`.
 
 Output:
 
@@ -155,7 +155,7 @@ Record that work reached its destination
 | Arg | Type | Default | Doc |
 |---|---|---|---|
 | `--forge` | enum: auto \| github \| gitlab \| none | `auto` |  |
-| `--id` | string |  |  |
+| `<id>` (positional) | string |  |  |
 | `--ref` | url |  |  |
 | `--sha` | string |  |  |
 | `--verify` | bool | `false` |  |
@@ -254,7 +254,7 @@ Is this bead workable?
 
 | Arg | Type | Default | Doc |
 |---|---|---|---|
-| `--id` | string |  |  |
+| `<id>` (positional) | string |  |  |
 | `--strict` | bool | `false` |  |
 
 Wraps: `bd show <id> --json`, `bd gate list --json`, `bd dep cycles --json`.
@@ -362,7 +362,7 @@ What is blocking this bead's path?
 
 | Arg | Type | Default | Doc |
 |---|---|---|---|
-| `--id` | string |  |  |
+| `<id>` (positional) | string |  |  |
 
 Wraps: `bd gate list --json`, `bd dep list <id> --json`.
 
@@ -389,7 +389,7 @@ Blockers, dependents, longest path
 | Arg | Type | Default | Doc |
 |---|---|---|---|
 | `--engine` | enum: bd \| cte \| graph | `bd` |  |
-| `--id` | string |  |  |
+| `<id>` (positional) | string |  |  |
 | `--path` | bool | `false` |  |
 | `--transitive` | bool | `false` |  |
 

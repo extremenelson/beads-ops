@@ -3,6 +3,7 @@
 ;; Needs no bd or bops. Run from the repo root:
 ;;   bb -Sdeps '{:deps {metosin/malli {:mvn/version "0.16.1"}}}' bindings/kestrel/beads_test.clj
 (require '[clojure.test :refer [deftest is run-tests]]
+         '[babashka.process :as p]
          '[cheshire.core :as json])
 
 (load-file "bindings/kestrel/beads.clj")
@@ -129,12 +130,12 @@
 
 (deftest block-and-gate
   (doseq [[f reason] [[b/block! "blocked"] [b/gate-human! "human"]]]
-    (let [calls (atom []) bd-calls (atom [])]
+    (let [calls (atom [])]
       (with-redefs [b/bops (stub-bops calls {"release" released})
-                    b/bd   (fn [& args] (swap! bd-calls conj (vec args)) {})]
+                    b/bd   (fn [& _] {})]
         (is (= :released (:outcome (f {} "bd-a1" "why"))))
-        (is (= [["release" "bd-a1" "--reason" reason]] @calls))
-        (is (seq @bd-calls) "the note / gate is written after a release")))
+        (is (= ["release" "bd-a1" "--reason" reason] (take 4 (first @calls))))
+        (is (= 1 (count @calls)))))
     (let [bd-calls (atom [])]
       (with-redefs [b/bops (stub-bops (atom []) {"release" lost})
                     b/bd   (fn [& args] (swap! bd-calls conj (vec args)) {})]
@@ -147,6 +148,48 @@
           (is (= "bops release could not run" (ex-message e)))
           (is (= "unreachable" (:code (ex-data e)))))
         (is (empty? @bd-calls))))))
+
+;; block!'s BLOCKER text rides in the release itself: one write, no raw bd.
+(deftest block-sends-its-blocker-through-release
+  (let [calls (atom []) bd-calls (atom [])]
+    (with-redefs [b/bops (fn [cfg & args] (swap! calls conj [(:in cfg) (vec args)]) released)
+                  b/bd   (fn [& args] (swap! bd-calls conj (vec args)) {})]
+      (is (= :released (:outcome (b/block! {:actor "k"} "bd-a1" "waiting on key"))))
+      (is (= [["BLOCKER: waiting on key" ["release" "bd-a1" "--reason" "blocked" "--file" "-"]]] @calls)
+          "the text goes on stdin, asked for with --file -")
+      (is (empty? @bd-calls) "no raw bd note write")))
+  (let [bd-calls (atom [])]
+    (with-redefs [b/bops (fn [_ & _] lost)
+                  b/bd   (fn [& args] (swap! bd-calls conj (vec args)) {})]
+      (is (= :lost (:outcome (b/block! {} "bd-a1" "why"))))
+      (is (empty? @bd-calls))))
+  (doseq [blank [nil "" "   \n"]]
+    (let [calls (atom [])]
+      (with-redefs [b/bops (fn [_ & args] (swap! calls conj (vec args)) released)
+                    b/bd   (fn [& _] (throw (ex-info "bd called" {})))]
+        (is (= "block! needs a reason" (ex-message (thrown #(b/block! {} "bd-a1" blank)))))
+        (is (empty? @calls) "a blank reason is refused before bops runs")))))
+
+(deftest bops-passes-in-as-stdin
+  (let [seen (atom nil)]
+    (with-redefs [p/sh (fn [opts & cmd] (reset! seen [opts cmd]) {:exit 0 :out "{}" :err ""})]
+      (b/bops {:in "BLOCKER: x"} "release" "bd-a1")
+      (is (= "BLOCKER: x" (:in (first @seen))))
+      (b/bops {} "release" "bd-a1")
+      (is (not (contains? (first @seen) :in)) "no :in, no stdin"))))
+
+;; babashka.process/sh takes the program and its args as separate strings: a
+;; seq passed as one argument is run as a program named "(bops ...)".
+(deftest sh-gets-the-command-as-strings
+  (let [seen (atom [])]
+    (with-redefs [p/sh (fn [_ & cmd] (swap! seen conj (vec cmd)) {:exit 0 :out "{}" :err ""})]
+      (b/bops {:bops-path "/x/bops"} "release" "bd-a1")
+      (b/bd "show" "bd-a1")
+      (b/lint {:actor "k" :machine-label "m"} "bd-a1")
+      (is (= [["/x/bops" "release" "bd-a1" "--json"]
+              ["bd" "show" "bd-a1" "--json"]
+              ["scripts/bd-lint-claim.sh" "bd-a1" "--json" "--no-sync" "--actor" "k" "--machine" "m"]]
+             @seen)))))
 
 (deftest gate-human-writes-the-gate-and-no-label
   (let [bd-calls (atom [])]

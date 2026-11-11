@@ -497,12 +497,8 @@ func TestManifestArgsMatchFlags(t *testing.T) {
 		}
 		want := map[string]bool{}
 		for name, a := range c.Args {
-			switch {
-			case name == "id":
-			case strings.HasPrefix(a.Type, "stdin|file"):
-				want["file"] = true
-			default:
-				want[name] = true
+			if f := a.Flag(name); f != "" {
+				want[f] = true
 			}
 		}
 		got := map[string]bool{} // version makes no FlagSet: it takes only --json

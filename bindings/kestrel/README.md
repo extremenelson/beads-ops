@@ -2,7 +2,7 @@
 
 **Status: draft. Not yet run against a live `bd` or `bops`.** Field names match upstream `internal/types/types.go` and `docs/reference/json-schema.md` at the pinned commit; `--json` shapes for `ready`, `list`, `show`, `create` still need one real run to confirm. The `bops` result shapes come from `bops/commands.json` and the Go output structs, not from a live run.
 
-Kestrel treats `bd --json` as its durable task memory and never touches `.beads/` directly. `beads.clj` wraps the CLI (~310 lines). Everything that touches ownership goes through `bops`, so the claim lock covers it: `claim!`, `close!`, `block!`, `gate-human!` and `sync!`. The value is in the schemas and the resume contract, not the plumbing.
+Kestrel treats `bd --json` as its durable task memory and never touches `.beads/` directly. `beads.clj` wraps the CLI (~320 lines). Everything that touches ownership goes through `bops`, so the claim lock covers it: `claim!`, `close!`, `block!`, `gate-human!` and `sync!`. The value is in the schemas and the resume contract, not the plumbing.
 
 | Contract point | Function | Notes |
 |---|---|---|
@@ -16,7 +16,7 @@ Kestrel treats `bd --json` as its durable task memory and never touches `.beads/
 | Function | `bops` calls | Returns | Then, with raw `bd` |
 |---|---|---|---|
 | `(close! cfg bead {:ref url :sha sha :verify? bool})` | `bops land <id> --ref --sha [--verify]`, then `bops release <id> --reason done` | the release map with `:land` added; or the land map when land is `:lost`/`:refused` (no release then) | nothing |
-| `(block! cfg id reason)` | `bops release <id> --reason blocked` (status → blocked) | the release map | on `:released` only: `bd update --append-notes "BLOCKER: <reason>"` |
+| `(block! cfg id reason)` | `bops release <id> --reason blocked --file -` with `BLOCKER: <reason>` on stdin (status → blocked; the text goes into the release's `bops:released` comment) | the release map; throws `block! needs a reason` on a blank reason, before `bops` runs | nothing |
 | `(gate-human! cfg id reason)` | `bops release <id> --reason human` (reopens, `+needs-human`) | the release map | on `:released` only: `bd gate create --type human --blocks <id> --reason <reason>` |
 | `(sync! cfg)` | `bops sync` | `{:synced true :pulled :pushed :lost-claims :stranded-holds ...}`, or `{:synced false :offline true :code ..}`; never throws | nothing |
 
@@ -28,7 +28,7 @@ Common to `claim!`, `close!`, `block!` and `gate-human!`:
 
 **`close!` no longer closes the bead.** SPEC §2 lets only `bops sweep` or a human close; a worker lands and releases `done`. So `close!` now needs the PR/MR URL and commit, not a close reason, and returns the release map instead of the new ready front. After it returns `:released`, this run holds nothing: the claim ref stays on the remote as `state=landing` (that is what `release --reason done` does, SPEC §3.0), the bead stays `in_progress` with label `bops:landing`, and `bops sweep` deletes the ref and closes the bead once the PR is merged. Epics are still refused before any write.
 
-`block!` and `gate-human!` release first and write their `bd` note or gate only after `:released`, so a displaced holder writes nothing. `bops release` in contract 1 takes no text, so the `BLOCKER:` note stays a `bd` write; `bops` has no gate command, so the human gate does too. The `needs-human` label is `bops`'s own write, the spelling PROCESS.md and `scripts/bd-lint-claim.sh` row 8 use. If one of those `bd` writes fails after the release, it throws and the bead is released without it.
+`block!` sends its `BLOCKER: <reason>` text with the release itself: `bops release` takes optional text with `--file <path>`, or `--file -` for stdin (stdin is read only when asked, since babashka's `p/sh` leaves it open), and records it below the event line of the single `bops:released` comment. Release and note are one write, and a `:lost` or `:refused` release writes neither. `gate-human!` releases first and creates its gate with `bd` only after `:released`, because `bops` has no gate command, so a displaced holder writes nothing; if that gate write fails it throws and the bead is released without it. The `needs-human` label is `bops`'s own write, the spelling PROCESS.md and `scripts/bd-lint-claim.sh` row 8 use.
 
 `session-start` stays on `bd`: `bops session-start` returns ids and a ready count, while this binding returns the in_progress and ready beads themselves, filters machine labels and checks the resume target's `NEXT`.
 
@@ -49,7 +49,7 @@ None of the `bops` paths has been run against a live `bd` and `bops`; the tests 
 - [ ] Non-zero exit → stderr JSON `{error, code}`; adjust `bd` fn to surface `code`
 - [ ] `bops claim --json` against a live ledger: `claimed`, then `lost` from a second clone, then a refusal
 - [ ] `close!` against a live ledger: `landed` then `released`, the ref left as `state=landing`, no hold in `bops sync`'s state; `bops sweep` closes it after the merge
-- [ ] `block!` and `gate-human!` against a live ledger: ref deleted, status and labels as above, note / gate written; `lost` from a second clone writes nothing
+- [ ] `block!` and `gate-human!` against a live ledger: ref deleted, status and labels as above, `block!`'s `BLOCKER:` text in the `bops:released` comment (`--file -` reads it from the `p/sh` stdin), the gate written; `lost` from a second clone writes nothing
 - [ ] `sync!` output from a live `bops sync`, online and offline
 
 ## Test

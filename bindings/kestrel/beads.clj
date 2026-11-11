@@ -36,7 +36,7 @@
   "Run bd with --json, return parsed EDN. Throws ex-info on non-zero exit,
    carrying bd's own {error code hint} when it emitted JSON on stderr."
   [& args]
-  (let [{:keys [exit out err]} (p/sh {:continue true} (concat ["bd"] args ["--json"]))]
+  (let [{:keys [exit out err]} (apply p/sh {:continue true} "bd" (concat args ["--json"]))]
     (when-not (zero? exit)
       (throw (ex-info "bd failed"
                       (merge {:args args :exit exit :err err}
@@ -48,11 +48,13 @@
    {:exit n :doc parsed-json-or-nil :err stderr}, because exit 3 is a verdict
    (lost, refused), not a failure. `cfg` supplies :bops-path (default \"bops\")
    and :actor, passed as BEADS_ACTOR so the claim ref and the ledger assignee
-   match what `session-start` filters on."
-  [{:keys [bops-path actor] :or {bops-path "bops"}} & args]
+   match what `session-start` filters on. `:in`, when set, is written to bops's
+   stdin (pair it with `--file -`: bops reads stdin only when asked)."
+  [{:keys [bops-path actor in] :or {bops-path "bops"}} & args]
   (let [opts (cond-> {:continue true}
-               actor (assoc :extra-env {"BEADS_ACTOR" actor}))
-        {:keys [exit out err]} (p/sh opts (concat [bops-path] args ["--json"]))]
+               actor (assoc :extra-env {"BEADS_ACTOR" actor})
+               in    (assoc :in in))
+        {:keys [exit out err]} (apply p/sh opts bops-path (concat args ["--json"]))]
     {:exit exit
      :err  err
      :doc  (try (json/parse-string out true) (catch Exception _ nil))}))
@@ -151,8 +153,8 @@
   "Run scripts/bd-lint-claim.sh --json. Returns {:workable bool :fails [...] :warns [...]}."
   [{:keys [lint-path actor machine-label] :or {lint-path "scripts/bd-lint-claim.sh"}} id]
   (let [{:keys [out]} (p/sh {:continue true}
-                            [lint-path id "--json" "--no-sync"
-                             "--actor" actor "--machine" machine-label])]
+                            lint-path id "--json" "--no-sync"
+                            "--actor" actor "--machine" machine-label)]
     (try (json/parse-string out true)
          (catch Exception _ {:workable false :fails ["lint produced no JSON"]}))))
 
@@ -248,22 +250,22 @@
                 "--deps" (str "discovered-from:" from)))))
 
 (defn block!
-  "`bops release <id> --reason blocked`: deletes the claim ref, drops this
-   run's hold, clears the assignee and sets status blocked. Returns the
+  "`bops release <id> --reason blocked --file -` with \"BLOCKER: <reason>\" on
+   stdin: deletes the claim ref, drops this run's hold, clears the assignee,
+   sets status blocked and records the BLOCKER text below the event line of
+   the release's bops:released comment, all in one write. Returns the
    `parse-release` map:
-     :released -> given back; then appends \"BLOCKER: <reason>\" to the notes
-                  with raw bd, because `bops release` takes no text on its
-                  command line (contract 1 implements no --text)
+     :released -> given back, BLOCKER text recorded
      :lost     -> someone else holds it (:holder); nothing is written
      :refused  -> this run does not hold it (:reason); nothing is written
-   Throws ex-info \"bops release could not run\" (:code, :error, :exit,
-   :retry, :side-effects) on exit 1 or 2, and bd's ex-info if the note write
-   fails after a release (the bead is then blocked without its BLOCKER note)."
+   Throws ex-info \"block! needs a reason\" before running bops when `reason`
+   is blank, and \"bops release could not run\" (:code, :error, :exit, :retry,
+   :side-effects) on exit 1 or 2."
   [cfg id reason]
-  (let [result (owned! cfg "release" id "--reason" "blocked")]
-    (when (= :released (:outcome result))
-      (bd "update" id "--append-notes" (str "BLOCKER: " reason)))
-    result))
+  (when (str/blank? reason)
+    (throw (ex-info "block! needs a reason" {:id id})))
+  (owned! (assoc cfg :in (str "BLOCKER: " reason))
+          "release" id "--reason" "blocked" "--file" "-"))
 
 (defn gate-human!
   "`bops release <id> --reason human`: deletes the claim ref, drops this run's
