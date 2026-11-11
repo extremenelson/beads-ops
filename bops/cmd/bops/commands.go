@@ -243,7 +243,7 @@ func cmdLand(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 	ref := fs.String("ref", "", "URL of the merge request")
 	sha := fs.String("sha", "", "commit the work landed as")
 	verify := fs.Bool("verify", false, "check the ref's commit on the forge first")
-	forgeName := fs.String("forge", "auto", "auto|github|gitlab|none (used with --verify)")
+	fs.String("forge", "auto", "auto|github|gitlab|none (used with --verify)")
 	fs.Bool("json", false, "")
 	if err := parseAnyOrder(fs, args); err != nil || fs.NArg() != 1 || *ref == "" || *sha == "" {
 		fmt.Fprintln(stderr, "usage: bops land <id> --ref <url> --sha <sha> [--verify] [--forge auto|github|gitlab|none]")
@@ -256,7 +256,11 @@ func cmdLand(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 	defer store.Close()
 	opts := intent.LandOpts{Ref: *ref, SHA: *sha}
 	if *verify {
-		if opts.Verify, err = forge.Select(ctx, *forgeName, forge.Exec); err != nil {
+		cfg, err := loadConfig()
+		if err != nil {
+			return emit(m, "land", asJSON, nil, err, stdout, stderr)
+		}
+		if opts.Verify, err = selectForge(ctx, fs, cfg, forge.Exec); err != nil {
 			fmt.Fprintln(stderr, "bops land:", err)
 			return exitUsage
 		}
@@ -269,13 +273,17 @@ func cmdSweep(ctx context.Context, m *manifest.Manifest, args []string, asJSON b
 	fs := flag.NewFlagSet("sweep", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	dryRun := fs.Bool("dry-run", true, "report what would close without closing it")
-	forgeName := fs.String("forge", "auto", "auto|github|gitlab|none")
+	fs.String("forge", "auto", "auto|github|gitlab|none")
 	fs.Bool("json", false, "")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
 		fmt.Fprintln(stderr, "usage: bops sweep [--dry-run=false] [--forge auto|github|gitlab|none]")
 		return exitUsage
 	}
-	f, err := forge.Select(ctx, *forgeName, forge.Exec)
+	cfg, err := loadConfig()
+	if err != nil {
+		return emit(m, "sweep", asJSON, nil, err, stdout, stderr)
+	}
+	f, err := selectForge(ctx, fs, cfg, forge.Exec)
 	if err != nil {
 		fmt.Fprintln(stderr, "bops sweep:", err)
 		return exitUsage
@@ -350,6 +358,28 @@ func worktreeRoot(dir string) string {
 		return top
 	}
 	return dir
+}
+
+// loadConfig loads the configuration for the worktree holding the current
+// directory.
+func loadConfig() (config.Config, error) {
+	root, err := os.Getwd()
+	if err != nil {
+		return config.Config{}, err
+	}
+	return config.Load(worktreeRoot(root), os.Getenv)
+}
+
+// selectForge applies SPEC §7's precedence: --forge when given on the
+// command line, else the forge config key, else inferred from lock.remote.
+func selectForge(ctx context.Context, fs *flag.FlagSet, cfg config.Config, run forge.Runner) (forge.Forge, error) {
+	name := cfg.Forge
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "forge" {
+			name = f.Value.String()
+		}
+	})
+	return forge.Select(ctx, name, cfg.LockRemote, run)
 }
 
 // cmdDoctor checks the lock remote (lock.remote, default origin), read and
