@@ -144,6 +144,16 @@
       "surfaces": { "cc": ["hook:SessionStart"], "codex": ["hook:SessionStart"], "clj": "fn" }
     },
     {
+      "name": "doctor",
+      "intent": "Can the claim lock work against origin?",
+      "kind": "read",
+      "args": {},
+      "never": ["write a claim ref or the ledger", "leave its probe ref behind silently (a failed delete is a warning naming the command)"],
+      "wraps": ["origin: git remote get-url origin", "fetch: git ls-remote origin refs/bops/claims/*", "push: git push --dry-run (create-only) refs/bops/doctor/<nonce>", "lock: git push (create-only) refs/bops/doctor/<nonce>, then a second create-only push that must be refused", "git push (lease): delete the probe ref"],
+      "output": { "remote": "string", "probe_ref": "string", "checks": [ { "id": "origin|fetch|push|lock", "status": "ok|fail|skip", "detail": "string", "code": "string?", "next": "string?" } ], "failed": "string[] (any entry: exit 1, code from the first failure)", "warnings": "string[]" },
+      "surfaces": { "cc": ["skill"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": false } }
+    },
+    {
       "name": "gates",
       "intent": "What is blocking this bead's path?",
       "kind": "read",

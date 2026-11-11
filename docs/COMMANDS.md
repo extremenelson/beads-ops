@@ -16,6 +16,7 @@ Exit codes: **0** = done, or a read's verdict; **1** = could not run: remote or 
 | `lint` | Is this bead workable? | read |
 | `sync` | Pull, heartbeat, push — with the one retry | write |
 | `session-start` | Orient a fresh agent session | read+sync |
+| `doctor` | Can the claim lock work against origin? | read |
 | `gates` | What is blocking this bead's path? | read |
 | `deps` | Blockers, dependents, longest path | read |
 | `version` | Report bops, contract, and detected bd | read |
@@ -320,6 +321,34 @@ Output:
   "ready_count": "int",
   "synced": "bool",
   "prime": "string",
+  "warnings": "string[]"
+}
+```
+
+## `bops doctor`
+
+Can the claim lock work against origin?
+
+Never: write a claim ref or the ledger, leave its probe ref behind silently (a failed delete is a warning naming the command).
+
+Wraps: `origin: git remote get-url origin`, `fetch: git ls-remote origin refs/bops/claims/*`, `push: git push --dry-run (create-only) refs/bops/doctor/<nonce>`, `lock: git push (create-only) refs/bops/doctor/<nonce>, then a second create-only push that must be refused`, `git push (lease): delete the probe ref`.
+
+Output:
+
+```json
+{
+  "remote": "string",
+  "probe_ref": "string",
+  "checks": [
+    {
+      "id": "origin|fetch|push|lock",
+      "status": "ok|fail|skip",
+      "detail": "string",
+      "code": "string?",
+      "next": "string?"
+    }
+  ],
+  "failed": "string[] (any entry: exit 1, code from the first failure)",
   "warnings": "string[]"
 }
 ```
