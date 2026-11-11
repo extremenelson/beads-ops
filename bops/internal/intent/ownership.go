@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/extremenelson/beads-ops/bops/internal/bdx"
 	"github.com/extremenelson/beads-ops/bops/internal/ledger"
 	"github.com/extremenelson/beads-ops/bops/internal/lock"
 	"github.com/extremenelson/beads-ops/bops/internal/runstate"
@@ -81,26 +82,116 @@ func (e *Env) checkRemote(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	raw, err := e.BD.Run(ctx, "dolt", "remote", "list", "--json")
-	if err != nil {
-		return nil // cannot compare, and the ledger has its own failure to report
-	}
-	var remotes []struct {
-		Name string `json:"name"`
-		URL  string `json:"url"`
-	}
-	if err := json.Unmarshal(raw, &remotes); err != nil {
+	return ledgerBeside(ctx, e.BD, e.Lock.RemoteName(), url).err()
+}
+
+// The fixes for a lock remote with no ledger beside it.
+const (
+	noDoltRemoteFix   = "add a Dolt remote on the same repository (`bd dolt remote add origin git+<that URL>`, e.g. git+https://… or git+ssh://…), or for a single-machine repo set lock.mode to none in .bops.json ({\"lock\": {\"mode\": \"none\"}})"
+	otherDoltRepoFix  = "point it at the ledger's repository or set lock.remote"
+	doltRemoteCheckID = "dolt_remote"
+)
+
+// besideResult is how the Dolt remote list compares with the lock remote.
+// cause is empty when a Dolt remote matches; read is false when the list
+// failed or did not parse, so nothing was compared.
+type besideResult struct {
+	read, matched bool
+	cause, fix    string
+}
+
+func (b besideResult) err() error {
+	if b.cause == "" {
 		return nil
 	}
+	return &lock.Error{Code: lock.CodeRemoteMismatch, Err: errors.New(b.cause + "; " + b.fix)}
+}
+
+type doltRemote struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
+}
+
+// doltRemotes reads bd's Dolt remote list. ok is false when the list fails or
+// does not parse.
+func doltRemotes(ctx context.Context, bd bdx.Runner) (remotes []doltRemote, ok bool) {
+	raw, err := bd.Run(ctx, "dolt", "remote", "list", "--json")
+	if err != nil {
+		return nil, false
+	}
+	if err := json.Unmarshal(raw, &remotes); err != nil {
+		return nil, false
+	}
+	return remotes, true
+}
+
+// ledgerBeside compares the Dolt remote list with the lock remote at url.
+func ledgerBeside(ctx context.Context, bd bdx.Runner, name, url string) besideResult {
+	remotes, ok := doltRemotes(ctx, bd)
+	if !ok {
+		return besideResult{} // cannot compare, and the ledger has its own failure to report
+	}
+	return compareRemotes(remotes, name, url)
+}
+
+func compareRemotes(remotes []doltRemote, name, url string) besideResult {
 	if len(remotes) == 0 {
-		return &lock.Error{Code: lock.CodeRemoteMismatch, Err: fmt.Errorf("lock remote %s (%s) has no ledger beside it: there is no Dolt remote, so the lock would not be shared with the ledger; add a Dolt remote on the same repository (`bd dolt remote add origin git+<that URL>`, e.g. git+https://… or git+ssh://…), or for a single-machine repo set lock.mode to none in .bops.json ({\"lock\": {\"mode\": \"none\"}})", e.Lock.RemoteName(), url)}
+		return besideResult{read: true, cause: fmt.Sprintf("lock remote %s (%s) has no ledger beside it: there is no Dolt remote, so the lock would not be shared with the ledger", name, url), fix: noDoltRemoteFix}
 	}
 	for _, r := range remotes {
 		if lock.SameRemote(url, r.URL) {
-			return nil
+			return besideResult{read: true, matched: true}
 		}
 	}
-	return &lock.Error{Code: lock.CodeRemoteMismatch, Err: fmt.Errorf("lock remote %s (%s) is not the Dolt remote %s, so the lock would not be shared with the ledger; point it at the ledger's repository or set lock.remote", e.Lock.RemoteName(), url, remotes[0].URL)}
+	return besideResult{read: true, cause: fmt.Sprintf("lock remote %s (%s) is not the Dolt remote %s, so the lock would not be shared with the ledger", name, url, remotes[0].URL), fix: otherDoltRepoFix}
+}
+
+// noLedgerRemote is the remote_mismatch error for lock.mode ref with no Dolt
+// remote at all, or nil. Sync and sweep return it instead of bd's "no remote"
+// pull failure; land and release, which have already done their work, turn
+// it into a warning. A Dolt remote on another repository is checkRemote's and
+// doctor's concern: the ledger still publishes there.
+func (e *Env) noLedgerRemote(ctx context.Context) error {
+	if e.LockOff || e.Lock == nil {
+		return nil
+	}
+	remotes, ok := doltRemotes(ctx, e.BD)
+	if !ok || len(remotes) > 0 {
+		return nil
+	}
+	url, err := e.Lock.RemoteURL(ctx)
+	if err != nil {
+		return nil // the lock's own steps report a missing lock remote
+	}
+	return compareRemotes(remotes, e.Lock.RemoteName(), url).err()
+}
+
+// noLedgerRemoteWarning says a write was kept on this machine because the
+// lock.mode ref ledger has no Dolt remote, or is "" when it has one.
+func (e *Env) noLedgerRemoteWarning(ctx context.Context) string {
+	if err := e.noLedgerRemote(ctx); err != nil {
+		return noDoltRemoteWarning + ": " + lock.Scrub(err.Error())
+	}
+	return ""
+}
+
+// DoltRemoteCheck is doctor's dolt_remote check under lock.mode ref: the
+// ledger's Dolt remote must be on the lock remote's repository. It fails with
+// remote_mismatch when there is no Dolt remote or none matches, and is skipped
+// when the lock remote is missing or the list cannot be read.
+func DoltRemoteCheck(ctx context.Context, bd bdx.Runner, l *lock.Lock) lock.Check {
+	url, err := l.RemoteURL(ctx)
+	if err != nil {
+		return lock.Check{ID: doltRemoteCheckID, Status: lock.CheckSkip, Detail: "not run: an earlier check failed"}
+	}
+	b := ledgerBeside(ctx, bd, l.RemoteName(), url)
+	switch {
+	case !b.read:
+		return lock.Check{ID: doltRemoteCheckID, Status: lock.CheckSkip, Detail: "not run: `bd dolt remote list --json` failed or did not parse, so the Dolt remote was not compared"}
+	case b.matched:
+		return lock.Check{ID: doltRemoteCheckID, Status: lock.CheckOK, Detail: "a Dolt remote is on the same repository as " + l.RemoteName()}
+	}
+	return lock.Check{ID: doltRemoteCheckID, Status: lock.CheckFail, Code: lock.CodeRemoteMismatch, Detail: lock.Scrub(b.cause), Next: b.fix}
 }
 
 func (e *Env) show(ctx context.Context, id string) (*ledger.Issue, error) {
@@ -195,12 +286,8 @@ func (e *Env) unpublished(ctx context.Context) bool {
 	if !e.LockOff {
 		return false
 	}
-	raw, err := e.BD.Run(ctx, "dolt", "remote", "list", "--json")
-	if err != nil {
-		return false
-	}
-	var remotes []json.RawMessage
-	return json.Unmarshal(raw, &remotes) == nil && len(remotes) == 0
+	remotes, ok := doltRemotes(ctx, e.BD)
+	return ok && len(remotes) == 0
 }
 
 // display makes the ledger show that actor's run holds the bead, writing only
@@ -813,11 +900,18 @@ func Release(ctx context.Context, env *Env, id, reason string) (*ReleaseOut, err
 			publish = false
 			out.Warnings = append(out.Warnings, noDoltRemoteWarning)
 		}
-	} else if !entry.Legacy() {
-		var done bool
-		var err error
-		if sha, done, err = env.verifyHold(ctx, id, reason, out); done || err != nil {
-			return out, err
+	} else {
+		if !entry.Legacy() {
+			var done bool
+			var err error
+			if sha, done, err = env.verifyHold(ctx, id, reason, out); done || err != nil {
+				return out, err
+			}
+		}
+		// The bead is still given back; only its ledger stays on this machine.
+		if w := env.noLedgerRemoteWarning(ctx); w != "" {
+			publish = false
+			out.Warnings = append(out.Warnings, w)
 		}
 	}
 	if err := env.releaseDisplay(ctx, id, reason, publish); err != nil {
@@ -1015,6 +1109,9 @@ func Sync(ctx context.Context, env *Env, noPush bool) (*SyncOut, error) {
 		}
 		for _, r := range seen {
 			refs[r.ID] = r
+		}
+		if err := env.noLedgerRemote(ctx); err != nil {
+			return out, err // the cause, not bd's "no remote" from the pull
 		}
 	}
 	publish := !env.unpublished(ctx) // pulled and pushed stay false when it is not

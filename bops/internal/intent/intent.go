@@ -489,6 +489,11 @@ func Land(ctx context.Context, env *Env, id string, o LandOpts) (*LandOut, error
 		out.Warnings = append(out.Warnings, noDoltRemoteWarning)
 		return out, nil
 	}
+	// bd's push "succeeds" with no remote, so say the landing stayed here.
+	if w := env.noLedgerRemoteWarning(ctx); w != "" {
+		out.Warnings = append(out.Warnings, w)
+		return out, nil
+	}
 	if _, err := env.BD.Run(ctx, "dolt", "push"); err != nil {
 		return out, fmt.Errorf("landed locally; push failed: %w", err)
 	}
@@ -528,6 +533,9 @@ func Sweep(ctx context.Context, env *Env, f forge.Forge, dryRun bool) (*SweepOut
 		out.Warnings = append(out.Warnings, noDoltRemoteWarning)
 	}
 	if publish {
+		if err := env.noLedgerRemote(ctx); err != nil {
+			return out, err // the cause, not bd's "no remote" from the pull
+		}
 		if _, err := withLockRetry(ctx, env, "dolt", "pull"); err != nil {
 			return out, err
 		}

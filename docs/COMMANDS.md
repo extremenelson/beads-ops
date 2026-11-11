@@ -334,7 +334,7 @@ Can the claim lock work against its remote (lock.remote, default origin)?
 
 Never: write a claim ref or the ledger, leave its probe ref behind silently (a failed delete is a warning naming the command).
 
-Wraps: `origin: git remote get-url <lock.remote>`, `fetch: git ls-remote <lock.remote> refs/bops/claims/*`, `push: git push --dry-run (create-only) refs/bops/doctor/<nonce>`, `lock: git push (create-only) refs/bops/doctor/<nonce>, then a second create-only push that must be refused`, `git push (lease): delete the probe ref`.
+Wraps: `origin: git remote get-url <lock.remote>`, `fetch: git ls-remote <lock.remote> refs/bops/claims/*`, `push: git push --dry-run (create-only) refs/bops/doctor/<nonce>`, `lock: git push (create-only) refs/bops/doctor/<nonce>, then a second create-only push that must be refused`, `git push (lease): delete the probe ref`, `dolt_remote: bd dolt remote list --json (a Dolt remote on the lock remote's repository, else remote_mismatch)`.
 
 Output:
 
@@ -344,7 +344,7 @@ Output:
   "probe_ref": "string",
   "checks": [
     {
-      "id": "origin|fetch|push|lock",
+      "id": "origin|fetch|push|lock|dolt_remote",
       "status": "ok|fail|skip",
       "detail": "string",
       "code": "string?",

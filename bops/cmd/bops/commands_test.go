@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/extremenelson/beads-ops/bops"
+	"github.com/extremenelson/beads-ops/bops/internal/bdx"
 	"github.com/extremenelson/beads-ops/bops/internal/intent"
 	"github.com/extremenelson/beads-ops/bops/internal/lock"
 	"github.com/extremenelson/beads-ops/bops/internal/manifest"
@@ -233,8 +234,18 @@ func git(t *testing.T, dir string, args ...string) {
 }
 
 // runDoctor runs `bops doctor --json` in a clone of a fresh bare remote,
-// after prepare has had a chance to break the clone.
+// after prepare has had a chance to break the clone. bd lists one Dolt
+// remote on the clone's origin, as lock.mode ref requires.
 func runDoctor(t *testing.T, prepare func(clone string)) (int, map[string]any) {
+	t.Helper()
+	return runDoctorWith(t, prepare, func(origin string) string {
+		return `[{"name":"origin","url":"git+file://` + origin + `"}]`
+	})
+}
+
+// runDoctorWith is runDoctor with bd's `dolt remote list --json` answer made
+// from the clone's origin URL; an empty answer makes the list fail.
+func runDoctorWith(t *testing.T, prepare func(clone string), remotes func(origin string) string) (int, map[string]any) {
 	t.Helper()
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
@@ -247,6 +258,14 @@ func runDoctor(t *testing.T, prepare func(clone string)) (int, map[string]any) {
 	git(t, root, "init", "-q", "--bare", "remote.git")
 	git(t, root, "clone", "-q", "remote.git", "clone")
 	clone := filepath.Join(root, "clone")
+	origin, _ := exec.Command("git", "-C", clone, "remote", "get-url", "origin").Output()
+	fake := &bdx.Fake{Responses: map[string][]byte{}}
+	if list := remotes(strings.TrimSpace(string(origin))); list != "" {
+		fake.Responses["dolt remote list --json"] = []byte(list)
+	}
+	saved := doctorBD
+	doctorBD = fake
+	t.Cleanup(func() { doctorBD = saved })
 	if prepare != nil {
 		prepare(clone)
 	}
@@ -268,7 +287,7 @@ func TestDoctorHealthyExitsZero(t *testing.T) {
 		t.Fatalf("exit %d: %v", code, got)
 	}
 	checks, _ := got["checks"].([]any)
-	if len(checks) != 4 {
+	if len(checks) != 5 || checks[4].(map[string]any)["id"] != "dolt_remote" {
 		t.Fatalf("checks = %v", checks)
 	}
 	for _, c := range checks {
@@ -303,7 +322,7 @@ func TestDoctorSkipsWhenTheLockIsOff(t *testing.T) {
 		t.Fatalf("exit %d: %v", code, got)
 	}
 	checks, _ := got["checks"].([]any)
-	if len(checks) != 4 {
+	if len(checks) != 5 {
 		t.Fatalf("checks = %v", checks)
 	}
 	for _, c := range checks {
@@ -333,5 +352,59 @@ func TestDoctorRefusesABadLockRemote(t *testing.T) {
 	code, got := runDoctor(t, nil)
 	if code != exitCantRun || got["ok"] != false || !strings.Contains(fmt.Sprint(got["error"]), "BOPS_LOCK_REMOTE") {
 		t.Fatalf("exit %d: %v", code, got)
+	}
+}
+
+// In lock.mode ref a ledger with no Dolt remote cannot sit beside the lock,
+// so doctor fails a dolt_remote check that names both fixes.
+func TestDoctorFailsWithNoDoltRemote(t *testing.T) {
+	code, got := runDoctorWith(t, nil, func(string) string { return "[]" })
+	if code != exitCantRun || got["ok"] != false || got["code"] != lock.CodeRemoteMismatch {
+		t.Fatalf("exit %d: %v", code, got)
+	}
+	if failed, _ := got["failed"].([]any); len(failed) != 1 || failed[0] != "dolt_remote" {
+		t.Errorf("failed = %v", got["failed"])
+	}
+	checks, _ := got["checks"].([]any)
+	last := checks[len(checks)-1].(map[string]any)
+	if last["id"] != "dolt_remote" || last["status"] != "fail" || last["code"] != lock.CodeRemoteMismatch {
+		t.Fatalf("check %v", last)
+	}
+	for _, text := range []string{fmt.Sprint(last["next"]), fmt.Sprint(got["error"])} {
+		for _, want := range []string{"bd dolt remote add", "lock.mode", ".bops.json"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%q does not say %q", text, want)
+			}
+		}
+	}
+	if !strings.Contains(fmt.Sprint(last["detail"]), "no Dolt remote") {
+		t.Errorf("detail %q does not name the missing Dolt remote", last["detail"])
+	}
+}
+
+// A Dolt remote on another repository fails the same check.
+func TestDoctorFailsWithAMismatchedDoltRemote(t *testing.T) {
+	code, got := runDoctorWith(t, nil, func(string) string {
+		return `[{"name":"origin","url":"git+https://github.com/other/repo.git"}]`
+	})
+	if code != exitCantRun || got["code"] != lock.CodeRemoteMismatch {
+		t.Fatalf("exit %d: %v", code, got)
+	}
+	if failed, _ := got["failed"].([]any); len(failed) != 1 || failed[0] != "dolt_remote" {
+		t.Errorf("failed = %v", got["failed"])
+	}
+}
+
+// A Dolt remote list that cannot be read is not compared: the check is
+// skipped and doctor still passes on the lock checks.
+func TestDoctorSkipsAnUnreadableDoltRemoteList(t *testing.T) {
+	code, got := runDoctorWith(t, nil, func(string) string { return "" })
+	if code != exitVerdict || got["ok"] != true {
+		t.Fatalf("exit %d: %v", code, got)
+	}
+	checks, _ := got["checks"].([]any)
+	last := checks[len(checks)-1].(map[string]any)
+	if last["id"] != "dolt_remote" || last["status"] != "skip" {
+		t.Fatalf("check %v", last)
 	}
 }

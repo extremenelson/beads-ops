@@ -39,7 +39,9 @@ type Diagnosis struct {
 	Warnings []string `json:"warnings"`
 }
 
-func (d *Diagnosis) add(c Check) bool {
+// Add records a check, and a failure in Failed. It reports whether c passed.
+// A caller adds checks this package cannot make, such as the Dolt remote's.
+func (d *Diagnosis) Add(c Check) bool {
 	d.Checks = append(d.Checks, c)
 	if c.Status == CheckFail {
 		d.Failed = append(d.Failed, c.ID)
@@ -76,46 +78,46 @@ func (l *Lock) Doctor(ctx context.Context) *Diagnosis {
 
 	url, err := l.RemoteURL(ctx)
 	if err != nil {
-		d.add(failed("origin", err, "git remote add "+r+" <url>, or set lock.remote (BOPS_LOCK_REMOTE) to the remote beside the Dolt ledger"))
+		d.Add(failed("origin", err, "git remote add "+r+" <url>, or set lock.remote (BOPS_LOCK_REMOTE) to the remote beside the Dolt ledger"))
 		d.skip("fetch", "push", "lock")
 		return d
 	}
 	d.Remote = Scrub(url)
-	d.add(Check{ID: "origin", Status: CheckOK, Detail: r + " is " + d.Remote})
+	d.Add(Check{ID: "origin", Status: CheckOK, Detail: r + " is " + d.Remote})
 
 	if _, _, err := l.lsRemote(ctx, claimsRoot+"*"); err != nil {
-		d.add(failed("fetch", err, nextFor(CodeOf(err),
+		d.Add(failed("fetch", err, nextFor(CodeOf(err),
 			"fix the credentials for "+r+": `git ls-remote "+r+"` must work with no prompt (GIT_TERMINAL_PROMPT=0, ssh BatchMode=yes)",
 			"check the network and "+r+"'s URL: `git ls-remote "+r+"`")))
 		d.skip("push", "lock")
 		return d
 	}
-	d.add(Check{ID: "fetch", Status: CheckOK, Detail: "read refs under " + claimsRoot + " from " + r})
+	d.Add(Check{ID: "fetch", Status: CheckOK, Detail: "read refs under " + claimsRoot + " from " + r})
 
 	nonce := make([]byte, 6)
 	if _, err := rand.Read(nonce); err != nil {
-		d.add(failed("push", &Error{Code: CodeGit, Err: err}, "rerun bops doctor"))
+		d.Add(failed("push", &Error{Code: CodeGit, Err: err}, "rerun bops doctor"))
 		d.skip("lock")
 		return d
 	}
 	d.ProbeRef = probeRoot + hex.EncodeToString(nonce)
 	first, err := l.commit(ctx, "probe")
 	if err != nil {
-		d.add(failed("push", err, "check that this is a writable git repository: `git status`"))
+		d.Add(failed("push", err, "check that this is a writable git repository: `git status`"))
 		d.skip("lock")
 		return d
 	}
 
 	if err := l.dryRun(ctx, d.ProbeRef, first); err != nil {
-		d.add(failed("push", err, nextFor(CodeOf(err),
+		d.Add(failed("push", err, nextFor(CodeOf(err),
 			"give this account push access to "+r+", or fix its credentials: `git push --dry-run "+r+" HEAD` must work with no prompt",
 			"check the network and "+r+"'s URL: `git push --dry-run "+r+" HEAD`")))
 		d.skip("lock")
 		return d
 	}
-	d.add(Check{ID: "push", Status: CheckOK, Detail: r + " accepts a push from this account (dry run, nothing written)"})
+	d.Add(Check{ID: "push", Status: CheckOK, Detail: r + " accepts a push from this account (dry run, nothing written)"})
 
-	d.add(l.probeLock(ctx, d.ProbeRef, first))
+	d.Add(l.probeLock(ctx, d.ProbeRef, first))
 	if warning := l.removeProbe(ctx, d.ProbeRef); warning != "" {
 		d.Warnings = append(d.Warnings, warning)
 	}
