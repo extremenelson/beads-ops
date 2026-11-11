@@ -33,14 +33,16 @@ func sweepFixture() (*bdx.Fake, *fakeForge) {
 		`{"id":"x-plain","status":"in_progress","created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}`,
 		`{"id":"x-bad","status":"in_progress","metadata":{"bops":"nope"},"created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}`,
 	}, ",") + "]"
-	return &bdx.Fake{Responses: map[string][]byte{
+	responses := map[string][]byte{
 		"dolt pull": []byte(``),
 		"list --status in_progress --limit 0 --json":                                     []byte(list),
 		"close x-merged --reason merged via https://github.com/o/r/pull/1 (" + sha + ")": []byte(``),
 		"dolt push": []byte(``),
-	}}, &fakeForge{merged: map[string]forge.Merged{
+	}
+	merged := map[string]forge.Merged{
 		refMerged: forge.Yes, refOpen: forge.No, refUnknown: forge.Unknown,
-	}}
+	}
+	return &bdx.Fake{Responses: responses}, &fakeForge{merged: merged}
 }
 
 // sweepEnv has an empty lock namespace, so these cases exercise the ledger
