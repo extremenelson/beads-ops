@@ -466,6 +466,9 @@ func (s *Store) Log(ev Event) {
 // Run returns the run for this worktree.
 func (s *Store) Run() *Run { return s.run }
 
+// Worktree is the root of the worktree this Store's run belongs to.
+func (s *Store) Worktree() string { return s.worktree }
+
 // Holds lists every bead held by any run in this clone, ordered by bead id.
 func (s *Store) Holds() []Hold {
 	out := []Hold{}

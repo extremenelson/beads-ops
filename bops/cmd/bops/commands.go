@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/extremenelson/beads-ops/bops/internal/bdx"
+	"github.com/extremenelson/beads-ops/bops/internal/config"
 	"github.com/extremenelson/beads-ops/bops/internal/forge"
 	"github.com/extremenelson/beads-ops/bops/internal/intent"
 	"github.com/extremenelson/beads-ops/bops/internal/ledger"
@@ -132,15 +133,20 @@ func newEnv(mode runstate.Mode) (*intent.Env, *runstate.Store, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("run state: %w", err)
 	}
-	run := store.Run()
-	if p := os.Getenv("BOPS_POOL"); p != "" {
-		run.Pool = p
+	cfg, err := config.Load(store.Worktree(), os.Getenv) // flags override it per command
+	if err != nil {
+		store.Close()
+		return nil, nil, err
 	}
-	if c := os.Getenv("BOPS_CAPS"); c != "" {
-		run.Caps = strings.Split(c, ",")
+	run := store.Run()
+	if cfg.Pool != "" {
+		run.Pool = cfg.Pool
+	}
+	if cfg.Caps != nil {
+		run.Caps = cfg.Caps
 	}
 	l := &lock.Lock{Git: lock.Exec{Dir: root}, Journal: store, Run: run.ID, Actor: run.Actor}
-	return &intent.Env{BD: bdx.Exec{}, Run: run, Store: store, Lock: l}, store, nil
+	return &intent.Env{BD: bdx.Exec{}, Run: run, Store: store, Lock: l, StaleAfter: cfg.StaleAfter(), HoldFor: cfg.HoldFor()}, store, nil
 }
 
 func cmdNext(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
@@ -364,10 +370,10 @@ func cmdDoctor(ctx context.Context, m *manifest.Manifest, args []string, asJSON 
 func cmdStale(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
 	fs := flag.NewFlagSet("stale", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	older := fs.Duration("older-than", 2*time.Hour, "idle longer than this is stale")
+	older := fs.Duration("older-than", 0, "idle longer than this is stale (default stale_minutes)")
 	all := fs.Bool("all-machines", true, "include claims made on other machines")
 	fs.Bool("json", false, "")
-	if err := fs.Parse(args); err != nil || fs.NArg() != 0 || *older <= 0 {
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 || *older < 0 {
 		fmt.Fprintln(stderr, "usage: bops stale [--older-than 2h] [--all-machines=false]")
 		return exitUsage
 	}
@@ -406,6 +412,6 @@ func cmdLint(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 	for _, c := range env.Run.Caps {
 		caps[c] = true
 	}
-	res := intent.Lint(issue, intent.LintEnv{Pool: env.Run.Pool, Caps: caps, Now: time.Now().UTC(), StaleAfter: 0, Strict: *strict})
+	res := intent.Lint(issue, intent.LintEnv{Pool: env.Run.Pool, Caps: caps, Now: time.Now().UTC(), StaleAfter: 0, HoldFor: env.HoldFor, Strict: *strict})
 	return emit(m, "lint", asJSON, &res, nil, stdout, stderr)
 }

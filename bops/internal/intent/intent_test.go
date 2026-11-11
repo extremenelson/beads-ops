@@ -136,6 +136,29 @@ func TestLintHoldWindow(t *testing.T) {
 	}
 }
 
+// next uses the configured hold_minutes for the bops:hold cooling-off.
+func TestNextUsesTheConfiguredHoldWindow(t *testing.T) {
+	held := `[{"id":"x-1","title":"held","description":"d","acceptance_criteria":"ac","status":"open","priority":2,"issue_type":"task","owner":"o","parent":"e","labels":["bops:hold"],"created_at":"2026-11-04T11:00:00Z","updated_at":"2026-11-04T11:00:00Z"}]`
+	for _, tc := range []struct {
+		hold time.Duration
+		want string
+	}{{0, ""}, {30 * time.Minute, "x-1"}} { // updated 60 minutes before now
+		f := &bdx.Fake{Responses: map[string][]byte{
+			"ready --json":                     []byte(held),
+			"list --status in_progress --json": []byte(`[]`),
+		}}
+		env := newEnv(f)
+		env.HoldFor = tc.hold
+		out, err := intent.Next(context.Background(), env, intent.NextOpts{N: 5})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := ids(out); got != tc.want {
+			t.Errorf("hold %v: candidates = %q, want %q", tc.hold, got, tc.want)
+		}
+	}
+}
+
 const heldByRun1 = `[{"id":"x-1","status":"in_progress","assignee":"tester","labels":["run:RUN1"],"created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}]`
 
 func TestNoteWritesViaFileAndHeartbeatsAfter(t *testing.T) {

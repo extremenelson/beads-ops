@@ -30,6 +30,7 @@ Layout:
 | `internal/ledger` | bd JSON types and decoding (the only place field names live) |
 | `internal/forge` | The only package that knows what a pull request is (`gh`, `glab`, or none) |
 | `internal/runstate` | Per-machine run identity and held claims (`$XDG_STATE_HOME/bops/`) |
+| `internal/config` | `.bops.json`, per-user config and `BOPS_*` env, merged (SPEC §10) |
 | `internal/intent` | The commands: `next`, `claim`, `note`, `land`, `sweep`, `release`, `sync`, `lint` so far |
 | `testdata/golden` | Golden outputs, one per generator target |
 

@@ -13,7 +13,7 @@ import (
 
 // StaleOpts are the arguments of `stale`.
 type StaleOpts struct {
-	OlderThan   time.Duration // idle longer than this is stale; zero means 2h
+	OlderThan   time.Duration // idle longer than this is stale; zero means env.StaleAfter
 	AllMachines bool          // false hides claims made on other machines
 }
 
@@ -60,7 +60,7 @@ type StaleOut struct {
 // the future is never stale, matching claim --force.
 func Stale(ctx context.Context, env *Env, o StaleOpts) (*StaleOut, error) {
 	if o.OlderThan == 0 {
-		o.OlderThan = 2 * time.Hour
+		o.OlderThan = env.staleAfter()
 	}
 	out := &StaleOut{Stale: []StaleClaim{}, Orphans: []Orphan{}, Warnings: []string{}}
 	refs := map[string]lock.Ref{}

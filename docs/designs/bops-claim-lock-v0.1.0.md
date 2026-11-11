@@ -124,7 +124,7 @@ The push retry is needed because every bead shares one Dolt ref, so ordinary cla
 3. Replace the ref with a lease on the sha just read, or create-only if there is no ref.
 4. Best effort: remove old `run:` labels, `bd update <id> --assignee <actor> --status in_progress --force` (measured on bd 1.3.4), add the new `run:` label, write `bops:claimed run=… takeover=<old-run>`.
 
-The staleness window is a fixed 120 minutes in v0.1.0, the same on every machine. SPEC's `stale_minutes` has no loader yet (bead `bops-2cn`).
+The staleness window is `stale_minutes` (SPEC §10, default 120). Set it in the committed `.bops.json` so it is the same on every machine; a per-user or `BOPS_STALE_MINUTES` override shortens or lengthens only that machine's window. (Bead `bops-2cn` added the loader; v0.1.0 had a fixed 120.)
 
 **`claim --resume <id>`** handles PR review rework (D25). Fetch the ref. It must have `state=landing`, and its `actor` must be this actor. Replace it with `state=held`, leasing on the sha just read, and record the hold. Then, best effort: remove `bops:landing`, restore the assignee and status with `bd update --assignee --status in_progress --force`, and add the `run:` label, setting `ledger_pending` on failure. Two machines sharing one actor name are separated by the ref state and the lease.
 

@@ -163,6 +163,19 @@ func TestStaleThreshold(t *testing.T) {
 	}
 }
 
+// With no --older-than, the window is the configured stale_minutes.
+func TestStaleDefaultsToTheConfiguredWindow(t *testing.T) {
+	a, _, _ := staleWorld(t)
+	a.env.StaleAfter = 4 * time.Hour
+	out, err := intent.Stale(bg, a.env, intent.StaleOpts{AllMachines: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Stale) != 0 || len(out.Orphans) != 0 {
+		t.Errorf("stale_minutes=240 but 3h-old claims were reported: %+v", out)
+	}
+}
+
 func TestStaleOfflineUsesTheLastSyncAndSaysSo(t *testing.T) {
 	a, _, _ := staleWorld(t)
 	remote := strings.TrimSpace(git(t, a.dir, "remote", "get-url", "origin"))

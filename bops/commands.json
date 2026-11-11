@@ -37,7 +37,7 @@
       "name": "claim",
       "intent": "Take this bead for this run",
       "kind": "write",
-      "args": { "id": { "type": "string" }, "force": { "type": "bool", "default": false, "doc": "Take over a claim stale for 120 minutes, or an orphan. Refused on a landing bead." }, "resume": { "type": "bool", "default": false, "doc": "Take back a landing bead for PR rework. Only the ref's actor can." } },
+      "args": { "id": { "type": "string" }, "force": { "type": "bool", "default": false, "doc": "Take over a claim idle for stale_minutes (default 120), or an orphan. Refused on a landing bead." }, "resume": { "type": "bool", "default": false, "doc": "Take back a landing bead for PR rework. Only the ref's actor can." } },
       "preconditions": ["assignee is empty OR --force", "status in (open, ready)", "no run: label", "origin matches the Dolt remote"],
       "wraps": ["git push refs/bops/claims/<id> (create-only)", "bd dolt pull", "bd update <id> --claim", "bd label add <id> run:<ulid>", "bd comments add <id>", "bd dolt push"],
       "outcomes": { "claimed": 0, "held": 0, "lost": 3, "refused": 3, "unreachable": 1 },
@@ -105,7 +105,7 @@
       "name": "stale",
       "intent": "Claims nobody is working",
       "kind": "read",
-      "args": { "older-than": { "type": "duration", "default": "2h", "doc": "Idle longer than this is stale. Age is from the claim ref's at, which note refreshes; a claim with no ref uses updated_at, heartbeat_at and its newest bops: comment." }, "all-machines": { "type": "bool", "default": true, "doc": "false hides claims and orphans from other machines." } },
+      "args": { "older-than": { "type": "duration", "default": "stale_minutes", "doc": "Idle longer than this is stale; defaults to the stale_minutes config (120). Age is from the claim ref's at, which note refreshes; a claim with no ref uses updated_at, heartbeat_at and its newest bops: comment." }, "all-machines": { "type": "bool", "default": true, "doc": "false hides claims and orphans from other machines." } },
       "wraps": ["git fetch --prune refs/bops/claims/* (the last sync's copy if offline, with a warning)", "bd list --status in_progress --limit 0 --json", "bd comments <id> --json"],
       "output": { "stale": [ { "id": "string", "run": "string", "actor": "string", "last_event_at": "string", "age_minutes": "int", "same_machine": "bool", "source": "ref|ledger" } ], "orphans": [ { "id": "string", "run": "string", "actor": "string", "at": "string", "age_minutes": "int", "same_machine": "bool" } ], "warnings": "string[]" },
       "surfaces": { "cc": ["skill", "hook:SessionStart"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": true } }
@@ -139,7 +139,7 @@
       "intent": "Orient a fresh agent session",
       "kind": "read+sync",
       "args": {},
-      "wraps": ["sync --no-push", "stale --older-than 2h (count, all machines)", "next (count of workable)", "bd prime --mcp --max-memory-chars 600 (capped at 3000 bytes)"],
+      "wraps": ["sync --no-push", "stale (stale_minutes; count, all machines)", "next (count of workable)", "bd prime --mcp --max-memory-chars 600 (capped at 3000 bytes)"],
       "output": { "mine": "string[]", "lost_claims": "string[]", "stranded_holds": "string[]", "stale": "int", "ready_count": "int", "synced": "bool", "prime": "string", "warnings": "string[]" },
       "surfaces": { "cc": ["hook:SessionStart"], "codex": ["hook:SessionStart"], "clj": "fn" }
     },
