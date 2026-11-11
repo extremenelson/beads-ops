@@ -7,7 +7,7 @@
 | # | Point | What the harness must do | Where it's specified |
 |---|---|---|---|
 | 1 | **Session start** | Run `bd sync` (tolerating exit 3), `bd prime`, `bd gate check`, `bd list --status in_progress --json`; report before acting; *in_progress beats ready* | PROCESS §2.1 |
-| 2 | **Claim** | Never edit files before `bd update <id> --claim`; route the claim through `scripts/bd-lint-claim.sh` (exit 0 → claim; 1 → fix or pick another) | PROCESS §2.2, §3.7 |
+| 2 | **Claim** | Never edit files before the claim lands: `bops claim <id>` (exit 0 → work; 3 → pick another; 1 → stop), or `bd update <id> --claim` on a ledger without `bops`, which holds on one replica only; route the claim through `scripts/bd-lint-claim.sh` (exit 0 → claim; 1 → fix or pick another) | PROCESS §2.2, §3.7 |
 | 3 | **Handoff note** | At each milestone and before any stop, `bd update <id> --append-notes` in the `COMPLETED / IN PROGRESS / NEXT / BLOCKER` format; `NEXT` is one concrete step | PROCESS §4 |
 | 4 | **Stop** | Write the handoff note, then `bd sync` if online; never close an epic; never resolve a `human` gate | PROCESS §2.4, §1 |
 

@@ -30,6 +30,6 @@ Exit-code policy (see `bd sync --help`):
 
 Conflict rate for the team: `journalctl --user -u 'beads-sync@*' --since -7d | grep -c 'exit.*2'`.
 
-Add a `bd reclaim --older-than 2h` to the same unit (second `ExecStart=` line) on one always-on machine per team so crashed agents' claims return to the pool.
+On a ledger without `bops`, add a `bd reclaim --older-than 2h` to the same unit (second `ExecStart=` line) on one always-on machine per team so crashed agents' claims return to the pool. **Not on a `bops` ledger:** `bd reclaim` ignores the claim lock and would return beads someone still holds. There, a claim idle for 120 minutes is taken over with `bops claim --force` ([PROCESS §12](../../docs/PROCESS.md#12-recovery-runbook-bops-ledgers)).
 
 Linger must be enabled for the timer to run when you're not logged in: `loginctl enable-linger $USER`.

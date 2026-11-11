@@ -106,7 +106,7 @@
       "intent": "Claims nobody is working",
       "kind": "read",
       "args": { "older-than": { "type": "duration", "default": "2h" }, "all-machines": { "type": "bool", "default": true } },
-      "wraps": ["bd list --status in_progress --json", "bd comments list <id> --json"],
+      "wraps": ["bd list --status in_progress --json", "bd comments <id> --json"],
       "output": { "stale": [ { "id": "string", "run": "string", "last_event_at": "string", "age_minutes": "int", "same_machine": "bool" } ] },
       "surfaces": { "cc": ["skill", "hook:SessionStart"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": true } }
     },

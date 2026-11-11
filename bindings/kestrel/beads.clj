@@ -114,7 +114,9 @@
          (catch Exception _ {:workable false :fails ["lint produced no JSON"]}))))
 
 (defn claim!
-  "Lint, then claim. Throws with the lint fails if not workable."
+  "Lint, then claim. Throws with the lint fails if not workable.
+  Uses `bd update --claim`, which bypasses the bops claim lock (PROCESS §1);
+  bead bops-ecs moves it to `bops claim`."
   [cfg id]
   (let [{:keys [workable fails] :as r} (lint cfg id)]
     (when-not workable

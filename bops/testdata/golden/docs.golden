@@ -213,7 +213,7 @@ Claims nobody is working
 | `--all-machines` | bool | `true` |  |
 | `--older-than` | duration | `2h` |  |
 
-Wraps: `bd list --status in_progress --json`, `bd comments list <id> --json`.
+Wraps: `bd list --status in_progress --json`, `bd comments <id> --json`.
 
 Output:
 

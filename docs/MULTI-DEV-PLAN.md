@@ -53,7 +53,7 @@ Properties:
 - **Source of truth** is the Dolt history at `refs/dolt/data`. `.beads/issues.jsonl` is an export for viewers only; never `bd import` it as sync.
 - **Committed to git:** `.beads/.gitignore`, `.beads/metadata.json`, `.beads/config.yaml` (carries `sync.remote`), `.beads/formulas/*.toml`, `AGENTS.md`, `.claude/settings.json`, `docs/PROCESS.md`.
 - **Never committed:** `.beads/embeddeddolt/` (or `.beads/dolt/`), `.beads/push-state.json` (per-machine), `.beads-wisp/`.
-- **Locks:** a claim (`bd update <id> --claim`) is the cross-developer lock. It carries a lease kept alive by `bd heartbeat`; `bd reclaim` returns dead-worker claims to `open`.
+- **Locks:** on a `bops` ledger the cross-developer lock is `bops claim`: one git ref per bead, `refs/bops/claims/<id>`, beside `refs/dolt/data` on the same remote, written with a create-only or leased push so exactly one machine wins ([SPEC §3.0](../SPEC.md#30-the-claim-lock-ownership)). `bd update <id> --claim` compares and sets on one replica only: two machines can both claim, and last-write-wins settles it at the next sync with nobody told (measured on bd 1.3.4). Without `bops`, that claim and its lease (`bd heartbeat`, `bd reclaim`) are the lock, with that limit.
 - **Identity:** `BEADS_ACTOR` resolves per machine from `git config user.name` by default. Pin it explicitly (§4.2) so the audit trail reads the same from every machine a person owns.
 
 ---
@@ -200,9 +200,10 @@ Exit criterion: a change made on machine A appears on machine B within one timer
 
 ### Phase 4 — Team conventions (committed to `AGENTS.md`, enforced by habit)
 
-- **Claim before edit, one claim per actor per session.** The claim is the lock. `bd ready --claim` only takes unassigned issues; `--claim` on someone else's in_progress refuses (anti-steal). `--force` is for abandoned claims only; prefer `bd reclaim`.
+- **Claim before edit, one claim per actor per session.** The claim is the lock: `bops claim <id>`, which needs the network. A claim exits 3 when someone else has it; pick another bead. `bops claim --force` takes over a claim idle for 120 minutes, and the rest of recovery is [PROCESS §12](PROCESS.md#12-recovery-runbook-bops-ledgers). Without `bops`: `bd ready --claim` only takes unassigned issues, `--claim` on someone else's in_progress refuses (anti-steal), and `--force` is for abandoned claims only.
 - **Claim pools for dispatch.** A lead pre-assigns issues to a pool alias and lists it: `bd config set claim.pools "core-crew,night-crew"`. Anyone can `bd update <id> --claim` a pool-assigned issue; nobody can steal a person's. This is the mechanism for "here's this week's work, take what you want."
-- **Heartbeat long-running agent work.** Autonomous loops call `bd heartbeat <id>` faster than the lease TTL. A machine that stays up runs `bd reclaim --older-than 2h` on the same timer as sync so a crashed laptop's claims don't block the team.
+- **Keep long work visibly alive.** On a `bops` ledger, `bops note` at each milestone refreshes the claim ref, which is what `--force` measures; do not run `bd reclaim` at all, because it ignores the lock and would hand out beads someone still holds. Without `bops`, loops call `bd heartbeat <id>` faster than the lease TTL, and one always-on machine runs `bd reclaim --older-than 2h` on the sync timer.
+- **Upgrade together.** Every machine runs a `bops` that knows the lock before anyone claims with it; an older binary ignores the lock.
 - **Per-machine work gets a label** (`gpu-3090`, `mac-arm`, `debian-box`). Machine-bound agents filter `bd ready` by their label plus unlabeled.
 - **Priority and epic ownership** per `PROCESS.md` §1: only designated humans set P0/P1 and close epics.
 - **Notes are the handoff**, including handoff to *another person's* machine. The `COMPLETED / IN PROGRESS / NEXT / BLOCKER` format is the contract.
@@ -219,7 +220,7 @@ Go/no-go to expand: zero exit-4s, ≤1 exit-2 per developer-week, no one has typ
 ## 5. Day-to-day protocol (the human version of PROCESS.md §2)
 
 ```
-start of session   bd sync → bd ready → bd update <id> --claim
+start of session   bd sync → bops next → bops claim <id>        (no bops: bd ready → bd update <id> --claim)
 during             bd update <id> --append-notes "...", bd create ... --deps discovered-from:<id>
 switching machine  bd update <id> --append-notes "<handoff>"; bd sync     ← non-negotiable
 end of session     bd close <id> --reason "..."; bd sync
@@ -238,12 +239,12 @@ The single rule that prevents 90% of multi-machine pain: **sync before you stand
 |---|---|
 | Two people create issues offline | Never conflicts (hash IDs) |
 | Two people edit different fields of one issue | Cell-level merge, no conflict |
-| Two people claim the same issue offline | Second `bd sync` sees `assignee`/`status` cell conflict → **exit 2** |
+| Two people claim the same issue with `bd`, on two replicas | No conflict: last-write-wins settles `assignee` at the next sync, and the losing agent is not told (measured on bd 1.3.4). This is why `bops claim` exists; with it, one claim wins and the other exits 3 |
 | Two people append notes to one issue offline | Same cell → **exit 2** (last-write-wins is applied only where the pull can settle convergently; notes on the same issue generally can't) |
 | Dependency edges added on two replicas | Merged; `bd sync` recomputes `is_blocked` so `bd ready` isn't stale |
 | Machine-local metadata (`push-state.json`) | Never in the database; never conflicts |
 
-The claim discipline exists to make the two exit-2 rows above rare: if you hold the claim, nobody else should be writing to that bead.
+The claim discipline exists to make the exit-2 row above rare and the silent claim row impossible: if you hold the claim, nobody else should be writing to that bead.
 
 ### Exit-2 runbook (merge conflict)
 
@@ -302,7 +303,7 @@ Put the team pin in `AGENTS.md` and have the SessionStart hook compare `bd versi
 
 | Cadence | Who | What |
 |---|---|---|
-| Every 15 min (timer, always-on boxes) | automatic | `bd sync`; `bd reclaim --older-than 2h` |
+| Every 15 min (timer, always-on boxes) | automatic | `bd sync`; `bd reclaim --older-than 2h` only on a ledger without `bops` |
 | Daily | automatic | `bd backup sync` to a NAS/S3 path registered with `bd backup init` (full Dolt backup, unlike JSONL) |
 | Weekly | lead | `bd stats`; review exit-2/4 journal; `bd mol wisp gc --closed --force` |
 | Monthly | lead | `bd prune --older-than 90d --dry-run` → `--force`; `bd flatten` if the store has grown; `bd doctor --deep` |
@@ -322,14 +323,15 @@ Observability: the systemd journal for the timer is the metric source. `journalc
 | Someone commits `.beads/embeddeddolt/` | Repo bloat, merge chaos | `bd doctor --fix` repairs `.gitignore`; `git rm --cached -r` |
 | Git host drops `refs/dolt/data` | Hub gone | Any recent clone is a full replica; re-push |
 | `.beads/` on a cloud-synced folder | I/O 522 errors, corruption | Prerequisite check; `bd doctor` warns |
-| Crashed agent holds a claim forever | Work blocked for the team | Lease + `bd heartbeat` + timer-driven `bd reclaim` |
+| Crashed agent holds a claim forever | Work blocked for the team | `bops` ledger: `bops claim --force` after 120 idle minutes (PROCESS §12). Without `bops`: lease + `bd heartbeat` + timer-driven `bd reclaim` |
+| Two machines claim one bead | Both agents work it; one loses silently at sync | `bops claim`; raw `bd` claims, `/bead-loop` and the Kestrel binding still bypass it |
 | Exit-3 storms (push races) | Nothing lost, but sync stalls | Raise `--attempts`; if chronic with many writers, move to option 3 |
 
 ---
 
 ## 10. Open items
 
-- **Lease TTL default and `bd heartbeat` cadence** — not pinned down in the docs I read; confirm with `bd heartbeat --help` and `bd reclaim --help` on the installed version before setting the timer's `--older-than`.
+- **Lease TTL default and `bd heartbeat` cadence** — not pinned down in the docs I read; confirm with `bd heartbeat --help` and `bd reclaim --help` on the installed version before setting the timer's `--older-than`. Applies only to ledgers without `bops`; `bops` ledgers do not run `bd reclaim`.
 - **Claude Code `Stop` hook name** — verify against the installed version; upstream only ships `SessionStart` and `PreCompact`.
 - **`bd init --team` wizard** — exists; I haven't run it and don't know what it configures beyond the defaults. Try it on a scratch repo before recommending it over the explicit Phase 1 steps.
 - **Hermes/Kestrel hook surfaces** — same caveat as `PROCESS.md` §11.

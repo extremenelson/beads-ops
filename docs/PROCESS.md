@@ -1,6 +1,6 @@
 # Beads Operating Process
 
-**Status:** v0.2 draft (v0.2: §3.6 workability table, §3.7 pre-claim lint) — opinionated process layer over the upstream beads skill (gastownhall/beads, plugin v1.3.2 / skill v0.60.0, 2026-11-01).
+**Status:** v0.3 draft (v0.2: §3.6 workability table, §3.7 pre-claim lint; v0.3: the `bops` claim lock in §1, §2.2, §3.7, §8, §9.3 and the recovery runbook in §12) — opinionated process layer over the upstream beads skill (gastownhall/beads, plugin v1.3.2 / skill v0.60.0, 2026-11-01).
 **Scope:** one human (Alex) + multiple agents (Claude Code, Hermes, Kestrel) sharing one issue graph per repo, across several machines that are sometimes offline.
 **Relationship to upstream:** this document does not replace `bd prime` or the skill's `resources/`. It fixes the decisions upstream leaves open. Where upstream and this file disagree on *mechanics*, upstream wins (it tracks the binary). Where they disagree on *policy*, this file wins.
 
@@ -22,7 +22,9 @@ Everything else in this document is derived from these.
 |---|---|---|
 | **Alex (human)** | `bd init`, epic-level goals, priority (P0–P1), resolving `human` gates, deciding what gets distilled into a formula, `bd dolt push` policy | Hand-edit `.beads/`; create P2–P4 tasks that agents could file themselves |
 | **Agent (any harness)** | Decomposition below the epic, claiming, notes, discovered-from filing, closing with reasons, `bd gate check` at session start | `bd init`; change P0/P1 priority; close an epic; resolve a `human` gate; delete beads; run `bd dolt push --force` |
-| **Autonomous loop** (task-agent, Kestrel worker) | `bd ready --claim` → execute → close → repeat | Pick up anything with label `needs-human`; create epics; work when `bd blocked` shows a `human` gate on the current epic |
+| **Autonomous loop** (task-agent, Kestrel worker) | `bops next` → `bops claim` → execute → close → repeat (`bd ready --claim` on a ledger without `bops`) | Pick up anything with label `needs-human`; create epics; work when `bd blocked` shows a `human` gate on the current epic |
+
+`bd ready --claim` and `bd update --claim` compare and set on one replica only: two machines can both claim one bead, and Dolt's last-write-wins settles it later without telling the loser. `bops claim` closes that gap with a git ref per bead (§2.2). The guarantee covers only claims made through `bops`. `/bead-loop` and the Kestrel binding still claim through raw `bd`, so they are outside it until bead `bops-ecs` moves them.
 
 The split is deliberate: humans set direction and approve, agents do decomposition and bookkeeping. Agents filing their own follow-ups is what makes the system cheaper than a human-maintained tracker; agents re-prioritizing is what makes it drift.
 
@@ -47,10 +49,18 @@ Rule: **in_progress beats ready.** Finish or hand off before claiming new work. 
 
 ```bash
 bd show <id> --long                   # read description, design, acceptance, notes, deps
-bd update <id> --claim                # atomic: assignee + in_progress
+bops claim <id>                       # the lock: one git ref per bead, then assignee + in_progress
 ```
 
-Never start editing files before the claim lands. In a multi-agent setup the claim *is* the lock.
+Never start editing files before the claim lands. In a multi-agent setup the claim *is* the lock, and on a `bops` ledger the lock is the claim ref, not the assignee. Act on the exit code:
+
+| Exit | `outcome` | Do |
+|---|---|---|
+| 0 | `claimed`, `held` | Work. `ledger_pending: true` only means the assignee shows up after `bops sync` |
+| 3 | `lost`, `refused` | Do not work. Pick another bead; `holder` or `reason` says why |
+| 1 | `unreachable` and the rest | Stop. Rerun when the remote is reachable; the result's `side_effects` says what may have been written |
+
+Claiming needs the network: the lock lives on the remote. Notes work offline (§8). A ledger without `bops` keeps `bd update <id> --claim`, with the one-replica limit above.
 
 ### 2.3 Work
 
@@ -136,7 +146,7 @@ Anything else needs a one-line justification in `bd remember`.
 
 | # | Requirement | Why it matters |
 |---|---|---|
-| 1 | Status is `open` | `ready` means claimable now. `in_progress` under a dead agent is invisible until `bd reclaim`. |
+| 1 | Status is `open` | `ready` means claimable now. `in_progress` under a dead agent is invisible until it is taken over: on a `bops` ledger with `bops claim --force` after 120 minutes (§12), elsewhere with `bd reclaim`. |
 | 2 | No open `blocks` dependency | Only `blocks` affects readiness; this is what makes the graph the plan. |
 | 3 | No unsatisfied `external:` dependency | Hidden until the other project `bd ship`s the capability. |
 | 4 | No open gate on it | Irreversible steps wait for approval/CI. |
@@ -168,10 +178,11 @@ Anything else needs a one-line justification in `bd remember`.
 `scripts/bd-lint-claim.sh <id>` (ships beside this doc) checks rows 1–8 (via `bd ready` membership and `bd show`), 9–12, 14–15, 19, 21 mechanically, and prints warnings for the judgment rows (13, 16, 17, 20). Exit 0 = claim; 1 = fix the bead first; 2 = tool/shape error. Wire it in front of every claim:
 
 ```bash
-alias bdclaim='f(){ scripts/bd-lint-claim.sh "$1" && bd update "$1" --claim; }; f'
+alias bdclaim='f(){ scripts/bd-lint-claim.sh "$1" && bops claim "$1"; }; f'
+# a ledger without bops: ... && bd update "$1" --claim
 ```
 
-Kestrel's `claim!` and any Hermes claim step should shell out to it the same way.
+Kestrel's `claim!` and any Hermes claim step should shell out to it the same way. Today Kestrel's `claim!` ends in `bd update --claim`, which bypasses the lock (§1).
 
 ---
 
@@ -287,7 +298,10 @@ Beads is Dolt-backed; `.beads/issues.jsonl` is an export for viewers, not the so
 - **Offline** is fully supported: everything in §2 works without network. The only thing deferred is sync. Note in the handoff when you were offline (`REF: offline, not pushed`) so the next session pulls before claiming.
 - **Server mode** (`bd init --server`, external `dolt sql-server`) only if two agents need to *write concurrently on the same machine*. Hermes + Kestrel on one box, each in its own session, is still sequential enough for embedded. Revisit if claims start failing.
 - **Per-machine work:** label it (`gpu-3090`, `debian-box`). Autonomous loops filter `bd ready --json` by their own machine label plus unlabeled work.
-- **Worktrees:** `bd worktree create .worktrees/<name> --branch feature/<name>` shares the repo's `.beads/` automatically; one worktree per concurrently active agent. `bd where` when anything looks wrong.
+- **Worktrees:** `bd worktree create .worktrees/<name> --branch feature/<name>` shares the repo's `.beads/` automatically; one worktree per concurrently active agent. `bd where` when anything looks wrong. Each worktree is its own `bops` run, so two agents on one clone cannot both hold a bead.
+- **The claim lock** (`bops` ledgers) is `refs/bops/claims/<id>` on the same remote as `refs/dolt/data`; `bops claim` refuses if git `origin` and the Dolt remote differ. Claim, release, land and sweep need the network. `note` works offline and refreshes the lock when it can. `bops sync` fetches every claim ref, repairs the assignee display from them, finishes deletes and ledger writes that failed, and reports `lost_claims` (someone took a bead from you) and `stranded_holds` (a worktree that no longer exists).
+- **Upgrades:** every machine on a ledger runs a `bops` that knows the lock before anyone claims with it; an older binary ignores the lock. Do not run `bd reclaim` on a `bops` ledger, by hand or on a timer: it ignores the lock.
+- **Local record:** each clone keeps `$XDG_STATE_HOME/bops/<hash>/events.jsonl` (default `~/.local/state/bops/…`), one line per step and outcome. Read it first when an outcome needs explaining.
 
 Never `export BEADS_DIR` globally — it overrides every project's own `.beads/`. Use it per-command for the user-level `~/.beads` only.
 
@@ -336,7 +350,7 @@ The skill lives at `bindings/kestrel/beads.clj` (draft; see `bindings/kestrel/RE
 | Function | Contract point |
 |---|---|
 | `session-start` | §2.1 — sync, gate check, in_progress beats ready, needs-human/machine filter, throws on missing `NEXT` |
-| `claim!` | §2.2 — runs `bd-lint-claim.sh --json` first; refuses on fail |
+| `claim!` | §2.2 — runs `bd-lint-claim.sh --json` first; refuses on fail. Claims with `bd update --claim`, so it is outside the `bops` lock until bead `bops-ecs` switches it to `bops claim` |
 | `handoff!` | §4 — Malli-validated note |
 | `discovered!`, `block!`, `gate-human!` | §5, §6 |
 | `close!` | §2.5 — refuses epics |
@@ -374,6 +388,84 @@ Integration points in Kestrel:
 - **Kestrel skill** is a draft. It needs to run against the installed `bd` once, with the `--json` shapes checked for `ready`, `list`, `show`, and `create`.
 - **Cross-repo capabilities** (`bd ship`, `external:` deps). Not needed until the venture work and the home-lab work live in separate repos and depend on each other. They may.
 - **Compaction automation in Claude Code.** Upstream re-primes on `PreCompact` but does not write notes. Whether to automate the handoff note or keep it a discipline is open; try the discipline first.
+
+---
+
+## 12. Recovery runbook (`bops` ledgers)
+
+Every procedure here was run once against two clones of a scratch ledger and real `bd` 1.3.4 on 2026-11-10. The two-machine run for `bops/v0.1.0` repeats them across machines. The claim ref is ownership and the ledger is its display (§2.2), so most stuck states are fixed by reading the ref and then running one `bops` command.
+
+**Read a claim.** Who holds a bead, in what state, since when:
+
+```bash
+git fetch origin "+refs/bops/claims/<id>:refs/bops/seen/<id>"
+git log -1 --format=%B refs/bops/seen/<id>     # run=, actor=, state=held|landing, at=
+```
+
+`bops sync` fetches every claim ref the same way. The clone's own record of what it did is `~/.local/state/bops/*/events.jsonl`. `bops stale`, which will list stale claims and orphans in one place, is not built yet (bead `bops-ss6.4`).
+
+| Symptom | Cause | Do |
+|---|---|---|
+| `claim` exits 3 with `lost` | Another run holds the bead | Nothing to fix. Pick another bead; `holder` says who |
+| `claim` exits 3 with `refused` | A precondition failed: assigned, held, landing, or not open | Pick another bead. If the reason says the holder is gone, see the stale rows below |
+| exit 1, `outcome: unreachable` | The remote could not be reached | Follow `retry` (30 s, at most 3 times), then rerun the same command. A rerun settles anything half done; the claim comes back `claimed` or `held` |
+| `ledger_pending: true` or `ref_pending: true` | The ledger push or ref delete failed after the claim decided | `bops sync` until both are gone. The claim is valid meanwhile |
+| `bops sync` keeps failing to push the ledger | Dolt push rejected or locked | `bd dolt pull`, then `bd dolt push`, and read the error. An exit 2 merge conflict is [MULTI-DEV-PLAN §6](MULTI-DEV-PLAN.md) |
+| `code: remote_mismatch` or `no_origin` | git `origin` is not the Dolt remote | Compare `git remote get-url origin` with `bd dolt remote list` and point `origin` at the same repository |
+| `code: lock_unsupported` | The forge rejects pushes to `refs/bops/*` | Check the forge's ref rules or protections; there is no fallback in v0.1.0 |
+| `code: state_write_failed` | The state directory is not writable | Fix permissions on `~/.local/state/bops/`. Nothing was pushed: the journal is written before the ref |
+| `code: hold_not_recorded`, error names a sha | The ref was won but the state file was not written | Fix the state directory, then remove the ref as an orphan (below), using that sha |
+
+**The holder is gone (crash, machine off).** Once the claim ref's `at` is 120 minutes old (`note` refreshes it):
+
+```bash
+bops claim --force <id>      # refused before 120 minutes, and on a landing ref
+```
+
+The old holder's next `bops sync` lists the bead in `lost_claims` and drops it. Its next `note`, `land` or `release` returns `lost`; a refused note's text is kept at `saved_to`.
+
+**You were displaced** (`lost` from `note`, `land` or `release`, or the bead in `lost_claims`). Stop working on that bead. Push your branch, and put what you learned where the new holder will see it: a comment on the bead, or the text from `saved_to`.
+
+**A ledger claim with no ref.** The assignee and `run:` label are set but there is no claim ref: a raw `bd update --claim`, a claim made before the lock, or a ref deleted with no new holder. A plain claim refuses it and `--force` waits 120 minutes from `updated_at`. If the assignee is you, clear the display yourself instead of waiting:
+
+```bash
+bd update <id> --assignee '' --status open
+bd label remove <id> run:<ulid>
+bops sync                                   # publish it
+```
+
+**A stranded hold** (`stranded_holds` from `sync`). A worktree was removed while it held a bead. Release it from any worktree of the same clone:
+
+```bash
+bops release <id> --reason scope
+```
+
+**An abandoned landing.** The bead was released `done`, its PR was closed unmerged, and its holder is not coming back. `claim --force` refuses a landing ref and `sweep` leaves it pending. Read the actor from the ref (above), then act as that actor, from any machine:
+
+```bash
+BEADS_ACTOR='<actor from the ref>' bops claim --resume <id>
+BEADS_ACTOR='<actor from the ref>' bops release <id> --reason scope
+```
+
+The ref is deleted and the bead goes back to the pool behind the usual `bops:hold`. The actor is not authenticated ([SPEC §3.0](../SPEC.md#30-the-claim-lock-ownership)), so this is a deliberate act: say who did it and why in a comment on the bead.
+
+**An orphan ref** (`state=held` naming a run with no claim on the ledger, for example after `hold_not_recorded`). A plain claim reports `lost` to that run. First confirm it is an orphan, because deleting a live ref takes the bead from its holder:
+
+```bash
+git fetch origin "+refs/bops/claims/<id>:refs/bops/seen/<id>"
+git log -1 --format=%B refs/bops/seen/<id>   # state=held, and the run is not one you can reach
+bd show <id> --json                           # no assignee, no run: label for that run
+```
+
+Then either wait 120 minutes and `bops claim --force <id>`, or delete it now with a lease on the sha you read, so a ref that changed in the meantime is left alone:
+
+```bash
+git push --no-verify --force-with-lease=refs/bops/claims/<id>:$(git rev-parse refs/bops/seen/<id>) origin :refs/bops/claims/<id>
+```
+
+Never delete or rewrite a claim ref with `-f`: it cancels the lease.
+
+**Never on a `bops` ledger:** `bd reclaim` (by hand or on a timer) and `bd update --claim`, which both ignore the lock; and an older `bops` on any machine.
 
 ---
 

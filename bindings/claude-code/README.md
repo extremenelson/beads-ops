@@ -14,7 +14,8 @@ bd setup claude                                      # upstream: hooks + CLAUDE.
 cat bindings/claude-code/CLAUDE.md.snippet >> CLAUDE.md
 # merge bindings/claude-code/settings.json into .claude/settings.json (jq -s '.[0] * .[1]' works if you have no other hooks)
 cp scripts/bd-lint-claim.sh ./scripts/
-alias bdclaim='f(){ scripts/bd-lint-claim.sh "$1" && bd update "$1" --claim; }; f'
+alias bdclaim='f(){ scripts/bd-lint-claim.sh "$1" && bops claim "$1"; }; f'
+# a ledger without bops: ... && bd update "$1" --claim  (holds on one replica only)
 ```
 
 ## Using bops

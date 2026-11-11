@@ -1,7 +1,7 @@
 # bops — intent-level command layer for beads
 
-**Spec v0.1 (draft) — 2026-11-04 — contract=1**
-License: MIT. Status: pre-implementation. This document is the source of truth; implementations conform to it, not the reverse.
+**Spec v0.1 (draft) — 2026-11-04, amended 2026-11-10 for the claim lock — contract=1**
+License: MIT. Status: implemented by `bops/` for v0.1.0; contract 1 freezes at the `bops/v0.1.0` tag (§11). This document is the source of truth; implementations conform to it, not the reverse.
 
 ## 0. Why this exists
 
@@ -9,19 +9,19 @@ License: MIT. Status: pre-implementation. This document is the source of truth; 
 
 `bops` is one executable that implements those intents once, with machine-readable output and a published contract, and a manifest from which every harness binding (Claude Code, Codex, Hermes, a Clojure orchestrator, an MCP server) is *generated* rather than hand-maintained.
 
-Non-goals: `bops` is not a tracker, not a sync protocol, not a merge tool, and never a second write path. All durable state lives in beads; all writes go through `bd`.
+Non-goals: `bops` is not a tracker, not a sync protocol, not a merge tool, and never a second write path for issue data. All issue state lives in beads; all issue writes go through `bd`. The one exception is claim ownership: `bd`'s compare-and-set holds on one replica only, so two machines can both claim a bead and last-write-wins settles it later. Ownership is therefore a git ref per bead (§3.0), which holds no issue data and is retired when `bd` offers a cross-replica compare-and-set ([ADR 0001 amendment](docs/adr/0001-derived-read-model-not-write-path.md#amendment-2026-11-10-a-git-ref-claim-lock)).
 
 ## 1. Principles
 
-1. **The graph is the plan.** No sidecar plan files. If it matters across sessions or machines, it is a bead, a label, a comment, or a `metadata` key.
+1. **The graph is the plan.** No sidecar plan files. If it matters across sessions or machines, it is a bead, a label, a comment, or a `metadata` key. Who holds a bead is the one fact kept beside the graph, in its claim ref (§3.0).
 2. **Mechanics in the executable, judgment in prose.** `bops` returns facts and deterministic verdicts. "Is this bead worth doing" stays in the harness prompt; "is this bead *workable*" is a `bops` verdict.
 3. **One implementation of every rule.** Bindings never re-implement a filter, regex, or ordering. If a binding needs a fact, there is a command that returns it.
 4. **Writes only via `bd`.** Including the Go library or `bd serve` HTTP as sanctioned surfaces. Never direct SQL writes, never custom tables.
-5. **Comments, not notes, for events.** Comments merge across Dolt sync; the `notes` field conflicts. Notes are reserved for human-authored content.
+5. **Comments, not notes, for events.** Comments merge across Dolt sync; the `notes` field conflicts. Notes are reserved for human-authored content. Comments added to one bead on two replicas both survive the merge (measured on bd 1.3.4, 2026-11-10), but a comment exists elsewhere only once its replica pushes, so a comment is a record, never the source of a decision.
 6. **Per-machine state stays off the ledger.** Lease caches, watermarks, journal cursors live in `$XDG_STATE_HOME/bops/<repo-hash>/`.
 7. **Text never on the command line.** Bodies, comments, and reasons arrive via stdin or `--file`; arguments are IDs, flags, enums. The one exception is the generated, fixed-vocabulary event line (`bops:claimed run=… actor=… machine=…`), which contains no user- or bead-authored text.
 8. **Fail closed on writes, fail open on reads.** A write that cannot verify its precondition does nothing and exits 1. A read that cannot reach the ledger says so and exits 1; it never fabricates.
-9. **Contract-versioned.** `bops version` prints `contract=<n>`; any change to output shape, exit semantics, or state conventions bumps `n`. Bindings pin a contract.
+9. **Contract-versioned.** `bops version` prints `contract=<n>`; any change to output shape, exit semantics, or state conventions bumps `n`. Bindings pin a contract. Waiver: contract 1 changed before release (the claim lock, exit 3, outcomes and codes, `--idempotency-key` removed) without a bump, because no tag or external binding had pinned it. From the `bops/v0.1.0` tag on, the rule applies without exception.
 
 ## 2. Glossary (normative)
 
@@ -29,12 +29,15 @@ Non-goals: `bops` is not a tracker, not a sync protocol, not a merge tool, and n
 |---|---|---|
 | **ready** | `bd ready` says all blocking deps are satisfied and status permits work | workable |
 | **workable** | ready **and** passes the lint rules in §6 (has acceptance, not human-gated, machine-eligible, no stale claim, …) | ready |
-| **claim** | atomic assignment of a bead to an actor+run via compare-and-swap; the claim *is* the lock | lease |
-| **lease** | beads' node-local TTL on a claim (`bd heartbeat` / `bd reclaim`); not committed to Dolt | claim |
-| **run** | one execution of an agent loop on one machine; identified by a `run:` label value | session |
-| **note** | milestone state written while *keeping* the claim | release |
-| **release** | returning a claim with a classified reason; the bead goes back to the pool | close |
+| **claim** | taking a bead for a run by creating its claim ref with a create-only push; the ref *is* the lock, and the assignee and `run:` label are a display of it | lease |
+| **claim ref** | `refs/bops/claims/<id>` on `origin`, naming the holder's run, actor, state (`held` or `landing`) and time (§3.0) | assignee |
+| **holder** | the run the claim ref names; only the holder may note, land or release | assignee |
+| **lease** | beads' node-local TTL on a claim (`bd heartbeat` / `bd reclaim`); not committed to Dolt, and not used by `bops` to decide ownership | claim |
+| **run** | one worktree's execution of an agent loop on one machine; identified by a ULID kept in per-clone state and shown as a `run:` label | session |
+| **note** | milestone state written while *keeping* the claim; also refreshes the claim ref's time | release |
+| **release** | returning a claim with a classified reason; the claim ref is deleted and the bead goes back to the pool, except `done`, which keeps the ref as `landing` | close |
 | **land** | recording evidence that work reached its destination (PR/MR URL + sha); **never** performs the merge | close |
+| **landing** | a bead released `done` whose PR is not yet merged; its ref has `state=landing` and only `sweep` or `claim --resume` acts on it | held |
 | **close** | terminal status; only `bops sweep` or a human closes, never a worker mid-run | land |
 | **gate** | a beads gate (`bd gate`: human, timer, CI, PR) that blocks progress | dep |
 | **pool** | an opt-in partition of ready work via `pool:<name>` label; a run serves one pool | machine label |
@@ -44,22 +47,42 @@ Non-goals: `bops` is not a tracker, not a sync protocol, not a merge tool, and n
 
 All keys are namespaced so that `bops` can coexist with any other tooling on the same ledger.
 
+### 3.0 The claim lock (ownership)
+
+One git ref per claimed bead, `refs/bops/claims/<id>`, on the same remote as the Dolt ledger. `claim` refuses with `remote_mismatch` or `no_origin` when git `origin` and the Dolt remote differ. The ref's value is a commit on the empty tree, authored `bops <bops@invalid>`, whose message is one `key=value` per line:
+
+```
+run=<ulid>
+actor=<actor>
+state=held|landing
+nonce=<random>
+at=<iso8601>
+```
+
+- Every write is `git push --no-verify --force-with-lease=<ref>:<expected>`: create-only for a claim, leased on the sha last read for every other write. `-f` is never used. Of two writers, exactly one wins; the other gets `lost`.
+- **The ref decides; the ledger displays.** The assignee, `run:` label and `bops:landing` label are written best effort after the ref, can lag it (`ledger_pending`), and are repaired by `sync`. No ownership decision reads them.
+- `actor` is unauthenticated free text (`BEADS_ACTOR`, else git `user.name`, else the OS user), and anyone with push access can write these refs. The actor check on `claim --resume` is a safety check, not authentication.
+- A ref message is untrusted input: unknown keys are ignored, size is bounded, and an unreadable or future `at` never counts as stale.
+- Staleness is a fixed 120 minutes from the ref's `at` in v0.1.0. `note` refreshes `at`. `stale_minutes` in §10 has no loader yet.
+- **The guarantee covers claims made through `bops`.** A raw `bd update --claim` writes no ref and bypasses the lock. `/bead-loop` and the Kestrel binding still claim through raw `bd` until bead `bops-ecs` moves them, so they are outside the guarantee. Every machine on a ledger must run a `bops` that knows the lock before the first claim on it.
+
 ### 3.1 Labels (machine-readable state)
 
 | Label | Set by | Meaning |
 |---|---|---|
-| `run:<ulid>` | `claim` | the run currently holding the bead; removed by `release`/`sweep` |
+| `run:<ulid>` | `claim` | display of the run holding the bead; removed by `release`/`sweep`. The claim ref is authoritative |
+| `bops:landing` | `release --reason done` | display of a landing ref; removed by `claim --resume` and `sweep` |
 | `pool:<name>` | humans / `bd` | partition; absence = default pool |
 | `needs:<cap>` | humans | required machine capability (`gpu`, `macos`, `net:internal`, …) |
 | `needs:human` | humans / `release --reason human` | excluded from `next` until removed |
-| `bops:hold` | `release --reason stale|scope` | cooling-off; excluded from `next` for `hold_minutes` (config, default 120) |
+| `bops:hold` | `release --reason stale|scope` | cooling-off; excluded from `next` for `hold_minutes` (default 120). A label has no timestamp, so the window runs from the bead's `updated_at`: a later write extends it, and a bead with no `updated_at` stays held |
 
 ### 3.2 Comments (append-only events)
 
-Each `bops` write adds exactly one comment whose first line is a typed event, so any consumer can reconstruct history with `bd comments list --json`:
+Each `bops` write adds exactly one comment whose first line is a typed event, so any consumer can reconstruct history with `bd comments <id> --json` (there is no `bd comments list`):
 
 ```
-bops:claimed run=<ulid> actor=<actor> machine=<name>
+bops:claimed run=<ulid> actor=<actor> machine=<name> [takeover=<old-run> | resumed=<old-run>]
 bops:note run=<ulid>
 <free text, ≥1 line; last paragraph SHOULD start with NEXT: / BLOCKER: / KEY DECISION: / REF:>
 bops:released run=<ulid> reason=<done|blocked|scope|stale|human> 
@@ -81,93 +104,45 @@ bops:heartbeat run=<ulid>            (only if lease heartbeats are configured to
 
 ### 3.4 Per-machine state (`$XDG_STATE_HOME/bops/<repo-hash>/`)
 
-`run.json` (current run id, pool, capabilities, started_at), `watermark` (last-synced ledger revision), `journal.cursor` (beads events-journal position, for a future read model), `leases.json` (local mirror of heartbeat times).
+`<repo-hash>` is the first 8 bytes, in hex, of the SHA-256 of the clone's git common directory, so every worktree of one clone shares one directory and each worktree is its own run.
+
+- `state.json` (version 2): one run per worktree (id, actor, machine, pool, capabilities, started_at), each with a hold journal keyed by bead: `{sha, intended, phase: pushing|held, ledger_pending, delete_pending}`. Every claim-ref write is journalled before it is pushed and settled after, so a crash or a lost acknowledgement is resolved by `sync`. A file with a newer version is refused. A legacy `held` list still decodes; its holds have no sha and are never reported lost.
+- `lock`: the write lock, held only around file writes and never across a network call. It carries an owner token, and a lock older than its stale limit is taken over.
+- `events.jsonl`: one line per step and outcome of every ownership command, rotated at 1 MB to one old copy. It is local and is the first thing to read when an outcome needs explaining.
+- `refs/bops/seen/*` (in the clone, not this directory): the last fetched copy of every claim ref, written by `sync`, so `next` can apply W14 without the network.
+
+Reserved for later, not written by v0.1.0: `watermark`, `journal.cursor`, `leases.json`.
 
 ## 4. Command manifest
 
-Normative shape of `commands.json`; the generator in §8 consumes it. Common to every command:
+The manifest is [`bops/commands.json`](bops/commands.json). It is embedded in the binary, printed by `bops manifest`, consumed by the generator in §8, and rendered to [`docs/COMMANDS.md`](docs/COMMANDS.md), which is golden-tested. It is the normative list of commands, arguments, wrapped calls and output fields; this section states only what is common to every command. Common to every command:
 
 - `--json` (default when stdout is not a TTY) → one JSON document on stdout. Human mode prints the same facts as `key=value` lines.
 - Exit codes: **0** done, or a read's verdict; **1** could not run (remote or ledger unreachable, precondition unverifiable, `bd` error); **2** usage; **3** a write's negative verdict (`lost`, `refused`), with `ok:false`, so `bops claim x && work` cannot proceed. Diagnostics on stderr only.
-- Every JSON result carries `{"contract":1,"command":"<name>","ok":<bool>, ...}`.
+- Every JSON result carries `{"contract":1,"command":"<name>","ok":<bool>, ...}`. A failure that could not run also carries a stable `code` (below) and an `error` with credentials scrubbed.
+- Budgets: `claim`, `release` and `note` have 60 s, `sync` 2 min, `sweep` 5 min, every other command 30 s. Each git call has its own 20 s limit and runs without a terminal prompt.
+- `session-start`, `stale`, `gates` and `deps` are specified but not implemented in v0.1.0; they print so and exit 0 without running.
 
-```json
-{
-  "contract": 1,
-  "commands": [
-    {
-      "name": "next",
-      "intent": "What should I work on?",
-      "kind": "read",
-      "args": { "pool": "string?", "caps": "string[]?", "n": "int=3", "include-unworkable": "bool=false" },
-      "wraps": ["bd ready --json", "bd show --json", "bd gate list --json"],
-      "output": {
-        "candidates": [{ "id": "string", "title": "string", "priority": "int", "type": "string",
-                         "workable": "bool", "why": "string[]", "why_not": "string[]",
-                         "blocked_by_gates": "string[]", "parent": "string?" }],
-        "excluded_count": "int", "ledger_revision": "string"
-      },
-      "surfaces": { "cc": ["skill", "hook:SessionStart"], "kestrel": "fn", "hermes": "tool", "mcp": { "readOnly": true } }
-    },
-    { "name": "claim",  "intent": "Take this bead for this run", "kind": "write",
-      "args": { "id": "string", "force": "bool=false" },
-      "preconditions": ["assignee is empty OR --force", "status in (open, ready)", "no run: label"],
-      "wraps": ["bd update <id> --claim --if-assignee ''", "bd label add run:<ulid>", "bd comments add", "bd dolt push"],
-      "output": { "id": "string", "run": "string", "claimed_at": "string", "readback_ok": "bool" },
-      "surfaces": { "cc": ["skill"], "kestrel": "fn", "hermes": "tool", "mcp": { "readOnly": false } } },
-    { "name": "note",   "intent": "Record where I am, keep the claim", "kind": "write",
-      "args": { "id": "string", "text": "stdin|--file" },
-      "preconditions": ["run: label matches current run"],
-      "lint": ["last paragraph starts with NEXT:|BLOCKER:|KEY DECISION:|REF: (warn, not fail)"],
-      "wraps": ["bd comments add", "bd heartbeat"],
-      "output": { "id": "string", "comment_id": "string", "warnings": "string[]" } },
-    { "name": "release", "intent": "Give the claim back", "kind": "write",
-      "args": { "id": "string", "reason": "enum[done,blocked,scope,stale,human]", "text": "stdin|--file?" },
-      "effects": { "blocked": "status→blocked", "human": "+needs:human", "stale|scope": "+bops:hold", "done": "none (await land/sweep)" },
-      "wraps": ["bd update --assignee ''", "bd label remove run:*", "bd comments add", "bd dolt push"],
-      "output": { "id": "string", "reason": "string" } },
-    { "name": "land",   "intent": "Record that work reached its destination", "kind": "write",
-      "args": { "id": "string", "ref": "url", "sha": "string" },
-      "wraps": ["bd comments add", "bd update --metadata (merge bops.landed)", "bd dolt push"],
-      "never": ["merge", "push a branch", "close"],
-      "output": { "id": "string", "landed": "object" } },
-    { "name": "sweep",  "intent": "Close landed beads whose refs are merged", "kind": "write",
-      "args": { "dry-run": "bool=true", "forge": "enum[auto,github,gitlab,none]=auto" },
-      "wraps": ["forge adapter: is-merged(ref)", "bd close --reason 'merged via <ref> (<sha>)'"],
-      "output": { "closed": "string[]", "pending": "string[]", "unknown": "string[]" } },
-    { "name": "stale",  "intent": "Claims nobody is working", "kind": "read",
-      "args": { "older-than": "duration=2h", "all-machines": "bool=true" },
-      "wraps": ["bd list --status in_progress --json", "bd comments list --json"],
-      "output": { "stale": [{ "id": "string", "run": "string", "last_event_at": "string", "age_minutes": "int", "same_machine": "bool" }] } },
-    { "name": "lint",   "intent": "Is this bead workable?", "kind": "read",
-      "args": { "id": "string", "strict": "bool=false" },
-      "output": { "id": "string", "workable": "bool", "fails": "rule[]", "warns": "rule[]", "passes": "string[]" } },
-    { "name": "sync",   "intent": "Pull, heartbeat, push — with the one retry", "kind": "write",
-      "args": { "no-push": "bool=false" },
-      "wraps": ["bd dolt pull", "bd heartbeat (for held claims)", "bd dolt push"],
-      "retry": { "on": "dolt lock", "times": 1, "after_ms": 5000 },
-      "output": { "pulled": "bool", "pushed": "bool", "revision": "string", "unpublished": "int" } },
-    { "name": "session-start", "intent": "Orient a fresh agent session", "kind": "read+sync",
-      "wraps": ["sync", "bd prime", "stale --older-than 2h", "my in_progress"],
-      "output": { "mine": "string[]", "stale": "int", "ready_count": "int", "prime": "string" } },
-    { "name": "gates",  "intent": "What is blocking this bead's path?", "kind": "read",
-      "args": { "id": "string" },
-      "wraps": ["bd gate list --json", "bd dep list --json"],
-      "output": { "gates": [{ "id": "string", "type": "string", "on": "string", "satisfied": "bool" }], "blocking_deps": "string[]" } },
-    { "name": "deps",   "intent": "Blockers, dependents, longest path", "kind": "read",
-      "args": { "id": "string", "transitive": "bool=false", "path": "bool=false", "engine": "enum[bd,cte,graph]=bd" },
-      "output": { "blocks": "string[]", "blocked_by": "string[]", "critical_path": "string[]?", "depth": "int" } },
-    { "name": "version", "kind": "read", "output": { "bops": "semver", "contract": "int", "bd": "string", "backend": "string" } }
-  ]
-}
-```
+**Ownership outcomes** (`claim`, `release`, `note`, `land`):
+
+| `outcome` | Exit | `ok` | Meaning for the agent |
+|---|---|---|---|
+| `claimed` | 0 | true | You own it. `ledger_pending: true` means the display catches up at `sync` |
+| `held` | 0 | true | This run already owns it; carry on |
+| `released` | 0 | true | Given back. `ref_pending: true` means `sync` finishes deleting the ref |
+| `noted`, `landed` | 0 | true | Written |
+| `lost` | 3 | false | Someone else holds it; pick another bead. `holder` names their actor, run and age |
+| `refused` | 3 | false | A precondition failed; pick another bead. `reason` says which (`detail` on `release`, whose `reason` is the release reason) |
+| `unreachable` | 1 | false | Could not verify; stop or retry. `retry` bounds it and `side_effects` says what may have been written |
+
+**Stable codes** (`code` on a result that could not run, and in `events.jsonl`): `unreachable` (remote not reached), `git_auth` (credentials refused), `lock_unsupported` (the forge rejects custom refs), `ref_contention` (a local ref update collided), `state_write_failed` (the state file could not be written), `hold_not_recorded` (the ref was won but the hold could not be saved; the result names the sha and how to recover), `no_origin` and `remote_mismatch` (git `origin` missing or not the Dolt remote), `bad_id` (not a bead id), `bad_message` (an unreadable claim ref), `git_failed` (any other git error).
 
 ## 5. Ordering rules for `next`
 
 Deterministic, documented, and the only place ordering lives:
 
-1. Exclude: not ready; `needs:human`; `bops:hold` within window; `pool:` ≠ run's pool; any `needs:<cap>` not in run's caps; open gates; `run:` label present (unless stale and `--include-stale`).
-2. Order: priority ascending (0 first) → beads whose parent epic already has in-progress siblings (finish what's started) → oldest `created_at` → ID.
+1. Exclude: not ready; epics; any failing lint rule in §6 (`needs:human`, `bops:hold` within window, `pool:` ≠ run's pool, any `needs:<cap>` not in run's caps, open gates, a live claim); and W14, a claim ref seen at the last `sync` that names another run. W14 reads `refs/bops/seen/*`, so `next` needs no network and is only as fresh as the last `sync`; `claim` is what decides.
+2. Order: priority ascending (0 first) → beads whose parent epic already has in-progress siblings (finish what's started) → oldest `created_at` → ID. If the in-progress listing fails, `next` still returns candidates without that step and says so in `warnings`.
 3. `why` lists which rules passed; `why_not` lists which rules excluded it (only with `--include-unworkable`).
 
 The harness decides *among* candidates; `bops` never picks silently. `claim` is a separate call so the agent's choice is visible in the transcript.
@@ -191,8 +166,11 @@ Each rule has an id, a severity (`fail`|`warn`), and a one-line rationale; `--st
 | W11 | fail | no dependency cycle reachable (delegates to `bd dep cycles`) |
 | W12 | fail | not labelled `bops:hold` (cooling off after a scope/stale release) |
 | W13 | fail | in this run's pool: a run serves exactly one pool; unlabelled beads are the default pool, and a pooled run never takes default-pool beads |
+| W14 | fail | no claim ref held by another run, as seen at the last `sync` (evaluated by `next`, which has the refs) |
 
-`W06s` is the stale variant of W06: the bead carries a claim, but its last heartbeat/update is older than `stale_minutes` (default 120). It is a *warn*, so a stale claim is a candidate again; `claim` on it still requires `--force`, which records the takeover in the event comment.
+`W06s` is the stale variant of W06: the bead carries a claim, but its last heartbeat/update is older than `stale_minutes` (default 120). It is a *warn*, so a stale claim is a candidate again; `claim` on it still requires `--force`, which records the takeover in the event comment. `claim --force` measures staleness from the claim ref's `at` (§3.0), and from `updated_at` only for a ledger claim with no ref.
+
+W12's window runs from the bead's `updated_at`, because a label carries no timestamp. A bead with no `updated_at` stays held.
 
 Rules the bead alone cannot answer (W09 needs comments, W10 needs the whole list, W11 needs bd) are evaluated by the commands that have that data; `bops lint <id>` reports them as not evaluated rather than passed.
 
@@ -219,6 +197,7 @@ Bindings carry `contract=<n>` and refuse to run against a mismatched `bops versi
 
 - Every command has a test suite that stubs `bd` (and `gh`/`glab`) with a fake returning fixture JSON; no suite requires Dolt.
 - One integration suite runs against a throwaway `bd init` ledger in CI, gated behind `BOPS_INTEGRATION=1`.
+- A two-replica suite runs in the same CI job against real `bd` (pinned, checksum-verified) and a bare git remote: two clones race to claim one bead at least 40 times with distinct actors and 40 with one shared actor, and every trial must end with exactly one `claimed` and one `lost`. It also covers takeover, resume, worktrees, a slow remote, a failing pre-push hook, offline `note`, ledger repair by `sync`, and `sweep`. `BOPS_RACE_TRIALS` sets the trial count.
 - Golden-file tests for every generated binding; a change to a golden file is a contract review.
 - A suite exists for each bug that shipped — pin the bug, then fix it.
 
@@ -226,10 +205,14 @@ Bindings carry `contract=<n>` and refuse to run against a mismatched `bops versi
 
 `.bops.json` in repo root (committed) merged with `$XDG_CONFIG_HOME/bops/config.json` (per user) and `BOPS_*` env. Keys: `pool`, `caps[]`, `hold_minutes`, `stale_minutes`, `forge`, `lint.strict`, `lint.disable[]`, `note.require_next` (bool).
 
+v0.1.0 has no config loader (bead `bops-2cn`): `hold_minutes` and `stale_minutes` are fixed at 120, `pool` and `caps` come from flags, and `forge` from `--forge`. The environment it reads is `BEADS_ACTOR` (actor), `BOPS_MACHINE` (machine name, else the hostname), `XDG_STATE_HOME` (§3.4), and `BOPS_INTEGRATION` / `BOPS_RACE_TRIALS` in tests.
+
 ## 11. Versioning and compatibility
 
-- `bops` semver; `contract` integer. Minor releases may add commands/fields; removing or renaming anything bumps `contract`.
-- Supported `bd`: ≥ 1.3 (claims via `--if-assignee`, `bd heartbeat`/`bd reclaim`, events journal). `bops version` reports the detected `bd` and backend and warns outside the tested range.
+- `bops` semver; `contract` integer. Minor releases may add commands/fields; removing or renaming anything bumps `contract`. Contract 1 freezes at the `bops/v0.1.0` tag (§1.9 waiver).
+- Supported `bd`: ≥ 1.3 (`bd update --claim`, `--assignee --status --force` for display repair, `bd heartbeat`, `bd comments <id> --json`); CI pins and tests 1.3.4. `bd reclaim` ignores the claim lock, so it is not run on a ledger `bops` claims on. `bops version` reports the detected `bd` and backend and warns outside the tested range.
+- Supported git remotes: any that accept custom refs under `refs/bops/` with `--force-with-lease`. GitHub is measured. A forge that rejects them gives `code: lock_unsupported`.
+- Upgrade every machine on a ledger before the first claim with a new `bops`: an older binary ignores the lock.
 - JSONL-only (`no-db`) beads: read commands work; write commands refuse (no CAS) unless `--unsafe-no-cas`.
 
 ## 11a. Reference implementation

@@ -123,3 +123,9 @@ Ownership then returns to the ledger and this amendment is withdrawn.
 Kestrel. How often claims really collide is unmeasured, and the two-machine run
 for v0.1.0 records a count. The race itself is reproduced, which is why the lock
 is built before that number exists.
+
+**Verified.** The two-replica suite (SPEC §9) runs in CI against real `bd`
+1.3.4: in 40 races with distinct actors and 40 with one shared actor, every
+trial ended with exactly one `claimed` and one `lost` (2026-11-10). Forty clean
+trials bound the failure rate to about 7.5%; the guarantee itself rests on the
+remote's leased push, measured separately on GitHub.

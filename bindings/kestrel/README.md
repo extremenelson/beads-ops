@@ -7,7 +7,7 @@ Kestrel treats `bd --json` as its durable task memory and never touches `.beads/
 | Contract point | Function | Notes |
 |---|---|---|
 | 1 Session start | `session-start` | runs `bd sync` (tolerates 3), `bd gate check`, lists in_progress + ready, filters `needs-human` and machine labels, picks resume target; **throws if an in_progress bead has no `NEXT`** |
-| 2 Claim | `claim!` | shells to `scripts/bd-lint-claim.sh --json` first; refuses on exit 1 |
+| 2 Claim | `claim!` | shells to `scripts/bd-lint-claim.sh --json` first; refuses on exit 1. Claims with `bd update --claim`, which bypasses the `bops` claim lock: two machines can both claim a bead. Outside the lock's guarantee until bead `bops-ecs` switches it to `bops claim` (exit 3 = pick another bead) |
 | 3 Handoff note | `handoff!` | Malli-validated `Handoff` map → `--append-notes` in the §4 format |
 | 4 Stop | `sync!`, `close!` | `close!` refuses epics; `sync!` returns `{:offline true}` instead of throwing |
 
