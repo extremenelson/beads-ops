@@ -485,6 +485,10 @@ func Land(ctx context.Context, env *Env, id string, o LandOpts) (*LandOut, error
 	if _, err := env.BD.Run(ctx, "comments", "add", id, ev); err != nil {
 		return out, fmt.Errorf("landed but could not record event: %w", err)
 	}
+	if env.unpublished(ctx) {
+		out.Warnings = append(out.Warnings, noDoltRemoteWarning)
+		return out, nil
+	}
 	if _, err := env.BD.Run(ctx, "dolt", "push"); err != nil {
 		return out, fmt.Errorf("landed locally; push failed: %w", err)
 	}
@@ -518,7 +522,12 @@ type sweepCandidate struct {
 // first could leave a closed bead with a live holder.
 func Sweep(ctx context.Context, env *Env, f forge.Forge, dryRun bool) (*SweepOut, error) {
 	out := &SweepOut{DryRun: dryRun, Closed: []string{}, WouldClose: []string{}, Pending: []string{}, Unknown: []string{}}
-	if !dryRun {
+	publish := !dryRun
+	if publish && env.unpublished(ctx) {
+		publish = false
+		out.Warnings = append(out.Warnings, noDoltRemoteWarning)
+	}
+	if publish {
 		if _, err := withLockRetry(ctx, env, "dolt", "pull"); err != nil {
 			return out, err
 		}
@@ -580,7 +589,7 @@ func Sweep(ctx context.Context, env *Env, f forge.Forge, dryRun bool) (*SweepOut
 			failures = append(failures, err)
 		}
 	}
-	if len(out.Closed) > 0 {
+	if len(out.Closed) > 0 && publish {
 		if err := env.pushLedger(ctx); err != nil {
 			failures = append(failures, fmt.Errorf("closed locally; push failed: %w", err))
 		}

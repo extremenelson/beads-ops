@@ -172,6 +172,31 @@ func (e *Env) pushLedger(ctx context.Context) error {
 	return err
 }
 
+// noDoltRemoteWarning says a write was kept on this machine because the
+// ledger has no Dolt remote to publish to.
+const noDoltRemoteWarning = "no Dolt remote: ledger not published"
+
+// unpublished reports a ledger with nowhere to publish: lock.mode none and bd
+// lists no Dolt remote. Such a ledger is whole on this machine, so a command
+// skips its pull and push and says so in warnings. bd 1.3.4 fails `dolt pull`
+// with no remote ("Error 1105: no remote") and skips `dolt push` silently.
+//
+// It asks for the remote list rather than reading a pull's error. Under
+// lock.mode ref it is always false, because there the ledger must be shared
+// with the lock; and a list that fails or does not parse counts as a remote,
+// so the pull and push run and fail as they always did.
+func (e *Env) unpublished(ctx context.Context) bool {
+	if !e.LockOff {
+		return false
+	}
+	raw, err := e.BD.Run(ctx, "dolt", "remote", "list", "--json")
+	if err != nil {
+		return false
+	}
+	var remotes []json.RawMessage
+	return json.Unmarshal(raw, &remotes) == nil && len(remotes) == 0
+}
+
 // display makes the ledger show that actor's run holds the bead, writing only
 // what differs, so a retry adds no duplicate comment and repeats no claim.
 func (e *Env) display(ctx context.Context, cur *ledger.Issue, actor, run string, comment bool) error {
@@ -763,6 +788,7 @@ func Release(ctx context.Context, env *Env, id, reason string) (*ReleaseOut, err
 		return out, nil
 	}
 	sha := entry.SHA
+	publish := true
 	if env.LockOff {
 		out.Warnings = append(out.Warnings, lock.OffWarning)
 		cur, err := env.show(ctx, id)
@@ -777,6 +803,10 @@ func Release(ctx context.Context, env *Env, id, reason string) (*ReleaseOut, err
 			env.event("release", id, "ledger_check", OutcomeLost, "", nil)
 			return out, nil
 		}
+		if env.unpublished(ctx) {
+			publish = false
+			out.Warnings = append(out.Warnings, noDoltRemoteWarning)
+		}
 	} else if !entry.Legacy() {
 		var done bool
 		var err error
@@ -784,7 +814,7 @@ func Release(ctx context.Context, env *Env, id, reason string) (*ReleaseOut, err
 			return out, err
 		}
 	}
-	if err := env.releaseDisplay(ctx, id, reason); err != nil {
+	if err := env.releaseDisplay(ctx, id, reason, publish); err != nil {
 		out.LedgerPending = true
 		out.Warnings = append(out.Warnings, "ledger display pending: "+err.Error())
 		env.event("release", id, "ledger", "pending", sha, err)
@@ -858,8 +888,8 @@ func (e *Env) verifyHold(ctx context.Context, id, reason string, out *ReleaseOut
 
 // releaseDisplay writes what `release` shows on the ledger. A done bead stays
 // in_progress until sweep closes it; every other reason returns it to a status
-// bd ready understands.
-func (e *Env) releaseDisplay(ctx context.Context, id, reason string) error {
+// bd ready understands. It pushes only when publish is set.
+func (e *Env) releaseDisplay(ctx context.Context, id, reason string, publish bool) error {
 	cur, err := e.show(ctx, id)
 	if err != nil {
 		return err
@@ -888,6 +918,9 @@ func (e *Env) releaseDisplay(ctx context.Context, id, reason string) error {
 	ev := fmt.Sprintf("bops:released run=%s reason=%s", e.Run.ID, reason)
 	if _, err := e.BD.Run(ctx, "comments", "add", id, ev); err != nil {
 		return err
+	}
+	if !publish {
+		return nil
 	}
 	return e.pushLedger(ctx)
 }
@@ -978,16 +1011,20 @@ func Sync(ctx context.Context, env *Env, noPush bool) (*SyncOut, error) {
 			refs[r.ID] = r
 		}
 	}
-	if _, err := withLockRetry(ctx, env, "dolt", "pull"); err != nil {
+	publish := !env.unpublished(ctx) // pulled and pushed stay false when it is not
+	if !publish {
+		out.Warnings = append(out.Warnings, noDoltRemoteWarning)
+	} else if _, err := withLockRetry(ctx, env, "dolt", "pull"); err != nil {
 		return out, err
+	} else {
+		out.Pulled = true
 	}
-	out.Pulled = true
 	for _, h := range env.allHolds() {
 		if env.syncHold(ctx, h, refs, out) {
 			_, _ = env.BD.Run(ctx, "heartbeat", h.id) // best effort; the ref decides ownership
 		}
 	}
-	if noPush {
+	if noPush || !publish {
 		return out, nil
 	}
 	if _, err := withLockRetry(ctx, env, "dolt", "push"); err != nil {
