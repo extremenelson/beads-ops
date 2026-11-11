@@ -335,6 +335,32 @@ func cmdSessionStart(ctx context.Context, m *manifest.Manifest, args []string, a
 	return emit(m, "session-start", asJSON, out, err, stdout, stderr)
 }
 
+// cmdDoctor checks origin, read and push access, and lock support. It needs no
+// ledger and no run state. A failed check exits 1 with the first failure's
+// code, and the document still lists every check.
+func cmdDoctor(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
+	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Bool("json", false, "")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: bops doctor")
+		return exitUsage
+	}
+	root, err := os.Getwd()
+	if err != nil {
+		return emit(m, "doctor", asJSON, nil, err, stdout, stderr)
+	}
+	l := &lock.Lock{Git: lock.Exec{Dir: root}, Run: "doctor", Actor: "bops-doctor"}
+	out := l.Doctor(ctx)
+	for _, c := range out.Checks {
+		if c.Status == lock.CheckFail {
+			err = &lock.Error{Code: c.Code, Err: fmt.Errorf("%s failed: %s; next: %s", strings.Join(out.Failed, ", "), c.Detail, c.Next)}
+			break
+		}
+	}
+	return emit(m, "doctor", asJSON, out, err, stdout, stderr)
+}
+
 func cmdStale(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
 	fs := flag.NewFlagSet("stale", flag.ContinueOnError)
 	fs.SetOutput(stderr)

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime/debug"
 	"strings"
@@ -88,7 +89,7 @@ func TestEmitScrubsCredentials(t *testing.T) {
 }
 
 func TestBudgets(t *testing.T) {
-	for name, min := range map[string]time.Duration{"claim": time.Minute, "release": time.Minute, "note": time.Minute, "session-start": time.Minute, "sync": 2 * time.Minute, "sweep": 5 * time.Minute} {
+	for name, min := range map[string]time.Duration{"claim": time.Minute, "release": time.Minute, "note": time.Minute, "session-start": time.Minute, "sync": 2 * time.Minute, "sweep": 5 * time.Minute, "doctor": time.Minute} {
 		if budget(name) < min {
 			t.Errorf("%s budget = %v", name, budget(name))
 		}
@@ -218,5 +219,68 @@ func TestStrayArgumentsAreUsageErrors(t *testing.T) {
 	}
 	if len(names) < 7 {
 		t.Errorf("only %d commands checked: %v", len(names), names)
+	}
+}
+
+func git(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+}
+
+// runDoctor runs `bops doctor --json` in a clone of a fresh bare remote,
+// after prepare has had a chance to break the clone.
+func runDoctor(t *testing.T, prepare func(clone string)) (int, map[string]any) {
+	t.Helper()
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	root := t.TempDir()
+	git(t, root, "init", "-q", "--bare", "remote.git")
+	git(t, root, "clone", "-q", "remote.git", "clone")
+	clone := filepath.Join(root, "clone")
+	if prepare != nil {
+		prepare(clone)
+	}
+	t.Chdir(clone)
+	stdout, _ := os.CreateTemp(t.TempDir(), "out")
+	stderr, _ := os.CreateTemp(t.TempDir(), "err")
+	code := run([]string{"doctor", "--json"}, stdout, stderr)
+	b, _ := os.ReadFile(stdout.Name())
+	got := map[string]any{}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("%v: %s", err, b)
+	}
+	return code, got
+}
+
+func TestDoctorHealthyExitsZero(t *testing.T) {
+	code, got := runDoctor(t, nil)
+	if code != exitVerdict || got["ok"] != true || got["command"] != "doctor" {
+		t.Fatalf("exit %d: %v", code, got)
+	}
+	checks, _ := got["checks"].([]any)
+	if len(checks) != 4 {
+		t.Fatalf("checks = %v", checks)
+	}
+	for _, c := range checks {
+		if c.(map[string]any)["status"] != "ok" {
+			t.Errorf("check %v", c)
+		}
+	}
+	if p, _ := got["probe_ref"].(string); !strings.HasPrefix(p, "refs/bops/doctor/") {
+		t.Errorf("probe_ref = %v", got["probe_ref"])
+	}
+}
+
+func TestDoctorFailingCheckExitsNonZero(t *testing.T) {
+	code, got := runDoctor(t, func(clone string) { git(t, clone, "remote", "remove", "origin") })
+	if code != exitCantRun || got["ok"] != false || got["code"] != lock.CodeNoOrigin {
+		t.Fatalf("exit %d: %v", code, got)
+	}
+	if failed, _ := got["failed"].([]any); len(failed) != 1 || failed[0] != "origin" {
+		t.Errorf("failed = %v", got["failed"])
 	}
 }
