@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -237,8 +238,11 @@ func runDoctor(t *testing.T, prepare func(clone string)) (int, map[string]any) {
 	t.Helper()
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // doctor reads lock.mode
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // doctor reads lock.mode and lock.remote from config
 	t.Setenv("BOPS_LOCK_MODE", "")
+	if _, set := os.LookupEnv("BOPS_LOCK_REMOTE"); !set {
+		t.Setenv("BOPS_LOCK_REMOTE", "")
+	}
 	root := t.TempDir()
 	git(t, root, "init", "-q", "--bare", "remote.git")
 	git(t, root, "clone", "-q", "remote.git", "clone")
@@ -310,5 +314,24 @@ func TestDoctorSkipsWhenTheLockIsOff(t *testing.T) {
 	}
 	if failed, _ := got["failed"].([]any); len(failed) != 0 {
 		t.Errorf("failed = %v", got["failed"])
+	}
+}
+
+func TestDoctorUsesLockRemoteFromConfig(t *testing.T) {
+	t.Setenv("BOPS_LOCK_REMOTE", "upstream")
+	code, got := runDoctor(t, func(clone string) { git(t, clone, "remote", "rename", "origin", "upstream") })
+	if code != exitVerdict || got["ok"] != true {
+		t.Fatalf("exit %d: %v", code, got)
+	}
+	if r, _ := got["remote"].(string); !strings.HasSuffix(r, "remote.git") {
+		t.Errorf("remote = %v", got["remote"])
+	}
+}
+
+func TestDoctorRefusesABadLockRemote(t *testing.T) {
+	t.Setenv("BOPS_LOCK_REMOTE", "-upstream")
+	code, got := runDoctor(t, nil)
+	if code != exitCantRun || got["ok"] != false || !strings.Contains(fmt.Sprint(got["error"]), "BOPS_LOCK_REMOTE") {
+		t.Fatalf("exit %d: %v", code, got)
 	}
 }

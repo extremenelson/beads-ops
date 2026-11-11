@@ -65,30 +65,32 @@ func nextFor(code, auth, other string) string {
 	return other
 }
 
-// Doctor checks that origin exists, can be read and written, and supports the
-// claim lock: a create-only push under refs/bops/ that a second create-only
+// Doctor checks that the lock remote (lock.remote, default origin) exists, can
+// be read and written, and supports the claim lock: a create-only push under refs/bops/ that a second create-only
 // push cannot overwrite. That needs a write, so it creates a probe ref under
 // refs/bops/doctor/ and deletes it with a lease. Claim refs are never touched.
+// The first check keeps the id "origin" whatever the remote is named.
 func (l *Lock) Doctor(ctx context.Context) *Diagnosis {
 	d := &Diagnosis{Checks: []Check{}, Failed: []string{}, Warnings: []string{}}
+	r := l.remote()
 
 	url, err := l.RemoteURL(ctx)
 	if err != nil {
-		d.add(failed("origin", err, "git remote add origin <url>: the lock always uses the remote named origin"))
+		d.add(failed("origin", err, "git remote add "+r+" <url>, or set lock.remote (BOPS_LOCK_REMOTE) to the remote beside the Dolt ledger"))
 		d.skip("fetch", "push", "lock")
 		return d
 	}
 	d.Remote = Scrub(url)
-	d.add(Check{ID: "origin", Status: CheckOK, Detail: "origin is " + d.Remote})
+	d.add(Check{ID: "origin", Status: CheckOK, Detail: r + " is " + d.Remote})
 
 	if _, _, err := l.lsRemote(ctx, claimsRoot+"*"); err != nil {
 		d.add(failed("fetch", err, nextFor(CodeOf(err),
-			"fix the credentials for origin: `git ls-remote origin` must work with no prompt (GIT_TERMINAL_PROMPT=0, ssh BatchMode=yes)",
-			"check the network and origin's URL: `git ls-remote origin`")))
+			"fix the credentials for "+r+": `git ls-remote "+r+"` must work with no prompt (GIT_TERMINAL_PROMPT=0, ssh BatchMode=yes)",
+			"check the network and "+r+"'s URL: `git ls-remote "+r+"`")))
 		d.skip("push", "lock")
 		return d
 	}
-	d.add(Check{ID: "fetch", Status: CheckOK, Detail: "read refs under " + claimsRoot + " from origin"})
+	d.add(Check{ID: "fetch", Status: CheckOK, Detail: "read refs under " + claimsRoot + " from " + r})
 
 	nonce := make([]byte, 6)
 	if _, err := rand.Read(nonce); err != nil {
@@ -106,12 +108,12 @@ func (l *Lock) Doctor(ctx context.Context) *Diagnosis {
 
 	if err := l.dryRun(ctx, d.ProbeRef, first); err != nil {
 		d.add(failed("push", err, nextFor(CodeOf(err),
-			"give this account push access to origin, or fix its credentials: `git push --dry-run origin HEAD` must work with no prompt",
-			"check the network and origin's URL: `git push --dry-run origin HEAD`")))
+			"give this account push access to "+r+", or fix its credentials: `git push --dry-run "+r+" HEAD` must work with no prompt",
+			"check the network and "+r+"'s URL: `git push --dry-run "+r+" HEAD`")))
 		d.skip("lock")
 		return d
 	}
-	d.add(Check{ID: "push", Status: CheckOK, Detail: "origin accepts a push from this account (dry run, nothing written)"})
+	d.add(Check{ID: "push", Status: CheckOK, Detail: r + " accepts a push from this account (dry run, nothing written)"})
 
 	d.add(l.probeLock(ctx, d.ProbeRef, first))
 	if warning := l.removeProbe(ctx, d.ProbeRef); warning != "" {
@@ -122,26 +124,27 @@ func (l *Lock) Doctor(ctx context.Context) *Diagnosis {
 
 func (l *Lock) dryRun(ctx context.Context, ref, sha string) error {
 	out, err := l.Git.Run(ctx, Cmd{Args: []string{
-		"push", "--dry-run", "--porcelain", "--no-verify", remote,
+		"push", "--dry-run", "--porcelain", "--no-verify", l.remote(),
 		"--force-with-lease=" + ref + ":", sha + ":" + ref,
 	}})
 	if parsePorcelain(out.Stdout, ref) == pushed {
 		return nil
 	}
-	return failure(out, err)
+	return l.failure(out, err)
 }
 
 // probeLock makes the pushes the lock makes: a create-only push, which must
 // succeed, then a second create-only push of another commit, which must not.
 func (l *Lock) probeLock(ctx context.Context, ref, first string) Check {
 	const unsupported = "the claim lock cannot run against this remote: allow pushes to refs/bops/* with --force-with-lease in the forge's ref rules or protections (SPEC §11)"
-	write := "wrote and deleted the probe ref " + ref + " on origin: "
+	r := l.remote()
+	write := "wrote and deleted the probe ref " + ref + " on " + r + ": "
 	st, out, err := l.push(ctx, ref, first, "")
 	switch st {
 	case rejected:
-		return Check{ID: "lock", Status: CheckFail, Code: CodeLockUnsupported, Detail: "origin refused a create-only push to " + ref + ": " + Scrub(out.Stdout+" "+out.Stderr), Next: unsupported}
+		return Check{ID: "lock", Status: CheckFail, Code: CodeLockUnsupported, Detail: r + " refused a create-only push to " + ref + ": " + Scrub(out.Stdout+" "+out.Stderr), Next: unsupported}
 	case noStatus:
-		return failed("lock", failure(out, err), "rerun bops doctor; if it keeps failing, check origin with `git push --dry-run origin HEAD`")
+		return failed("lock", l.failure(out, err), "rerun bops doctor; if it keeps failing, check "+r+" with `git push --dry-run "+r+" HEAD`")
 	}
 	second, cerr := l.commit(ctx, "probe")
 	if cerr != nil {
@@ -152,7 +155,7 @@ func (l *Lock) probeLock(ctx context.Context, ref, first string) Check {
 	case pushed:
 		return Check{ID: "lock", Status: CheckFail, Code: CodeLockUnsupported, Detail: write + "a second create-only push overwrote it, so two runs could both claim one bead", Next: unsupported}
 	case noStatus:
-		return failed("lock", failure(out, err), "rerun bops doctor")
+		return failed("lock", l.failure(out, err), "rerun bops doctor")
 	}
 	return Check{ID: "lock", Status: CheckOK, Detail: write + "a create-only push succeeded and a second one was refused"}
 }
@@ -169,14 +172,14 @@ func (l *Lock) removeProbe(ctx context.Context, ref string) string {
 			return ""
 		}
 	}
-	return fmt.Sprintf("the probe ref may still be on origin; remove it with `git push --no-verify origin :%s`", ref)
+	return fmt.Sprintf("the probe ref may still be on %[1]s; remove it with `git push --no-verify %[1]s :%[2]s`", l.remote(), ref)
 }
 
-// lsRemote reads refs matching pattern on origin and returns the first match.
+// lsRemote reads refs matching pattern on the lock remote and returns the first match.
 func (l *Lock) lsRemote(ctx context.Context, pattern string) (sha string, found bool, err error) {
-	out, runErr := l.Git.Run(ctx, Cmd{Args: []string{"ls-remote", remote, pattern}})
+	out, runErr := l.Git.Run(ctx, Cmd{Args: []string{"ls-remote", l.remote(), pattern}})
 	if runErr != nil {
-		return "", false, failure(out, runErr)
+		return "", false, l.failure(out, runErr)
 	}
 	for _, line := range strings.Split(out.Stdout, "\n") {
 		if f := strings.Fields(line); len(f) == 2 {

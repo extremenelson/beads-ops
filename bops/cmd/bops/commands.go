@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"reflect"
 	"sort"
 	"strings"
@@ -145,7 +146,7 @@ func newEnv(mode runstate.Mode) (*intent.Env, *runstate.Store, error) {
 	if cfg.Caps != nil {
 		run.Caps = cfg.Caps
 	}
-	l := &lock.Lock{Git: lock.Exec{Dir: root}, Journal: store, Run: run.ID, Actor: run.Actor}
+	l := &lock.Lock{Git: lock.Exec{Dir: root}, Journal: store, Run: run.ID, Actor: run.Actor, Remote: cfg.LockRemote}
 	return &intent.Env{BD: bdx.Exec{}, Run: run, Store: store, Lock: l, LockOff: cfg.LockOff(), StaleAfter: cfg.StaleAfter(), HoldFor: cfg.HoldFor()}, store, nil
 }
 
@@ -341,8 +342,19 @@ func cmdSessionStart(ctx context.Context, m *manifest.Manifest, args []string, a
 	return emit(m, "session-start", asJSON, out, err, stdout, stderr)
 }
 
-// cmdDoctor checks origin, read and push access, and lock support. It needs no
-// ledger and no run state. With lock.mode none every check is skipped. A failed check exits 1 with the first failure's
+// worktreeRoot is the top of dir's git worktree, where .bops.json lives, or
+// dir itself outside git (doctor then reports the missing remote).
+func worktreeRoot(dir string) string {
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel").Output()
+	if top := strings.TrimSpace(string(out)); err == nil && top != "" {
+		return top
+	}
+	return dir
+}
+
+// cmdDoctor checks the lock remote (lock.remote, default origin), read and
+// push access, and lock support. It needs no ledger and no run state. With
+// lock.mode none every check is skipped. A failed check exits 1 with the first failure's
 // code, and the document still lists every check.
 func cmdDoctor(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
@@ -356,19 +368,15 @@ func cmdDoctor(ctx context.Context, m *manifest.Manifest, args []string, asJSON 
 	if err != nil {
 		return emit(m, "doctor", asJSON, nil, err, stdout, stderr)
 	}
-	l := &lock.Lock{Git: lock.Exec{Dir: root}, Run: "doctor", Actor: "bops-doctor"}
-	top := root
-	if o, gitErr := l.Git.Run(ctx, lock.Cmd{Args: []string{"rev-parse", "--show-toplevel"}}); gitErr == nil {
-		top = strings.TrimSpace(o.Stdout)
-	}
-	cfg, err := config.Load(top, os.Getenv)
+	cfg, err := config.Load(worktreeRoot(root), os.Getenv)
 	if err != nil {
 		return emit(m, "doctor", asJSON, nil, err, stdout, stderr)
 	}
 	var out *lock.Diagnosis
 	if cfg.LockOff() {
-		out = lock.DoctorOff() // nothing to check, and nothing on origin is touched
+		out = lock.DoctorOff() // nothing to check, and no remote is touched
 	} else {
+		l := &lock.Lock{Git: lock.Exec{Dir: root}, Run: "doctor", Actor: "bops-doctor", Remote: cfg.LockRemote}
 		out = l.Doctor(ctx)
 	}
 	for _, c := range out.Checks {

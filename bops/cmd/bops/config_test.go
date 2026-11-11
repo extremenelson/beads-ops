@@ -18,7 +18,7 @@ func configDir(t *testing.T, repoJSON string) {
 	t.Chdir(dir)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	for _, k := range []string{"BOPS_POOL", "BOPS_CAPS", "BOPS_STALE_MINUTES", "BOPS_HOLD_MINUTES", "BOPS_LOCK_MODE"} {
+	for _, k := range []string{"BOPS_POOL", "BOPS_CAPS", "BOPS_STALE_MINUTES", "BOPS_HOLD_MINUTES", "BOPS_LOCK_MODE", "BOPS_LOCK_REMOTE"} {
 		t.Setenv(k, "")
 	}
 	if repoJSON != "" {
@@ -65,6 +65,18 @@ func TestNewEnvTurnsTheLockOff(t *testing.T) {
 	defer store.Close()
 	if !env.LockOff {
 		t.Error("lock.mode none in .bops.json did not turn the lock off")
+	}
+}
+
+func TestNewEnvAppliesLockRemote(t *testing.T) {
+	configDir(t, `{"lock":{"remote":"upstream"}}`)
+	env, store, err := newEnv(runstate.Read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if env.Lock.Remote != "upstream" {
+		t.Errorf("lock remote = %q, want upstream", env.Lock.Remote)
 	}
 }
 
