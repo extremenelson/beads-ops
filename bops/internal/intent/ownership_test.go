@@ -860,7 +860,7 @@ func TestRefModeSyncWithAnUnreadableRemoteListPulls(t *testing.T) {
 func TestReleaseDeletesTheRefAndWritesTheLedger(t *testing.T) {
 	for _, tc := range []struct{ reason, status, label string }{
 		{"blocked", "blocked", ""},
-		{"human", "open", "needs:human"},
+		{"human", "open", "needs-human"},
 		{"scope", "open", "bops:hold"},
 		{"abandoned", "open", "bops:hold"},
 	} {
@@ -879,6 +879,9 @@ func TestReleaseDeletesTheRefAndWritesTheLedger(t *testing.T) {
 			b := bd.beads["x-1"]
 			if b.Status != tc.status || b.Assignee != "" || slices.Contains(b.Labels, "run:A") || (tc.label != "" && !slices.Contains(b.Labels, tc.label)) {
 				t.Errorf("ledger = %+v", b)
+			}
+			if slices.Contains(b.Labels, "needs:human") {
+				t.Errorf("release wrote the legacy needs:human label: %v", b.Labels)
 			}
 			if _, ok := a.store.Entry("x-1"); ok {
 				t.Error("hold should be gone")

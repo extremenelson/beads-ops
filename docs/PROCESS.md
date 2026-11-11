@@ -140,6 +140,14 @@ Discovered bugs default to P2 unless they block the current work, in which case 
 
 Anything else needs a one-line justification in `bd remember`.
 
+`needs-human` is spelt with a hyphen everywhere. Early `bops` builds wrote `needs:human` on `release --reason human`; `bops` and `scripts/bd-lint-claim.sh` still read that spelling as `needs-human` until v0.2.0 (SPEC §3.1). To relabel a ledger's old beads, once per ledger:
+
+```bash
+bd list --all --label needs:human -n 0 --json | jq -r '.[].id' | while read -r id; do
+  bd label add "$id" needs-human && bd label remove "$id" needs:human
+done
+```
+
 ### 3.6 Workability — what must be true before a bead is claimed
 
 "Workable" has two layers. **Mechanical** is what `bd ready` computes; bd enforces it. **Executable** is whether a cold agent can finish the bead without rediscovering context; nothing enforces it except this section and `scripts/bd-lint-claim.sh` (§3.7).
@@ -155,7 +163,7 @@ Anything else needs a one-line justification in `bd remember`.
 | 5 | Unassigned, or assigned to a listed claim pool | `--claim` refuses another real actor's bead (anti-steal). |
 | 6 | Not deferred past now | `--defer-until` parks without lying about status. |
 | 7 | `is_blocked` flag is current | Denormalized; stale on an unsynced replica. `bd sync` recomputes it. |
-| 8 | Not labeled `needs-human` *(policy)* | Autonomous loops must skip these. |
+| 8 | Not labeled `needs-human` (or the legacy `needs:human`, §3.5) *(policy)* | Autonomous loops must skip these. |
 
 **B. Executable — what a cold agent needs**
 

@@ -85,7 +85,7 @@ at=<iso8601>
 | `bops:landing` | `release --reason done` | display of a landing ref; removed by `claim --resume` and `sweep` |
 | `pool:<name>` | humans / `bd` | partition; absence = default pool |
 | `needs:<cap>` | humans | required machine capability (`gpu`, `macos`, `net:internal`, …) |
-| `needs:human` | humans / `release --reason human` | excluded from `next` until removed |
+| `needs-human` | humans / `release --reason human` | excluded from `next` until removed. Hyphen, not colon: it is a policy label shared with PROCESS.md and `scripts/bd-lint-claim.sh`, not a `needs:<cap>` capability. bops writes only `needs-human`. **Transition:** bops before bops-cgw wrote `needs:human`; every read (W03, so `next`, `claim` and `lint`) treats `needs:human` as `needs-human` until it is dropped in v0.2.0, and `needs:<cap>` never matches `human`. Relabel old beads with the command in PROCESS.md §3.5 |
 | `bops:hold` | `release --reason abandoned|scope` | cooling-off; excluded from `next` for `hold_minutes` (default 120). A label has no timestamp, so the window runs from the bead's `updated_at`: a later write extends it, and a bead with no `updated_at` stays held |
 
 ### 3.2 Comments (append-only events)
@@ -152,7 +152,7 @@ The manifest is [`bops/commands.json`](bops/commands.json). It is embedded in th
 
 Deterministic, documented, and the only place ordering lives:
 
-1. Exclude: not ready; epics; any failing lint rule in §6 (`needs:human`, `bops:hold` within window, `pool:` ≠ run's pool, any `needs:<cap>` not in run's caps, open gates, a live claim); and W14, a claim ref seen at the last `sync` that names another run. W14 reads `refs/bops/seen/*`, so `next` needs no network and is only as fresh as the last `sync`; `claim` is what decides.
+1. Exclude: not ready; epics; any failing lint rule in §6 (`needs-human`, `bops:hold` within window, `pool:` ≠ run's pool, any `needs:<cap>` not in run's caps, open gates, a live claim); and W14, a claim ref seen at the last `sync` that names another run. W14 reads `refs/bops/seen/*`, so `next` needs no network and is only as fresh as the last `sync`; `claim` is what decides.
 2. Order: priority ascending (0 first) → beads whose parent epic already has in-progress siblings (finish what's started) → oldest `created_at` → ID. If the in-progress listing fails, `next` still returns candidates without that step and says so in `warnings`.
 3. `why` lists which rules passed; `why_not` lists which rules excluded it (only with `--include-unworkable`).
 
@@ -166,7 +166,7 @@ Each rule has an id, a severity (`fail`|`warn`), and a one-line rationale; `--st
 |---|---|---|
 | W01 | fail | has non-empty acceptance criteria |
 | W02 | fail | status permits work (open/ready; not blocked/closed) |
-| W03 | fail | not `needs:human` |
+| W03 | fail | not `needs-human` (nor the legacy `needs:human`, §3.1) |
 | W04 | fail | machine capability constraints satisfiable by this run |
 | W05 | fail | no open gates on the bead |
 | W06 | fail | not claimed by a live run (claimed by stale run → warn W06s) |

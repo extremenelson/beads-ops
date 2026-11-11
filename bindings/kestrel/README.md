@@ -6,7 +6,7 @@ Kestrel treats `bd --json` as its durable task memory and never touches `.beads/
 
 | Contract point | Function | Notes |
 |---|---|---|
-| 1 Session start | `session-start` | runs `sync!` (`bops sync`), `bd gate check`, lists in_progress + ready, filters `needs-human`, `needs:human` and machine labels, picks resume target; **throws if an in_progress bead has no `NEXT`** |
+| 1 Session start | `session-start` | runs `sync!` (`bops sync`), `bd gate check`, lists in_progress + ready, filters `needs-human` (and the legacy `needs:human` until bops v0.2.0, SPEC §3.1) and machine labels, picks resume target; **throws if an in_progress bead has no `NEXT`** |
 | 2 Claim | `claim!` | shells to `scripts/bd-lint-claim.sh --json` first; throws `bead not workable` on fail. Then claims with `bops claim <id> --json`, inside the claim lock. Returns `{:outcome :claimed}` or `:held` (you own it), `:lost` with `:holder {:actor :run :age_minutes}`, or `:refused` with `:reason` (exit 3: pick another bead) |
 | 3 Handoff note | `handoff!` | Malli-validated `Handoff` map → `--append-notes` in the §4 format |
 | 4 Stop | `close!`, `block!`, `gate-human!`, `sync!` | below |
@@ -17,7 +17,7 @@ Kestrel treats `bd --json` as its durable task memory and never touches `.beads/
 |---|---|---|---|
 | `(close! cfg bead {:ref url :sha sha :verify? bool})` | `bops land <id> --ref --sha [--verify]`, then `bops release <id> --reason done` | the release map with `:land` added; or the land map when land is `:lost`/`:refused` (no release then) | nothing |
 | `(block! cfg id reason)` | `bops release <id> --reason blocked` (status → blocked) | the release map | on `:released` only: `bd update --append-notes "BLOCKER: <reason>"` |
-| `(gate-human! cfg id reason)` | `bops release <id> --reason human` (reopens, `+needs:human`) | the release map | on `:released` only: `bd gate create --type human --blocks <id> --reason <reason>` and `bd label add needs-human` |
+| `(gate-human! cfg id reason)` | `bops release <id> --reason human` (reopens, `+needs-human`) | the release map | on `:released` only: `bd gate create --type human --blocks <id> --reason <reason>` |
 | `(sync! cfg)` | `bops sync` | `{:synced true :pulled :pushed :lost-claims :stranded-holds ...}`, or `{:synced false :offline true :code ..}`; never throws | nothing |
 
 Common to `claim!`, `close!`, `block!` and `gate-human!`:
@@ -28,7 +28,7 @@ Common to `claim!`, `close!`, `block!` and `gate-human!`:
 
 **`close!` no longer closes the bead.** SPEC §2 lets only `bops sweep` or a human close; a worker lands and releases `done`. So `close!` now needs the PR/MR URL and commit, not a close reason, and returns the release map instead of the new ready front. After it returns `:released`, this run holds nothing: the claim ref stays on the remote as `state=landing` (that is what `release --reason done` does, SPEC §3.0), the bead stays `in_progress` with label `bops:landing`, and `bops sweep` deletes the ref and closes the bead once the PR is merged. Epics are still refused before any write.
 
-`block!` and `gate-human!` release first and write their `bd` note, gate and label only after `:released`, so a displaced holder writes nothing. `bops release` in contract 1 takes no text, so the `BLOCKER:` note stays a `bd` write; `bops` has no gate command, so the human gate does too. `gate-human!` keeps the PROCESS.md `needs-human` label beside `bops`'s `needs:human`, because `scripts/bd-lint-claim.sh` row 8 checks the former. If one of those `bd` writes fails after the release, it throws and the bead is released without it.
+`block!` and `gate-human!` release first and write their `bd` note or gate only after `:released`, so a displaced holder writes nothing. `bops release` in contract 1 takes no text, so the `BLOCKER:` note stays a `bd` write; `bops` has no gate command, so the human gate does too. The `needs-human` label is `bops`'s own write, the spelling PROCESS.md and `scripts/bd-lint-claim.sh` row 8 use. If one of those `bd` writes fails after the release, it throws and the bead is released without it.
 
 `session-start` stays on `bd`: `bops session-start` returns ids and a ready count, while this binding returns the in_progress and ready beads themselves, filters machine labels and checks the resume target's `NEXT`.
 

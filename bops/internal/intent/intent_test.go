@@ -23,7 +23,8 @@ const readyJSON = `[
   "dependencies":[{"issue_id":"x-1","depends_on_id":"x-epic","type":"parent-child"}]},
  {"id":"x-2","title":"p0 but no acceptance","description":"d","status":"open","priority":0,"issue_type":"bug","owner":"o","created_at":"2026-10-02T00:00:00Z","updated_at":"2026-10-02T00:00:00Z","dependency_count":0,"dependent_count":0,"comment_count":0},
  {"id":"x-3","title":"stale run label","description":"d","acceptance_criteria":"ac","status":"open","priority":1,"issue_type":"task","owner":"o","labels":["run:OLDRUN"],"created_at":"2026-09-01T00:00:00Z","updated_at":"2026-09-01T00:00:00Z","dependency_count":0,"dependent_count":0,"comment_count":0},
- {"id":"x-4","title":"needs human","description":"d","acceptance_criteria":"ac","status":"open","priority":0,"issue_type":"task","owner":"o","labels":["needs:human"],"created_at":"2026-10-03T00:00:00Z","updated_at":"2026-10-03T00:00:00Z","dependency_count":0,"dependent_count":0,"comment_count":0},
+ {"id":"x-4","title":"needs human","description":"d","acceptance_criteria":"ac","status":"open","priority":0,"issue_type":"task","owner":"o","labels":["needs-human"],"created_at":"2026-10-03T00:00:00Z","updated_at":"2026-10-03T00:00:00Z","dependency_count":0,"dependent_count":0,"comment_count":0},
+ {"id":"x-4l","title":"needs human, legacy spelling","description":"d","acceptance_criteria":"ac","status":"open","priority":0,"issue_type":"task","owner":"o","labels":["needs:human"],"created_at":"2026-10-03T00:00:00Z","updated_at":"2026-10-03T00:00:00Z","dependency_count":0,"dependent_count":0,"comment_count":0},
  {"id":"x-5","title":"needs gpu","description":"d","acceptance_criteria":"ac","status":"open","priority":1,"issue_type":"task","owner":"o","labels":["needs:gpu"],"created_at":"2026-10-03T00:00:00Z","updated_at":"2026-10-03T00:00:00Z","dependency_count":0,"dependent_count":0,"comment_count":0},
  {"id":"x-6","title":"other pool","description":"d","acceptance_criteria":"ac","status":"open","priority":1,"issue_type":"task","owner":"o","labels":["pool:docs"],"created_at":"2026-10-03T00:00:00Z","updated_at":"2026-10-03T00:00:00Z","dependency_count":0,"dependent_count":0,"comment_count":0},
  {"id":"x-7","title":"same prio, older, orphan","description":"d","acceptance_criteria":"ac","status":"open","priority":2,"issue_type":"task","owner":"o","created_at":"2026-09-15T00:00:00Z","updated_at":"2026-09-15T00:00:00Z","dependency_count":0,"dependent_count":0,"comment_count":0},
@@ -59,8 +60,8 @@ func TestNextOrdersAndExplains(t *testing.T) {
 	if want := "x-3,x-1,x-7"; got != want {
 		t.Fatalf("candidates = %s, want %s\n%+v", got, want, out.Candidates)
 	}
-	if out.ExcludedCount != 5 { // x-2 (W01), x-4 (W03), x-5 (W04), x-6 (W13), x-epic
-		t.Errorf("excluded = %d, want 5", out.ExcludedCount)
+	if out.ExcludedCount != 6 { // x-2 (W01), x-4 and x-4l (W03), x-5 (W04), x-6 (W13), x-epic
+		t.Errorf("excluded = %d, want 6", out.ExcludedCount)
 	}
 	if !strings.Contains(strings.Join(out.Candidates[0].Why, ";"), "W06s (warn)") {
 		t.Errorf("x-3 should carry a stale-claim warning: %v", out.Candidates[0].Why)
@@ -76,14 +77,14 @@ func TestNextIncludeUnworkableGivesReasons(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out.Candidates) != 8 {
-		t.Fatalf("got %d candidates, want 8", len(out.Candidates))
+	if len(out.Candidates) != 9 {
+		t.Fatalf("got %d candidates, want 9", len(out.Candidates))
 	}
 	reasons := map[string]string{}
 	for _, c := range out.Candidates {
 		reasons[c.ID] = strings.Join(c.WhyNot, ";")
 	}
-	for id, want := range map[string]string{"x-2": "W01", "x-4": "W03", "x-5": "W04", "x-6": "W13", "x-epic": "epic"} {
+	for id, want := range map[string]string{"x-2": "W01", "x-4": "W03", "x-4l": "W03", "x-5": "W04", "x-6": "W13", "x-epic": "epic"} {
 		if !strings.Contains(reasons[id], want) {
 			t.Errorf("%s why_not = %q, want %s", id, reasons[id], want)
 		}
@@ -105,6 +106,35 @@ func TestNextCapsAndPool(t *testing.T) {
 	// x-5 has no pool label so it is excluded despite caps matching.
 	if got != "x-6" {
 		t.Fatalf("got %s, want x-6", got)
+	}
+}
+
+// W03 fails on needs-human, and on the legacy needs:human while the
+// transition lasts (SPEC.md §2 labels).
+func TestLintNeedsHumanReadsBothSpellings(t *testing.T) {
+	for _, tc := range []struct {
+		labels []string
+		fails  bool
+	}{
+		{[]string{"needs-human"}, true},
+		{[]string{"needs:human"}, true},
+		{[]string{"needs-humans"}, false},
+		{nil, false},
+	} {
+		i := &ledger.Issue{ID: "x-1", Status: "open", AcceptanceCriteria: "ac", Parent: "e", Labels: tc.labels}
+		r := intent.Lint(i, intent.LintEnv{Now: time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)})
+		got := false
+		for _, f := range r.Fails {
+			got = got || f.ID == "W03"
+		}
+		if got != tc.fails {
+			t.Errorf("labels %v: W03 failed=%v, want %v (%+v)", tc.labels, got, tc.fails, r)
+		}
+		for _, f := range r.Fails {
+			if f.ID == "W04" {
+				t.Errorf("labels %v: needs:human must not read as a capability: %+v", tc.labels, r)
+			}
+		}
 	}
 }
 

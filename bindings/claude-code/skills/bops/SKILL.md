@@ -48,7 +48,7 @@ Use `bops release <id> --reason <reason>`, with your explanation in a `bops note
 | `blocked` | A dependency stops you | Status becomes blocked |
 | `scope` | The bead is wrong or too big | Back to the pool after a cooling-off period |
 | `abandoned` | You are abandoning it | Same as `scope` |
-| `human` | A person must decide | Out of the pool until a person removes `needs:human` |
+| `human` | A person must decide | Out of the pool until a person removes `needs-human` |
 
 ## Closing
 

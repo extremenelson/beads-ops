@@ -105,7 +105,10 @@ else
 fi
 
 # ---------------------------------------------------------------- row 8: needs-human
-if printf '%s' "$LABELS" | grep -qw "needs-human"; then
+# Legacy spelling: early bops wrote needs:human. Read it as needs-human until
+# bops v0.2.0 drops it too (SPEC §3.1, PROCESS §3.5 has the relabel command).
+LEGACY_NEEDS_HUMAN="needs:human"
+if printf '%s' "$LABELS" | tr ' ' '\n' | grep -qxF -e "needs-human" -e "$LEGACY_NEEDS_HUMAN"; then
   fail "8 labeled needs-human — not for autonomous pickup"
 else
   pass "8 not needs-human"
