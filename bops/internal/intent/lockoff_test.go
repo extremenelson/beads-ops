@@ -368,7 +368,129 @@ func TestLockOffIgnoresANonDefaultLockRemote(t *testing.T) {
 	if out, err := intent.Release(bg, r.env, "x-1", "scope"); err != nil || out.Outcome != intent.OutcomeReleased {
 		t.Fatalf("release: %+v, %v", out, err)
 	}
-	if len(g.calls) != 0 || bd.count("dolt remote") != 0 {
+	// The Dolt remote list is read only to decide whether there is anywhere
+	// to publish; it is never compared with a lock remote.
+	if len(g.calls) != 0 {
 		t.Errorf("git calls = %v; bd calls = %v", g.calls, bd.calls)
+	}
+}
+
+// doltWithNoRemote makes the fake answer as bd 1.3.4 does with no Dolt remote
+// configured: `dolt remote list --json` prints [], `dolt pull` exits 1 with
+// "Error 1105: no remote", and `dolt push` prints a note and exits 0.
+func doltWithNoRemote(bd *fakeBD) {
+	bd.remotes = "[]"
+	bd.fail = func(args []string) error {
+		if args[0] == "dolt" && args[1] == "pull" {
+			return errors.New("bd dolt pull: exit status 1: Error: fetch from origin/main: Error 1105: no remote")
+		}
+		return nil
+	}
+}
+
+func saysUnpublished(t *testing.T, what string, warnings []string) {
+	t.Helper()
+	if !slices.ContainsFunc(warnings, func(w string) bool { return strings.Contains(w, "no Dolt remote: ledger not published") }) {
+		t.Errorf("%s: warnings %v do not say the ledger was not published", what, warnings)
+	}
+}
+
+// A single-machine ledger with no Dolt remote has nothing to publish: every
+// command that pulls or pushes skips that step with a warning, not an error.
+func TestLockOffWithNoDoltRemotePublishesNothing(t *testing.T) {
+	bd := newBD()
+	bd.add("x-1")
+	bd.add("x-2")
+	r := lockOffRig(t, "A", bd)
+	doltWithNoRemote(bd)
+	for _, id := range []string{"x-1", "x-2"} {
+		if out, err := intent.Claim(bg, r.env, id, false); err != nil || out.Outcome != intent.OutcomeClaimed {
+			t.Fatalf("claim %s: %+v, %v", id, out, err)
+		}
+	}
+	calls := len(bd.calls)
+
+	rel, err := intent.Release(bg, r.env, "x-2", "scope")
+	if err != nil || rel.Outcome != intent.OutcomeReleased || rel.LedgerPending {
+		t.Fatalf("release: %+v, %v", rel, err)
+	}
+	saysUnpublished(t, "release", rel.Warnings)
+
+	land, err := intent.Land(bg, r.env, "x-1", intent.LandOpts{Ref: refMerged, SHA: sha})
+	if err != nil || land.Outcome != intent.OutcomeLanded {
+		t.Fatalf("land: %+v, %v", land, err)
+	}
+	saysUnpublished(t, "land", land.Warnings)
+	if done, err := intent.Release(bg, r.env, "x-1", "done"); err != nil || done.LedgerPending {
+		t.Fatalf("release done: %+v, %v", done, err)
+	}
+
+	sw, err := intent.Sweep(bg, r.env, &fakeForge{merged: map[string]forge.Merged{refMerged: forge.Yes}}, false)
+	if err != nil || !slices.Equal(sw.Closed, []string{"x-1"}) {
+		t.Fatalf("sweep: %+v, %v", sw, err)
+	}
+	saysUnpublished(t, "sweep", sw.Warnings)
+
+	sy, err := intent.Sync(bg, r.env, false)
+	if err != nil || sy.Pulled || sy.Pushed {
+		t.Fatalf("sync: %+v, %v", sy, err)
+	}
+	saysUnpublished(t, "sync", sy.Warnings)
+
+	ss, err := intent.SessionStart(bg, r.env)
+	if err != nil || !ss.Synced {
+		t.Fatalf("session-start: %+v, %v", ss, err)
+	}
+	saysUnpublished(t, "session-start", ss.Warnings)
+
+	for _, c := range bd.calls[calls:] {
+		if c[0] == "dolt" && (c[1] == "pull" || c[1] == "push") {
+			t.Errorf("with no Dolt remote, ran bd %v", c)
+		}
+	}
+}
+
+// With a Dolt remote configured, lock.mode none publishes as before, and a
+// failed push or pull is the same failure it always was.
+func TestLockOffWithADoltRemoteAFailedPublishStillFails(t *testing.T) {
+	bd := newBD()
+	bd.add("x-1")
+	bd.add("x-2")
+	bd.remotes = `[{"name":"origin","url":"git+https://example.com/ledger.git"}]`
+	r := lockOffRig(t, "A", bd)
+	for _, id := range []string{"x-1", "x-2"} {
+		if out, err := intent.Claim(bg, r.env, id, false); err != nil || out.Outcome != intent.OutcomeClaimed {
+			t.Fatalf("claim %s: %+v, %v", id, out, err)
+		}
+	}
+	failing := "push"
+	bd.fail = func(args []string) error {
+		if args[0] == "dolt" && args[1] == failing {
+			return errors.New("bd dolt " + failing + ": exit status 1: rejected")
+		}
+		return nil
+	}
+
+	if land, err := intent.Land(bg, r.env, "x-1", intent.LandOpts{Ref: refMerged, SHA: sha}); err == nil || !strings.Contains(err.Error(), "push failed") {
+		t.Fatalf("land: %+v, %v; want push failed", land, err)
+	}
+	if done, err := intent.Release(bg, r.env, "x-1", "done"); err != nil || !done.LedgerPending {
+		t.Fatalf("release done: %+v, %v; want ledger_pending", done, err)
+	}
+	if sw, err := intent.Sweep(bg, r.env, &fakeForge{merged: map[string]forge.Merged{refMerged: forge.Yes}}, false); err == nil || !strings.Contains(err.Error(), "push failed") {
+		t.Fatalf("sweep: %+v, %v; want push failed", sw, err)
+	}
+	if rel, err := intent.Release(bg, r.env, "x-2", "scope"); err != nil || !rel.LedgerPending {
+		t.Fatalf("release: %+v, %v; want ledger_pending", rel, err)
+	}
+	if sy, err := intent.Sync(bg, r.env, false); err == nil || sy.Pushed {
+		t.Fatalf("sync: %+v, %v; want a push error", sy, err)
+	}
+	failing = "pull"
+	if ss, err := intent.SessionStart(bg, r.env); err == nil || ss.Synced {
+		t.Fatalf("session-start: %+v, %v; want a sync error", ss, err)
+	}
+	if bd.count("dolt push") == 0 {
+		t.Errorf("never pushed: %v", bd.calls)
 	}
 }
