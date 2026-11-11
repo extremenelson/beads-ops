@@ -210,10 +210,10 @@ Claims nobody is working
 
 | Arg | Type | Default | Doc |
 |---|---|---|---|
-| `--all-machines` | bool | `true` |  |
-| `--older-than` | duration | `2h` |  |
+| `--all-machines` | bool | `true` | false hides claims and orphans from other machines. |
+| `--older-than` | duration | `2h` | Idle longer than this is stale. Age is from the claim ref's at, which note refreshes; a claim with no ref uses updated_at, heartbeat_at and its newest bops: comment. |
 
-Wraps: `bd list --status in_progress --json`, `bd comments <id> --json`.
+Wraps: `git fetch --prune refs/bops/claims/* (the last sync's copy if offline, with a warning)`, `bd list --status in_progress --limit 0 --json`, `bd comments <id> --json`.
 
 Output:
 
@@ -223,11 +223,24 @@ Output:
     {
       "id": "string",
       "run": "string",
+      "actor": "string",
       "last_event_at": "string",
+      "age_minutes": "int",
+      "same_machine": "bool",
+      "source": "ref|ledger"
+    }
+  ],
+  "orphans": [
+    {
+      "id": "string",
+      "run": "string",
+      "actor": "string",
+      "at": "string",
       "age_minutes": "int",
       "same_machine": "bool"
     }
-  ]
+  ],
+  "warnings": "string[]"
 }
 ```
 

@@ -11,7 +11,7 @@ Beads gives agents a dependency-aware, git-synced task memory. It deliberately s
 | Path | What it is |
 |---|---|
 | [`SPEC.md`](SPEC.md) | **`bops` contract 1** — the intent-level command layer over `bd`: glossary, ledger state conventions, the claim lock, command manifest, outcomes and exit codes, `next` ordering, lint rules, forge adapter, generated bindings |
-| [`bops/`](bops/) | Go reference implementation of `SPEC.md`: `next claim note release land sweep sync lint version` (`stale session-start gates deps` are specified, not built); `bops/commands.json` is the manifest every binding is generated from; [`docs/COMMANDS.md`](docs/COMMANDS.md) is its generated reference |
+| [`bops/`](bops/) | Go reference implementation of `SPEC.md`: `next claim note release land sweep sync stale lint version` (`session-start gates deps` are specified, not built); `bops/commands.json` is the manifest every binding is generated from; [`docs/COMMANDS.md`](docs/COMMANDS.md) is its generated reference |
 | [`docs/adr/`](docs/adr/) | Architecture decisions with ranked options and switching conditions: [0001](docs/adr/0001-derived-read-model-not-write-path.md) derived read model, never a write path; [0002](docs/adr/0002-go-reference-implementation.md) manifest-driven CLI, Go reference implementation |
 | [`docs/plan/`](docs/plan/) | One file per milestone; [`v0.1.0.md`](docs/plan/v0.1.0.md) is the epic + 14 tasks that [`scripts/plan/v0.1.0-beads.sh`](scripts/plan/v0.1.0-beads.sh) creates in the ledger |
 | [`docs/research/`](docs/research/) | Dated research snapshots behind the ADRs; each carries a "status as of" header |

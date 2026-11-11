@@ -28,8 +28,10 @@ var bg = context.Background()
 type bead struct {
 	Status, Assignee string
 	Labels, Comments []string
+	CommentTimes     []time.Time // created_at of Comments[i], when set
 	Metadata         json.RawMessage
 	Updated          time.Time
+	Heartbeat        *time.Time
 }
 
 type fakeBD struct {
@@ -113,8 +115,13 @@ func (b *fakeBD) Run(_ context.Context, args ...string) ([]byte, error) {
 			return nil, nil
 		}
 		out := []map[string]string{}
-		for _, c := range b.beads[args[1]].Comments {
-			out = append(out, map[string]string{"text": c})
+		n := b.beads[args[1]]
+		for k, c := range n.Comments {
+			m := map[string]string{"text": c}
+			if k < len(n.CommentTimes) {
+				m["created_at"] = n.CommentTimes[k].Format(time.RFC3339)
+			}
+			out = append(out, m)
 		}
 		return json.Marshal(out)
 	case "label":
@@ -175,6 +182,9 @@ func (b *fakeBD) issue(id string, n *bead) map[string]any {
 		"created_at": "2026-10-01T00:00:00Z", "updated_at": n.Updated.Format(time.RFC3339)}
 	if n.Metadata != nil {
 		out["metadata"] = n.Metadata
+	}
+	if n.Heartbeat != nil {
+		out["heartbeat_at"] = n.Heartbeat.Format(time.RFC3339)
 	}
 	return out
 }

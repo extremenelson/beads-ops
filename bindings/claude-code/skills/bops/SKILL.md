@@ -64,3 +64,4 @@ Do not close beads yourself. `bops sweep` previews which landed beads have merge
 - **`ledger_pending: true`:** you still own the bead. Run `bops sync`, and report it if that does not clear it.
 - **A reviewer asks for changes after `release --reason done`:** run `bops claim --resume <id>` from a worktree, then continue from step 4. Only the actor who landed it can.
 - **`bops sync` lists `stranded_holds`:** those beads were held by a removed worktree. If the work is abandoned, run `bops release <id> --reason stale` from any worktree of this clone.
+- **A bead looks abandoned:** `bops stale` lists claims idle over 2 hours, with `same_machine`, and `orphans` (claim refs with no claim on the ledger). Taking one over with `bops claim --force <id>` is a person's decision; report the list rather than forcing on your own. The recovery runbook is PROCESS §12.

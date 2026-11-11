@@ -316,6 +316,25 @@ func cmdSync(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 	return emit(m, "sync", asJSON, out, err, stdout, stderr)
 }
 
+func cmdStale(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
+	fs := flag.NewFlagSet("stale", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	older := fs.Duration("older-than", 2*time.Hour, "idle longer than this is stale")
+	all := fs.Bool("all-machines", true, "include claims made on other machines")
+	fs.Bool("json", false, "")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 || *older <= 0 {
+		fmt.Fprintln(stderr, "usage: bops stale [--older-than 2h] [--all-machines=false]")
+		return exitUsage
+	}
+	env, store, err := newEnv(runstate.Read)
+	if err != nil {
+		return emit(m, "stale", asJSON, nil, err, stdout, stderr)
+	}
+	defer store.Close()
+	out, err := intent.Stale(ctx, env, intent.StaleOpts{OlderThan: *older, AllMachines: *all})
+	return emit(m, "stale", asJSON, out, err, stdout, stderr)
+}
+
 func cmdLint(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
 	fs := flag.NewFlagSet("lint", flag.ContinueOnError)
 	fs.SetOutput(stderr)

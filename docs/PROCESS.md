@@ -402,7 +402,9 @@ git fetch origin "+refs/bops/claims/<id>:refs/bops/seen/<id>"
 git log -1 --format=%B refs/bops/seen/<id>     # run=, actor=, state=held|landing, at=
 ```
 
-`bops sync` fetches every claim ref the same way. The clone's own record of what it did is `~/.local/state/bops/*/events.jsonl`. `bops stale`, which will list stale claims and orphans in one place, is not built yet (bead `bops-ss6.4`).
+`bops sync` fetches every claim ref the same way. The clone's own record of what it did is `~/.local/state/bops/*/events.jsonl`.
+
+**List what is stuck.** `bops stale` lists claims idle longer than `--older-than` (default 2h) with their actor, age and `same_machine`, and `orphans`: held claim refs, over the same age, whose bead shows no claim on the ledger. Age comes from the claim ref, which `note` refreshes; a claim with no ref is aged from the ledger. `--all-machines=false` keeps to this machine. Offline, it uses the refs from the last `sync` and says so in `warnings`.
 
 | Symptom | Cause | Do |
 |---|---|---|
@@ -449,7 +451,7 @@ BEADS_ACTOR='<actor from the ref>' bops release <id> --reason scope
 
 The ref is deleted and the bead goes back to the pool behind the usual `bops:hold`. The actor is not authenticated ([SPEC §3.0](../SPEC.md#30-the-claim-lock-ownership)), so this is a deliberate act: say who did it and why in a comment on the bead.
 
-**An orphan ref** (`state=held` naming a run with no claim on the ledger, for example after `hold_not_recorded`). A plain claim reports `lost` to that run. First confirm it is an orphan, because deleting a live ref takes the bead from its holder:
+**An orphan ref** (`state=held` naming a run with no claim on the ledger, for example after `hold_not_recorded`). `bops stale` lists it under `orphans` once it is older than `--older-than`. A plain claim reports `lost` to that run. First confirm it is an orphan, because deleting a live ref takes the bead from its holder:
 
 ```bash
 git fetch origin "+refs/bops/claims/<id>:refs/bops/seen/<id>"
