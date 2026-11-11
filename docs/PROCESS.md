@@ -24,7 +24,7 @@ Everything else in this document is derived from these.
 | **Agent (any harness)** | Decomposition below the epic, claiming, notes, discovered-from filing, closing with reasons, `bd gate check` at session start | `bd init`; change P0/P1 priority; close an epic; resolve a `human` gate; delete beads; run `bd dolt push --force` |
 | **Autonomous loop** (task-agent, Kestrel worker) | `bops next` → `bops claim` → execute → close → repeat (`bd ready --claim` on a ledger without `bops`) | Pick up anything with label `needs-human`; create epics; work when `bd blocked` shows a `human` gate on the current epic |
 
-`bd ready --claim` and `bd update --claim` compare and set on one replica only: two machines can both claim one bead, and Dolt's last-write-wins settles it later without telling the loser. `bops claim` closes that gap with a git ref per bead (§2.2). The guarantee covers only claims made through `bops`. `/bead-loop` and the Kestrel binding still claim through raw `bd`, so they are outside it until bead `bops-ecs` moves them.
+`bd ready --claim` and `bd update --claim` compare and set on one replica only: two machines can both claim one bead, and Dolt's last-write-wins settles it later without telling the loser. `bops claim` closes that gap with a git ref per bead (§2.2). The guarantee covers only claims made through `bops`. The Kestrel binding claims through `bops claim`. `/bead-loop` still claims through raw `bd`, so it is outside the guarantee until bead `bops-t8j` moves it.
 
 The split is deliberate: humans set direction and approve, agents do decomposition and bookkeeping. Agents filing their own follow-ups is what makes the system cheaper than a human-maintained tracker; agents re-prioritizing is what makes it drift.
 
@@ -184,7 +184,7 @@ alias bdclaim='f(){ scripts/bd-lint-claim.sh "$1" && bops claim "$1"; }; f'
 # a ledger without bops: ... && bd update "$1" --claim
 ```
 
-Kestrel's `claim!` and any Hermes claim step should shell out to it the same way. Today Kestrel's `claim!` ends in `bd update --claim`, which bypasses the lock (§1).
+Kestrel's `claim!` does the same: it runs the lint, then `bops claim <id> --json`, and returns `lost` or `refused` as data. Any Hermes claim step should shell out the same way.
 
 ---
 
@@ -353,7 +353,7 @@ The skill lives at `bindings/kestrel/beads.clj` (draft; see `bindings/kestrel/RE
 | Function | Contract point |
 |---|---|
 | `session-start` | §2.1 — sync, gate check, in_progress beats ready, needs-human/machine filter, throws on missing `NEXT` |
-| `claim!` | §2.2 — runs `bd-lint-claim.sh --json` first; refuses on fail. Claims with `bd update --claim`, so it is outside the `bops` lock until bead `bops-ecs` switches it to `bops claim` |
+| `claim!` | §2.2 — runs `bd-lint-claim.sh --json` first; refuses on fail. Claims with `bops claim`, so it holds the `bops` lock; returns `:claimed`, `:held`, `:lost` (with `:holder`) or `:refused` (with `:reason`), and throws with the stable `code` when `bops` could not run |
 | `handoff!` | §4 — Malli-validated note |
 | `discovered!`, `block!`, `gate-human!` | §5, §6 |
 | `close!` | §2.5 — refuses epics |
@@ -388,7 +388,7 @@ Integration points in Kestrel:
 
 - **Server mode trigger.** Stay embedded until a real claim conflict happens between Hermes and Kestrel on one host. Revisit then.
 - **Hermes hook mechanism.** §9.2 is conditional on how Hermes actually loads context. Confirm before relying on it.
-- **Kestrel skill** is a draft. It needs to run against the installed `bd` once, with the `--json` shapes checked for `ready`, `list`, `show`, and `create`.
+- **Kestrel skill** is a draft. It needs to run against the installed `bd` once, with the `--json` shapes checked for `ready`, `list`, `show`, and `create`, and its `claim!` run once through a live `bops claim`.
 - **Cross-repo capabilities** (`bd ship`, `external:` deps). Not needed until the venture work and the home-lab work live in separate repos and depend on each other. They may.
 - **Compaction automation in Claude Code.** Upstream re-primes on `PreCompact` but does not write notes. Whether to automate the handoff note or keep it a discipline is open; try the discipline first.
 
