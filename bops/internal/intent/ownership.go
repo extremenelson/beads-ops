@@ -868,8 +868,19 @@ func (e *Env) holdFor(id string) (runstate.Entry, bool) {
 // Release gives a claim back with a classified reason. Only the holder can.
 // The ref is checked first, so a displaced holder writes nothing to the ledger.
 func Release(ctx context.Context, env *Env, id, reason string) (*ReleaseOut, error) {
+	return ReleaseWithText(ctx, env, id, reason, "")
+}
+
+// ReleaseWithText is Release with optional free text. A non-empty text goes
+// into the release's one bops:released comment, below the event line, through
+// a private file; it is written only when the release is, so a lost or refused
+// release writes none of it.
+func ReleaseWithText(ctx context.Context, env *Env, id, reason, text string) (*ReleaseOut, error) {
 	if !contains(ReleaseReasons, reason) {
 		return nil, fmt.Errorf("release: reason must be one of %s", strings.Join(ReleaseReasons, "|"))
+	}
+	if text != "" && strings.TrimSpace(text) == "" {
+		return nil, fmt.Errorf("%w: release text is empty", ErrPrecondition)
 	}
 	if err := lock.ValidateID(id); err != nil {
 		return nil, err
@@ -914,7 +925,7 @@ func Release(ctx context.Context, env *Env, id, reason string) (*ReleaseOut, err
 			out.Warnings = append(out.Warnings, w)
 		}
 	}
-	if err := env.releaseDisplay(ctx, id, reason, publish); err != nil {
+	if err := env.releaseDisplay(ctx, id, reason, text, publish); err != nil {
 		out.LedgerPending = true
 		out.Warnings = append(out.Warnings, "ledger display pending: "+err.Error())
 		env.event("release", id, "ledger", "pending", sha, err)
@@ -988,8 +999,9 @@ func (e *Env) verifyHold(ctx context.Context, id, reason string, out *ReleaseOut
 
 // releaseDisplay writes what `release` shows on the ledger. A done bead stays
 // in_progress until sweep closes it; every other reason returns it to a status
-// bd ready understands. It pushes only when publish is set.
-func (e *Env) releaseDisplay(ctx context.Context, id, reason string, publish bool) error {
+// bd ready understands. A non-empty text follows the event line in the same
+// comment. It pushes only when publish is set.
+func (e *Env) releaseDisplay(ctx context.Context, id, reason, text string, publish bool) error {
 	cur, err := e.show(ctx, id)
 	if err != nil {
 		return err
@@ -1016,13 +1028,29 @@ func (e *Env) releaseDisplay(ctx context.Context, id, reason string, publish boo
 		}
 	}
 	ev := fmt.Sprintf("bops:released run=%s reason=%s", e.Run.ID, reason)
-	if _, err := e.BD.Run(ctx, "comments", "add", id, ev); err != nil {
+	if err := e.addReleasedComment(ctx, id, ev, text); err != nil {
 		return err
 	}
 	if !publish {
 		return nil
 	}
 	return e.pushLedger(ctx)
+}
+
+// addReleasedComment writes the release event. The fixed-vocabulary line
+// alone may be an argument (SPEC §1.7); with text it goes through a file.
+func (e *Env) addReleasedComment(ctx context.Context, id, ev, text string) error {
+	if text == "" {
+		_, err := e.BD.Run(ctx, "comments", "add", id, ev)
+		return err
+	}
+	path, cleanup, err := writeTemp(ev + "\n" + text)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	_, err = e.BD.Run(ctx, "comments", "add", id, "-f", path)
+	return err
 }
 
 // ---------------------------------------------------------------- sync

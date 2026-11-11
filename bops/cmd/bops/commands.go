@@ -108,6 +108,18 @@ func printKV(w *os.File, v any) {
 	}
 }
 
+// flagSetMade sees each command's FlagSet as it is made. The flags are defined
+// before any parse, so a test that runs a command with -h can read every flag
+// it takes and compare them with the manifest.
+var flagSetMade = func(*flag.FlagSet) {}
+
+func newFlagSet(name string, stderr io.Writer) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	flagSetMade(fs)
+	return fs
+}
+
 // parseAnyOrder lets flags appear before or after the bead id. The flag
 // package alone stops at the first non-flag argument.
 func parseAnyOrder(fs *flag.FlagSet, args []string) error {
@@ -151,8 +163,7 @@ func newEnv(mode runstate.Mode) (*intent.Env, *runstate.Store, error) {
 }
 
 func cmdNext(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
-	fs := flag.NewFlagSet("next", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := newFlagSet("next", stderr)
 	n := fs.Int("n", 3, "candidates to return")
 	inc := fs.Bool("include-unworkable", false, "also return excluded candidates with why_not")
 	pool := fs.String("pool", "", "serve only pool:<pool>")
@@ -178,8 +189,7 @@ func cmdNext(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 }
 
 func cmdClaim(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
-	fs := flag.NewFlagSet("claim", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := newFlagSet("claim", stderr)
 	force := fs.Bool("force", false, "take over an expired claim or an orphan")
 	resume := fs.Bool("resume", false, "take back a landing bead for PR rework")
 	fs.Bool("json", false, "")
@@ -215,8 +225,7 @@ func noteText(file string, stdin io.Reader, stdinIsTerminal bool) (string, error
 }
 
 func cmdNote(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
-	fs := flag.NewFlagSet("note", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := newFlagSet("note", stderr)
 	file := fs.String("file", "", "read the note from this file instead of stdin")
 	fs.Bool("json", false, "")
 	if err := parseAnyOrder(fs, args); err != nil || fs.NArg() != 1 {
@@ -238,8 +247,7 @@ func cmdNote(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 }
 
 func cmdLand(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
-	fs := flag.NewFlagSet("land", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := newFlagSet("land", stderr)
 	ref := fs.String("ref", "", "URL of the merge request")
 	sha := fs.String("sha", "", "commit the work landed as")
 	verify := fs.Bool("verify", false, "check the ref's commit on the forge first")
@@ -270,8 +278,7 @@ func cmdLand(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 }
 
 func cmdSweep(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
-	fs := flag.NewFlagSet("sweep", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := newFlagSet("sweep", stderr)
 	dryRun := fs.Bool("dry-run", true, "report what would close without closing it")
 	fs.String("forge", "auto", "auto|github|gitlab|none")
 	fs.Bool("json", false, "")
@@ -297,27 +304,52 @@ func cmdSweep(ctx context.Context, m *manifest.Manifest, args []string, asJSON b
 	return emit(m, "sweep", asJSON, out, err, stdout, stderr)
 }
 
+// releaseText reads release's optional text. Unlike a note's, it is read from
+// stdin only when asked with --file -: release usually runs with no text, and
+// a caller's stdin may be a pipe that never closes (babashka's p/sh leaves it
+// open), which an unasked read would wait on forever. Never an argument.
+func releaseText(file string, stdin io.Reader) (string, error) {
+	var b []byte
+	var err error
+	switch file {
+	case "":
+		return "", nil
+	case "-":
+		b, err = io.ReadAll(stdin)
+	default:
+		b, err = os.ReadFile(file)
+	}
+	return string(b), err
+}
+
 func cmdRelease(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
-	fs := flag.NewFlagSet("release", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := newFlagSet("release", stderr)
 	reason := fs.String("reason", "", strings.Join(intent.ReleaseReasons, "|"))
+	file := fs.String("file", "", "optional text for the release comment from this file; - reads stdin")
 	fs.Bool("json", false, "")
 	if err := parseAnyOrder(fs, args); err != nil || fs.NArg() != 1 || *reason == "" {
-		fmt.Fprintln(stderr, "usage: bops release <id> --reason "+strings.Join(intent.ReleaseReasons, "|"))
+		fmt.Fprintln(stderr, "usage: bops release <id> --reason "+strings.Join(intent.ReleaseReasons, "|")+" [--file <path> | --file -]")
 		return exitUsage
+	}
+	text, err := releaseText(*file, os.Stdin)
+	if err != nil {
+		fmt.Fprintln(stderr, "bops release:", err)
+		return exitUsage
+	}
+	if *file != "" && strings.TrimSpace(text) == "" {
+		return emit(m, "release", asJSON, nil, fmt.Errorf("%w: release text is empty", intent.ErrPrecondition), stdout, stderr)
 	}
 	env, store, err := newEnv(runstate.Read)
 	if err != nil {
 		return emit(m, "release", asJSON, nil, err, stdout, stderr)
 	}
 	defer store.Close()
-	out, err := intent.Release(ctx, env, fs.Arg(0), *reason)
+	out, err := intent.ReleaseWithText(ctx, env, fs.Arg(0), *reason, text)
 	return emit(m, "release", asJSON, out, err, stdout, stderr)
 }
 
 func cmdSync(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
-	fs := flag.NewFlagSet("sync", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := newFlagSet("sync", stderr)
 	noPush := fs.Bool("no-push", false, "pull and heartbeat only")
 	fs.Bool("json", false, "")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
@@ -334,8 +366,7 @@ func cmdSync(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 }
 
 func cmdSessionStart(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
-	fs := flag.NewFlagSet("session-start", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := newFlagSet("session-start", stderr)
 	fs.Bool("json", false, "")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
 		fmt.Fprintln(stderr, "usage: bops session-start")
@@ -392,8 +423,7 @@ var doctorBD bdx.Runner = bdx.Exec{}
 // lock.mode none every check is skipped. A failed check exits 1 with the first failure's
 // code, and the document still lists every check.
 func cmdDoctor(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
-	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := newFlagSet("doctor", stderr)
 	fs.Bool("json", false, "")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
 		fmt.Fprintln(stderr, "usage: bops doctor")
@@ -425,8 +455,7 @@ func cmdDoctor(ctx context.Context, m *manifest.Manifest, args []string, asJSON 
 }
 
 func cmdStale(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
-	fs := flag.NewFlagSet("stale", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := newFlagSet("stale", stderr)
 	older := fs.Duration("older-than", 0, "idle longer than this is stale (default stale_minutes)")
 	all := fs.Bool("all-machines", true, "include claims made on other machines")
 	fs.Bool("json", false, "")
@@ -444,8 +473,7 @@ func cmdStale(ctx context.Context, m *manifest.Manifest, args []string, asJSON b
 }
 
 func cmdLint(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
-	fs := flag.NewFlagSet("lint", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := newFlagSet("lint", stderr)
 	strict := fs.Bool("strict", false, "promote warnings to failures")
 	fs.Bool("json", false, "")
 	if err := parseAnyOrder(fs, args); err != nil || fs.NArg() != 1 {
