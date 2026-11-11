@@ -47,7 +47,7 @@ Use `bops release <id> --reason <reason>`, with your explanation in a `bops note
 | `done` | Work is landed | Stays in progress until its PR merges |
 | `blocked` | A dependency stops you | Status becomes blocked |
 | `scope` | The bead is wrong or too big | Back to the pool after a cooling-off period |
-| `stale` | You are abandoning it | Same as `scope` |
+| `abandoned` | You are abandoning it | Same as `scope` |
 | `human` | A person must decide | Out of the pool until a person removes `needs:human` |
 
 ## Closing
@@ -63,5 +63,5 @@ Do not close beads yourself. `bops sweep` previews which landed beads have merge
 - **`could not save run state` or `state lock`:** another `bops` process is busy. Wait and retry once.
 - **`ledger_pending: true`:** you still own the bead. Run `bops sync`, and report it if that does not clear it.
 - **A reviewer asks for changes after `release --reason done`:** run `bops claim --resume <id>` from a worktree, then continue from step 4. Only the actor who landed it can.
-- **`bops sync` lists `stranded_holds`:** those beads were held by a removed worktree. If the work is abandoned, run `bops release <id> --reason stale` from any worktree of this clone.
+- **`bops sync` lists `stranded_holds`:** those beads were held by a removed worktree. If the work is abandoned, run `bops release <id> --reason abandoned` from any worktree of this clone.
 - **A bead looks abandoned:** `bops stale` lists claims idle over 2 hours, with `same_machine`, and `orphans` (claim refs with no claim on the ledger). Taking one over with `bops claim --force <id>` is a person's decision; report the list rather than forcing on your own. The recovery runbook is PROCESS §12.

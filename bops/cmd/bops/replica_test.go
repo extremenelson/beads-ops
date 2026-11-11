@@ -421,7 +421,7 @@ func TestReplicaWorktreesAreDistinctRuns(t *testing.T) {
 	if !slices.Contains(x.list("stranded_holds"), ids[0]) || len(x.list("lost_claims")) != 0 {
 		t.Fatalf("sync: %s", x.Raw)
 	}
-	if x := a.bops("release", ids[0], "--reason", "stale"); x.outcome() != "released" {
+	if x := a.bops("release", ids[0], "--reason", "abandoned"); x.outcome() != "released" {
 		t.Fatalf("stranded release: %s %s", x.Raw, x.Err)
 	}
 	if a.refExists(ids[0]) {

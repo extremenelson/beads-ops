@@ -63,10 +63,10 @@
       "kind": "write",
       "args": {
         "id": { "type": "string" },
-        "reason": { "type": "enum", "values": ["done", "blocked", "scope", "stale", "human"] },
+        "reason": { "type": "enum", "values": ["done", "blocked", "scope", "abandoned", "human"] },
         "text": { "type": "stdin|file?" }
       },
-      "effects": { "blocked": "status→blocked", "human": "+needs:human", "scope": "+bops:hold", "stale": "+bops:hold", "done": "none; await land/sweep" },
+      "effects": { "blocked": "status→blocked", "human": "+needs:human", "scope": "+bops:hold", "abandoned": "+bops:hold", "done": "none; await land/sweep" },
       "wraps": ["git fetch refs/bops/claims/<id>", "git push (lease): state=landing on done, delete otherwise", "bd update <id> --assignee ''", "bd label remove <id> run:*", "bd comments add <id>", "bd dolt push"],
       "outcomes": { "released": 0, "lost": 3, "refused": 3, "unreachable": 1 },
       "output": { "id": "string", "reason": "string", "outcome": "string", "ledger_pending": "bool?", "ref_pending": "bool?", "holder": "object?", "detail": "string?", "warnings": "string[]?" },

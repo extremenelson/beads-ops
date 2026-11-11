@@ -139,7 +139,7 @@ The staleness window is `stale_minutes` (SPEC §10, default 120). Set it in the 
 3. Best effort: the ledger writes that `release` already does.
 4. Unless the reason is `done`, delete the ref with a lease. If that fails, set `delete_pending` and return `released` with `ref_pending: true`.
 
-The non-holder path for `--reason stale` is removed, so only the holder can release. A hold stranded by a removed worktree is released from any worktree of the same clone, using the sha in the journal, or waits for `claim --force`. `claim --force` is how a bead changes hands.
+The non-holder path for `--reason abandoned` (formerly `stale`) is removed, so only the holder can release. A hold stranded by a removed worktree is released from any worktree of the same clone, using the sha in the journal, or waits for `claim --force`. `claim --force` is how a bead changes hands.
 
 **`sync`** runs `fetch --prune`, then pulls the ledger, then handles each hold in this order:
 

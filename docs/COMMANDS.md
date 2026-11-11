@@ -126,10 +126,10 @@ Give the claim back
 | Arg | Type | Default | Doc |
 |---|---|---|---|
 | `--id` | string |  |  |
-| `--reason` | enum: done \| blocked \| scope \| stale \| human |  |  |
+| `--reason` | enum: done \| blocked \| scope \| abandoned \| human |  |  |
 | `--text` | stdin|file? |  |  |
 
-Effects by reason: `blocked` → status→blocked; `done` → none; await land/sweep; `human` → +needs:human; `scope` → +bops:hold; `stale` → +bops:hold.
+Effects by reason: `abandoned` → +bops:hold; `blocked` → status→blocked; `done` → none; await land/sweep; `human` → +needs:human; `scope` → +bops:hold.
 
 Wraps: `git fetch refs/bops/claims/<id>`, `git push (lease): state=landing on done, delete otherwise`, `bd update <id> --assignee ''`, `bd label remove <id> run:*`, `bd comments add <id>`, `bd dolt push`.
 
