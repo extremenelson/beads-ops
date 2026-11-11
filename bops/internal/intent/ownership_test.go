@@ -38,7 +38,7 @@ type fakeBD struct {
 	mu      sync.Mutex
 	actor   string
 	beads   map[string]*bead
-	remotes string
+	remotes string // `dolt remote list --json`; "" lists none until client points it at the clone's remote
 	calls   [][]string
 	fail    func(args []string) error
 	onPull  func()
@@ -47,7 +47,7 @@ type fakeBD struct {
 }
 
 func newBD() *fakeBD {
-	return &fakeBD{actor: "tester", beads: map[string]*bead{}, remotes: "[]"}
+	return &fakeBD{actor: "tester", beads: map[string]*bead{}}
 }
 
 func (b *fakeBD) add(id string) *bead {
@@ -88,6 +88,9 @@ func (b *fakeBD) Run(_ context.Context, args ...string) ([]byte, error) {
 	case "dolt":
 		switch args[1] {
 		case "remote":
+			if b.remotes == "" {
+				return []byte("[]"), nil
+			}
 			return []byte(b.remotes), nil
 		case "pull":
 			if b.onPull != nil {
@@ -270,6 +273,9 @@ func client(t *testing.T, remote, run string, bd *fakeBD) *rig {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), run)
 	git(t, filepath.Dir(dir), "clone", "-q", remote, dir)
+	if bd.remotes == "" { // the ledger lives beside the lock, as lock.mode ref requires
+		bd.remotes = `[{"name":"origin","url":"git+file://` + remote + `"}]`
+	}
 	return rigAt(t, dir, run, bd)
 }
 
@@ -698,6 +704,72 @@ func TestRemoteCheckUsesTheLockRemote(t *testing.T) {
 	if _, err := intent.Claim(bg, a.env, "x-2", false); lock.CodeOf(err) != lock.CodeNoOrigin || !strings.Contains(err.Error(), "mirror") {
 		t.Fatalf("err = %v, want no_origin naming mirror", err)
 	}
+}
+
+// A ledger with no Dolt remote cannot sit beside a lock remote, so under
+// lock.mode ref every claim refuses before it pushes a ref or writes the
+// ledger. Under lock.mode none the same ledger claims as before.
+func TestNoDoltRemote(t *testing.T) {
+	t.Run("ref mode refuses", func(t *testing.T) {
+		remote, bd := bareRemote(t), newBD()
+		n := bd.add("x-1")
+		n.Status, n.Labels = "in_progress", []string{"bops:landing"}
+		bd.add("x-2")
+		a := client(t, remote, "A", bd)
+		doltWithNoRemote(bd)
+		for name, claim := range map[string]func() (*intent.ClaimOut, error){
+			"claim":          func() (*intent.ClaimOut, error) { return intent.Claim(bg, a.env, "x-2", false) },
+			"claim --force":  func() (*intent.ClaimOut, error) { return intent.Claim(bg, a.env, "x-2", true) },
+			"claim --resume": func() (*intent.ClaimOut, error) { return intent.ClaimResume(bg, a.env, "x-1") },
+		} {
+			out, err := claim()
+			if lock.CodeOf(err) != lock.CodeRemoteMismatch || out == nil || out.Outcome == intent.OutcomeClaimed {
+				t.Fatalf("%s: %+v, %v; want remote_mismatch", name, out, err)
+			}
+			for _, want := range []string{"no Dolt remote", "bd dolt remote add", "lock.mode"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("%s: %q does not say %q", name, err, want)
+				}
+			}
+		}
+		for _, id := range []string{"x-1", "x-2"} {
+			if liveSHA(t, a, id) != "" || bd.wrote(id) {
+				t.Errorf("%s: a refused claim wrote a ref or the ledger: %v", id, bd.calls)
+			}
+		}
+		if left := git(t, remote, "for-each-ref", "refs/bops/"); left != "" || bd.count("dolt pull") != 0 || bd.count("dolt push") != 0 {
+			t.Errorf("refs %q, calls %v", left, bd.calls)
+		}
+	})
+	t.Run("ref mode with a matching Dolt remote claims", func(t *testing.T) {
+		remote, bd := bareRemote(t), newBD()
+		bd.add("x-1")
+		a := client(t, remote, "A", bd)
+		bd.remotes = `[{"name":"origin","url":"git+file://` + remote + `"}]`
+		mustClaim(t, a, "x-1")
+	})
+	t.Run("ref mode claims when the remote list cannot be read", func(t *testing.T) {
+		remote, bd := bareRemote(t), newBD()
+		bd.add("x-1")
+		a := client(t, remote, "A", bd)
+		bd.fail = func(args []string) error {
+			if args[0] == "dolt" && args[1] == "remote" {
+				return errors.New("bd dolt remote list: exit status 1")
+			}
+			return nil
+		}
+		mustClaim(t, a, "x-1")
+	})
+	t.Run("none mode claims", func(t *testing.T) {
+		bd := newBD()
+		bd.add("x-1")
+		r := lockOffRig(t, "A", bd)
+		doltWithNoRemote(bd)
+		out, err := intent.Claim(bg, r.env, "x-1", false)
+		if err != nil || out.Outcome != intent.OutcomeClaimed {
+			t.Fatalf("%+v, %v", out, err)
+		}
+	})
 }
 
 func TestReleaseDeletesTheRefAndWritesTheLedger(t *testing.T) {

@@ -72,7 +72,10 @@ func (e *Env) setLedgerPending(id string, pending bool) {
 	}
 }
 
-// checkRemote refuses a lock that would live apart from the ledger.
+// checkRemote refuses a lock that would live apart from the ledger. A ledger
+// with no Dolt remote is the degenerate case: the lock would have no ledger
+// beside it at all. A list that fails or does not parse is not compared, and
+// the ledger reports its own failure later.
 func (e *Env) checkRemote(ctx context.Context) error {
 	url, err := e.Lock.RemoteURL(ctx)
 	if err != nil {
@@ -86,8 +89,11 @@ func (e *Env) checkRemote(ctx context.Context) error {
 		Name string `json:"name"`
 		URL  string `json:"url"`
 	}
-	if err := json.Unmarshal(raw, &remotes); err != nil || len(remotes) == 0 {
+	if err := json.Unmarshal(raw, &remotes); err != nil {
 		return nil
+	}
+	if len(remotes) == 0 {
+		return &lock.Error{Code: lock.CodeRemoteMismatch, Err: fmt.Errorf("lock remote %s (%s) has no ledger beside it: there is no Dolt remote, so the lock would not be shared with the ledger; add a Dolt remote on the same repository (`bd dolt remote add origin git+<that URL>`, e.g. git+https://… or git+ssh://…), or for a single-machine repo set lock.mode to none in .bops.json ({\"lock\": {\"mode\": \"none\"}})", e.Lock.RemoteName(), url)}
 	}
 	for _, r := range remotes {
 		if lock.SameRemote(url, r.URL) {
