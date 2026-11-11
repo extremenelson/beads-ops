@@ -66,6 +66,16 @@ at=<iso8601>
 - Staleness is `stale_minutes` (§10, default 120) from the ref's `at`. `note` refreshes `at`. Set it in the committed `.bops.json` so every machine on a ledger measures the same window: a machine with a shorter one takes over claims sooner.
 - **The guarantee covers claims made through `bops`.** A raw `bd update --claim` writes no ref and bypasses the lock. `/bead-loop` and the Kestrel binding still claim through raw `bd` until bead `bops-ecs` moves them, so they are outside the guarantee. Every machine on a ledger must run a `bops` that knows the lock before the first claim on it.
 
+**`lock.mode: none` (one machine only).** A ledger used on a single machine, with or without a git remote, can turn the lock off in the committed `.bops.json` (`{"lock": {"mode": "none"}}`, §10). No command then reads or writes a claim ref, contacts a remote for locking, or refuses with `no_origin` or `remote_mismatch`; ownership is the ledger alone, as for a claim with no ref:
+
+- `claim` pulls best effort, checks the same preconditions, and claims with `bd update --claim`, whose compare-and-set holds on one replica, so it separates the worktrees of one clone and nothing more. If that write fails and the bead now has an assignee, the result is `lost` with that holder. The hold is journaled with no sha. The `run:` label, `bops:claimed` comment and Dolt push follow best effort, and their failures are warnings; nothing sets `ledger_pending`.
+- `claim --force` measures staleness from the ledger claim's `updated_at` (as with no ref) and takes over with `bd update --assignee --status in_progress --force`. Two concurrent takeovers are not separated. `claim --resume` is refused: its rule is the ref's state and actor, which do not exist here. To rework a landing bead, remove `bops:landing`, set it `open`, and claim it.
+- `release` and `land` check the ledger instead of the ref: a `run:` label of another run (or, with no `run:` label, another assignee) is `lost` with no write. `release` never deletes a ref.
+- `sweep` takes the no-ref path for every bead: `bops:landing` and a merged PR close it. `stale` ages every claim from the ledger and reports no orphans. `next` skips W14's ref check. `sync` and `session-start` report no `lost_claims`; a stranded hold is still reported.
+- Every one of these results carries the warning `lock.mode is none: …`, so an unprotected claim is not mistaken for a protected one. `doctor` reports all four checks `skip`, naming `lock.mode`, and exits 0.
+- Only `.bops.json` can set `none`: a per-user file or `BOPS_LOCK_MODE` that sets it is an error unless the repo file already does. One machine of a shared ledger turning the lock off would claim beads others hold without anyone being told. Either layer may set `ref`.
+- Switch modes with nothing claimed. Holds journaled under `ref` are released through the ledger under `none` and their refs stay on the remote; holds taken under `none` have no ref, and under `ref` are treated like claims made before the lock.
+
 ### 3.1 Labels (machine-readable state)
 
 | Label | Set by | Meaning |
@@ -203,9 +213,9 @@ Bindings carry `contract=<n>` and refuse to run against a mismatched `bops versi
 
 ## 10. Configuration
 
-`.bops.json` in repo root (committed) merged with `$XDG_CONFIG_HOME/bops/config.json` (per user) and `BOPS_*` env. Keys: `pool`, `caps[]`, `hold_minutes`, `stale_minutes`, `forge`, `lint.strict`, `lint.disable[]`, `note.require_next` (bool), `lock.remote`.
+`.bops.json` in repo root (committed) merged with `$XDG_CONFIG_HOME/bops/config.json` (per user) and `BOPS_*` env. Keys: `pool`, `caps[]`, `hold_minutes`, `stale_minutes`, `forge`, `lint.strict`, `lint.disable[]`, `note.require_next` (bool), `lock.mode`, `lock.remote`.
 
-Precedence, lowest to highest: built-in defaults, `.bops.json` in the worktree root, the per-user file (`~/.config/bops/config.json` when `XDG_CONFIG_HOME` is unset), `BOPS_*` env, then command flags. Each layer sets only the keys it names; a missing file is skipped. Nested keys are JSON objects (`{"lint": {"strict": true}}`), and each key's variable is `BOPS_` plus its path in upper case with `.` as `_` (`BOPS_STALE_MINUTES`, `BOPS_LINT_STRICT`); a list in the environment is comma-separated and an empty variable is unset. An unknown key, a wrong type, a non-integer or non-positive minute count, a `forge` outside `auto|github|gitlab|none`, or a `lock.remote` that is not a plausible git remote name (a letter or digit, then up to 99 letters, digits, `.`, `_` or `-`; no `..`, not ending in `.` or `.lock`) fails the command (exit 1) naming the file or variable. The loader is `bops/internal/config`.
+Precedence, lowest to highest: built-in defaults, `.bops.json` in the worktree root, the per-user file (`~/.config/bops/config.json` when `XDG_CONFIG_HOME` is unset), `BOPS_*` env, then command flags. Each layer sets only the keys it names; a missing file is skipped. Nested keys are JSON objects (`{"lint": {"strict": true}}`), and each key's variable is `BOPS_` plus its path in upper case with `.` as `_` (`BOPS_STALE_MINUTES`, `BOPS_LINT_STRICT`); a list in the environment is comma-separated and an empty variable is unset. An unknown key, a wrong type, a non-integer or non-positive minute count, a `forge` outside `auto|github|gitlab|none`, a `lock.mode` outside `ref|none`, `lock.mode: none` from a layer above `.bops.json` when the repo file does not set it, or a `lock.remote` that is not a plausible git remote name (a letter or digit, then up to 99 letters, digits, `.`, `_` or `-`; no `..`, not ending in `.` or `.lock`) fails the command (exit 1) naming the file or variable. The loader is `bops/internal/config`.
 
 | Key | Default | Applied by |
 |---|---|---|
@@ -215,7 +225,8 @@ Precedence, lowest to highest: built-in defaults, `.bops.json` in the worktree r
 | `forge` | `auto` | loaded and validated; `land` and `sweep` still take only `--forge` |
 | `lint.strict`, `lint.disable[]` | `false`, none | loaded and validated; not applied yet (`lint --strict` is the flag) |
 | `note.require_next` | `false` | loaded and validated; not applied yet |
-| `lock.remote` | `origin` | every command that reads or writes claim refs, the ledger check (§3.0) and `doctor` (`BOPS_LOCK_REMOTE`) |
+| `lock.mode` (`BOPS_LOCK_MODE`) | `ref` | every command and `doctor`: `none` turns the claim lock off for a one-machine ledger (§3.0). Only `.bops.json` may set `none` |
+| `lock.remote` | `origin` | every command that reads or writes claim refs, the ledger check (§3.0) and `doctor` (`BOPS_LOCK_REMOTE`); unused under `lock.mode: none` |
 
 Other environment `bops` reads: `BEADS_ACTOR` (actor), `BOPS_MACHINE` (machine name, else the hostname), `XDG_STATE_HOME` (§3.4), and `BOPS_INTEGRATION` / `BOPS_RACE_TRIALS` in tests.
 

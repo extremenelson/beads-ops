@@ -28,9 +28,15 @@ type Env struct {
 	// Store is the clone's hold state across worktrees. Nil means only Run.
 	Store HoldStore
 	// Lock decides who holds a bead. Next works without it; writes need it.
-	Lock  *lock.Lock
-	Now   func() time.Time
-	Sleep func(time.Duration) // injectable for the sync retry
+	// With LockOff its journal still records holds, but no ref is read or
+	// written.
+	Lock *lock.Lock
+	// LockOff is lock.mode none: ownership is decided by the ledger alone
+	// (bd update --claim, the assignee and run: label, updated_at), with no
+	// git ref and no network for locking. Only for a ledger on one machine.
+	LockOff bool
+	Now     func() time.Time
+	Sleep   func(time.Duration) // injectable for the sync retry
 	// StaleAfter is how long a claim may go without a heartbeat/update
 	// before `next` treats it as stale and `claim --force` may take it
 	// (config stale_minutes). Default 2h.
@@ -123,7 +129,9 @@ func Next(ctx context.Context, env *Env, o NextOpts) (*NextOut, error) {
 		out.Warnings = append(out.Warnings, "ordering ignores work in progress: "+listErr.Error())
 	}
 	claims := map[string]lock.Ref{}
-	if env.Lock != nil {
+	if env.LockOff {
+		out.Warnings = append(out.Warnings, lock.OffWarning)
+	} else if env.Lock != nil {
 		seen, err := env.Lock.Seen(ctx)
 		if err != nil {
 			out.Warnings = append(out.Warnings, "could not read local claims: "+err.Error())
@@ -306,6 +314,9 @@ func (o *NoteOut) refuse(outcome, why string, holder *Holder, text string) *Note
 // network failure is only a warning, because a note must work offline. It
 // reports true if the note must stop, having lost the claim.
 func (e *Env) refreshClaim(ctx context.Context, id, text string, out *NoteOut) bool {
+	if e.LockOff {
+		return false // no ref to refresh; the comment and heartbeat show activity
+	}
 	entry, owned, err := e.checkHold(ctx, id)
 	if err != nil {
 		out.Warnings = append(out.Warnings, "claim not refreshed: "+err.Error())
@@ -380,11 +391,12 @@ var hexSHA = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
 
 // LandOut is the `land` output.
 type LandOut struct {
-	ID      string        `json:"id"`
-	Outcome string        `json:"outcome"`
-	Landed  ledger.Landed `json:"landed,omitzero"`
-	Holder  *Holder       `json:"holder,omitempty"`
-	Reason  string        `json:"reason,omitempty"`
+	ID       string        `json:"id"`
+	Outcome  string        `json:"outcome"`
+	Landed   ledger.Landed `json:"landed,omitzero"`
+	Holder   *Holder       `json:"holder,omitempty"`
+	Reason   string        `json:"reason,omitempty"`
+	Warnings []string      `json:"warnings,omitempty"`
 }
 
 // Negative reports a run that worked and an answer of no.
@@ -413,21 +425,35 @@ func Land(ctx context.Context, env *Env, id string, o LandOpts) (*LandOut, error
 	if _, held := env.Run.Held[id]; !held {
 		return &LandOut{ID: id, Outcome: OutcomeRefused, Reason: id + " is not held by this run"}, nil
 	}
-	_, owned, err := env.checkHold(ctx, id)
-	if err != nil {
-		return &LandOut{ID: id, Outcome: OutcomeUnreachable}, err
-	}
-	if !owned {
-		holder, err := env.dropLost(ctx, id)
+	var warnings []string
+	if env.LockOff {
+		warnings = []string{lock.OffWarning}
+	} else {
+		_, owned, err := env.checkHold(ctx, id)
 		if err != nil {
-			return nil, err
+			return &LandOut{ID: id, Outcome: OutcomeUnreachable}, err
 		}
-		env.event("land", id, "ref_check", OutcomeLost, "", nil)
-		return &LandOut{ID: id, Outcome: OutcomeLost, Holder: holder, Reason: id + " is no longer held by this run"}, nil
+		if !owned {
+			holder, err := env.dropLost(ctx, id)
+			if err != nil {
+				return nil, err
+			}
+			env.event("land", id, "ref_check", OutcomeLost, "", nil)
+			return &LandOut{ID: id, Outcome: OutcomeLost, Holder: holder, Reason: id + " is no longer held by this run"}, nil
+		}
 	}
 	cur, err := env.show(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+	if env.LockOff {
+		if holder := env.ledgerHolder(cur); holder != nil {
+			if err := env.Lock.Journal.Drop(id); err != nil {
+				return nil, err
+			}
+			env.event("land", id, "ledger_check", OutcomeLost, "", nil)
+			return &LandOut{ID: id, Outcome: OutcomeLost, Holder: holder, Reason: id + " is no longer held by this run", Warnings: warnings}, nil
+		}
 	}
 	if o.Verify != nil {
 		head, err := o.Verify.RefSHA(ctx, o.Ref)
@@ -444,7 +470,7 @@ func Land(ctx context.Context, env *Env, id string, o LandOpts) (*LandOut, error
 		return nil, err
 	}
 	if existing != nil { // a repeat of the same landing writes nothing
-		return &LandOut{ID: id, Outcome: OutcomeLanded, Landed: *existing}, nil
+		return &LandOut{ID: id, Outcome: OutcomeLanded, Landed: *existing, Warnings: warnings}, nil
 	}
 	path, cleanup, err := writeTemp(string(merged))
 	if err != nil {
@@ -454,7 +480,7 @@ func Land(ctx context.Context, env *Env, id string, o LandOpts) (*LandOut, error
 	if _, err := env.BD.Run(ctx, "update", id, "--metadata", "@"+path); err != nil {
 		return nil, err
 	}
-	out := &LandOut{ID: id, Outcome: OutcomeLanded, Landed: entry}
+	out := &LandOut{ID: id, Outcome: OutcomeLanded, Landed: entry, Warnings: warnings}
 	ev := fmt.Sprintf("bops:landed run=%s ref=%s sha=%s", env.Run.ID, o.Ref, o.SHA)
 	if _, err := env.BD.Run(ctx, "comments", "add", id, ev); err != nil {
 		return out, fmt.Errorf("landed but could not record event: %w", err)
@@ -474,6 +500,7 @@ type SweepOut struct {
 	WouldClose []string `json:"would_close"`
 	Pending    []string `json:"pending"`
 	Unknown    []string `json:"unknown"`
+	Warnings   []string `json:"warnings,omitempty"`
 }
 
 type sweepCandidate struct {
@@ -525,22 +552,27 @@ func Sweep(ctx context.Context, env *Env, f forge.Forge, dryRun bool) (*SweepOut
 			merged = append(merged, sweepCandidate{i, last})
 		}
 	}
+	if env.LockOff {
+		out.Warnings = append(out.Warnings, lock.OffWarning)
+	}
 	if len(merged) == 0 {
 		return out, nil
 	}
-	if err := env.Lock.Fetch(ctx); err != nil {
-		for _, c := range merged {
-			out.Unknown = append(out.Unknown, c.issue.ID)
+	refs := map[string]lock.Ref{} // with the lock off, every bead takes the no-ref path
+	if !env.LockOff {
+		if err := env.Lock.Fetch(ctx); err != nil {
+			for _, c := range merged {
+				out.Unknown = append(out.Unknown, c.issue.ID)
+			}
+			return out, err
 		}
-		return out, err
-	}
-	seen, err := env.Lock.Seen(ctx)
-	if err != nil {
-		return out, err
-	}
-	refs := make(map[string]lock.Ref, len(seen))
-	for _, r := range seen {
-		refs[r.ID] = r
+		seen, err := env.Lock.Seen(ctx)
+		if err != nil {
+			return out, err
+		}
+		for _, r := range seen {
+			refs[r.ID] = r
+		}
 	}
 	var failures []error
 	for _, c := range merged {

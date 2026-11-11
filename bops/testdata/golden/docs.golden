@@ -52,7 +52,8 @@ Output:
     }
   ],
   "excluded_count": "int",
-  "ledger_revision": "string"
+  "ledger_revision": "string",
+  "warnings": "string[]?"
 }
 ```
 
@@ -66,7 +67,7 @@ Take this bead for this run
 | `--id` | string |  |  |
 | `--resume` | bool | `false` | Take back a landing bead for PR rework. Only the ref's actor can. |
 
-Preconditions: assignee is empty OR --force; status in (open, ready); no run: label; the lock remote (lock.remote, default origin) matches the Dolt remote.
+Preconditions: assignee is empty OR --force; status in (open, ready); no run: label; the lock remote (lock.remote, default origin) matches the Dolt remote (lock.mode ref).
 
 Wraps: `git push refs/bops/claims/<id> (create-only)`, `bd dolt pull`, `bd update <id> --claim`, `bd label add <id> run:<ulid>`, `bd comments add <id>`, `bd dolt push`.
 
@@ -178,7 +179,8 @@ Output:
     "at": "string"
   },
   "holder": "object?",
-  "reason": "string?"
+  "reason": "string?",
+  "warnings": "string[]?"
 }
 ```
 
@@ -201,7 +203,8 @@ Output:
   "closed": "string[]",
   "would_close": "string[]",
   "pending": "string[]",
-  "unknown": "string[]"
+  "unknown": "string[]",
+  "warnings": "string[]?"
 }
 ```
 

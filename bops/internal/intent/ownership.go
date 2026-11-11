@@ -120,6 +120,32 @@ func notClaimable(cur *ledger.Issue) string {
 	return ""
 }
 
+// ledgerHolder says who the ledger shows holding cur when that is not this
+// run, or a stranded run of this clone whose hold this run may finish. It is
+// nil when the bead looks like this run's. With the lock off it is the only
+// ownership check: a run: label decides, and the assignee only when there is
+// no run: label, because bd's actor can be spelled differently from bops's.
+func (e *Env) ledgerHolder(cur *ledger.Issue) *Holder {
+	mine := map[string]bool{e.Run.ID: true}
+	if e.Store != nil {
+		for _, h := range e.Store.Holds() {
+			if h.ID == cur.ID && h.Stranded {
+				mine[h.Run] = true
+			}
+		}
+	}
+	runs := cur.LabelsWithPrefix("run:")
+	for _, r := range runs {
+		if !mine[r] {
+			return &Holder{Actor: cur.Assignee, Run: r}
+		}
+	}
+	if len(runs) == 0 && cur.Assignee != "" && cur.Assignee != e.Run.Actor {
+		return &Holder{Actor: cur.Assignee}
+	}
+	return nil
+}
+
 // pushLedger publishes local Dolt commits. Every bead shares one Dolt ref, so
 // ordinary work on other beads rejects a push until it pulls first.
 func (e *Env) pushLedger(ctx context.Context) error {
@@ -255,6 +281,9 @@ func Claim(ctx context.Context, env *Env, id string, force bool) (*ClaimOut, err
 		return nil, err
 	}
 	out := &ClaimOut{ID: id, Run: env.Run.ID, Warnings: []string{}}
+	if env.LockOff {
+		return claimLedger(ctx, env, id, out)
+	}
 	if err := env.checkRemote(ctx); err != nil {
 		return out.fail(err)
 	}
@@ -307,6 +336,78 @@ func Claim(ctx context.Context, env *Env, id string, force bool) (*ClaimOut, err
 	return out, nil
 }
 
+// claimLedger is a plain claim with the lock off (lock.mode none). bd's own
+// compare-and-set on `update --claim` decides. That holds on one replica, so
+// it separates the worktrees of one machine and nothing more:
+//
+//	already held? --> pull (best effort) --> bd show --> bd update --claim --> journal --> labels, comment, push
+//	    |                                       |               |
+//	    held                                 refused          lost (someone else's assignee)
+func claimLedger(ctx context.Context, env *Env, id string, out *ClaimOut) (*ClaimOut, error) {
+	out.Warnings = append(out.Warnings, lock.OffWarning)
+	if done, err := env.alreadyHeld(ctx, id, out); done || err != nil {
+		return out, err
+	}
+	if _, err := withLockRetry(ctx, env, "dolt", "pull"); err != nil {
+		out.Warnings = append(out.Warnings, "ledger not pulled: "+err.Error())
+	}
+	cur, err := env.show(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if why := notClaimable(cur); why != "" {
+		out.Outcome, out.Reason = OutcomeRefused, why
+		env.event("claim", id, "precondition", OutcomeRefused, "", nil)
+		return out, nil
+	}
+	if _, err := env.BD.Run(ctx, "update", id, "--claim"); err != nil {
+		if fresh, showErr := env.show(ctx, id); showErr == nil && fresh.Assignee != "" {
+			out.Outcome, out.Holder = OutcomeLost, &Holder{Actor: fresh.Assignee}
+			if h := env.ledgerHolder(fresh); h != nil {
+				out.Holder = h
+			}
+			env.event("claim", id, "ledger_claim", OutcomeLost, "", nil)
+			return out, nil
+		}
+		env.event("claim", id, "ledger_claim", OutcomeError, "", err)
+		return out.fail(err)
+	}
+	return env.takeLedger(ctx, id, "", out)
+}
+
+// takeLedger journals a hold the ledger has just given this run, then writes
+// the rest of the display. With the lock off nothing repairs the display
+// later, so a failure after the claim is a warning, not ledger_pending.
+func (e *Env) takeLedger(ctx context.Context, id, extra string, out *ClaimOut) (*ClaimOut, error) {
+	if err := e.Lock.Journal.Confirm(id, ""); err != nil { // no sha: a hold with no ref
+		if _, undoErr := e.BD.Run(ctx, "update", id, "--assignee", "", "--status", "open"); undoErr != nil {
+			out.Warnings = append(out.Warnings, "the ledger still shows this claim; clear it with `bd update "+id+" --assignee '' --status open`: "+undoErr.Error())
+		}
+		return out.fail(&lock.Error{Code: lock.CodeHoldNotRecorded, Err: err})
+	}
+	out.Outcome, out.ClaimedAt = OutcomeClaimed, e.now()
+	e.event("claim", id, "ledger_claim", OutcomeClaimed, "", nil)
+	cur, err := e.show(ctx, id)
+	if err == nil {
+		err = e.display(ctx, cur, e.Run.Actor, e.Run.ID, false)
+	}
+	if err == nil {
+		err = e.addClaimComment(ctx, id, e.Run.Actor, e.Run.ID, extra)
+	}
+	if err == nil {
+		if got, showErr := e.show(ctx, id); showErr == nil {
+			out.ReadbackOK = got.Assignee != "" && got.HasLabel("run:"+e.Run.ID)
+		}
+	}
+	if err != nil {
+		out.Warnings = append(out.Warnings, "ledger display incomplete: "+err.Error())
+	}
+	if _, err := withLockRetry(ctx, e, "dolt", "push"); err != nil {
+		out.Warnings = append(out.Warnings, "ledger not pushed: "+err.Error())
+	}
+	return out, nil
+}
+
 // refuseOrLose explains a bead the ledger says is taken. Worktrees of one clone
 // share a ledger, so a racing command can see the winner's assignee before the
 // ref would have told it. If a live claim exists, the ref gives the real answer.
@@ -331,6 +432,10 @@ func (e *Env) alreadyHeld(ctx context.Context, id string, out *ClaimOut) (bool, 
 	entry, ok := e.Run.Held[id]
 	if !ok {
 		return false, nil
+	}
+	if e.LockOff { // no ref to settle against: the journal is the answer
+		out.Outcome, out.LedgerPending = OutcomeHeld, entry.LedgerPending
+		return true, nil
 	}
 	live, _, err := e.Lock.Live(ctx, id)
 	if err != nil {
@@ -440,18 +545,26 @@ func claimForce(ctx context.Context, env *Env, id string) (*ClaimOut, error) {
 		return nil, err
 	}
 	out := &ClaimOut{ID: id, Run: env.Run.ID, Warnings: []string{}}
-	if err := env.checkRemote(ctx); err != nil {
+	if env.LockOff {
+		out.Warnings = append(out.Warnings, lock.OffWarning)
+	} else if err := env.checkRemote(ctx); err != nil {
 		return out.fail(err)
 	}
 	if done, err := env.alreadyHeld(ctx, id, out); done || err != nil {
 		return out, err
 	}
+	var ref *lock.Ref // with the lock off there is never a ref: the ledger branch below decides
 	if _, err := withLockRetry(ctx, env, "dolt", "pull"); err != nil {
-		return out.fail(&lock.Error{Code: lock.CodeUnreachable, Err: err})
+		if !env.LockOff {
+			return out.fail(&lock.Error{Code: lock.CodeUnreachable, Err: err})
+		}
+		out.Warnings = append(out.Warnings, "ledger not pulled: "+err.Error())
 	}
-	ref, err := env.Lock.Read(ctx, id)
-	if err != nil {
-		return out.fail(err)
+	if !env.LockOff {
+		var err error
+		if ref, err = env.Lock.Read(ctx, id); err != nil {
+			return out.fail(err)
+		}
 	}
 	cur, err := env.show(ctx, id)
 	if err != nil {
@@ -484,6 +597,15 @@ func claimForce(ctx context.Context, env *Env, id string) (*ClaimOut, error) {
 			return env.refuseStale(out, fmt.Sprintf("assigned to %q with recent activity; a person can wait or ask them to release it", cur.Assignee), age)
 		}
 	}
+	if env.LockOff {
+		// The forced write is the takeover. Unlike a lease, it does not stop
+		// a second takeover racing this one.
+		if _, err := env.BD.Run(ctx, "update", id, "--assignee", env.Run.Actor, "--status", "in_progress", "--force"); err != nil {
+			env.event("claim", id, "ledger_takeover", OutcomeError, "", err)
+			return out.fail(err)
+		}
+		return env.takeLedger(ctx, id, " takeover="+previous, out)
+	}
 	res, err := env.Lock.Replace(ctx, id, expected, lock.StateHeld)
 	if err != nil {
 		env.event("claim", id, "ref_replace", OutcomeUnreachable, "", err)
@@ -509,6 +631,14 @@ func ClaimResume(ctx context.Context, env *Env, id string) (*ClaimOut, error) {
 		return nil, err
 	}
 	out := &ClaimOut{ID: id, Run: env.Run.ID, Warnings: []string{}}
+	if env.LockOff {
+		// SPEC decides a resume by the ref's state and actor; with no ref
+		// that rule is not defined yet, so this refuses rather than guess.
+		out.Outcome, out.Reason = OutcomeRefused, "claim --resume needs the claim ref, and lock.mode is none; to rework a landing bead, run `bd label remove "+id+" bops:landing` and `bd update "+id+" --status open`, then claim it"
+		out.Warnings = append(out.Warnings, lock.OffWarning)
+		env.event("claim", id, "resume_check", OutcomeRefused, "", nil)
+		return out, nil
+	}
 	if err := env.checkRemote(ctx); err != nil {
 		return out.fail(err)
 	}
@@ -633,7 +763,21 @@ func Release(ctx context.Context, env *Env, id, reason string) (*ReleaseOut, err
 		return out, nil
 	}
 	sha := entry.SHA
-	if !entry.Legacy() {
+	if env.LockOff {
+		out.Warnings = append(out.Warnings, lock.OffWarning)
+		cur, err := env.show(ctx, id)
+		if err != nil {
+			return out.fail(err)
+		}
+		if holder := env.ledgerHolder(cur); holder != nil {
+			if err := env.Lock.Journal.Drop(id); err != nil {
+				return out.fail(err)
+			}
+			out.Outcome, out.Holder = OutcomeLost, holder
+			env.event("release", id, "ledger_check", OutcomeLost, "", nil)
+			return out, nil
+		}
+	} else if !entry.Legacy() {
 		var done bool
 		var err error
 		if sha, done, err = env.verifyHold(ctx, id, reason, out); done || err != nil {
@@ -646,7 +790,7 @@ func Release(ctx context.Context, env *Env, id, reason string) (*ReleaseOut, err
 		env.event("release", id, "ledger", "pending", sha, err)
 	}
 	out.Outcome = OutcomeReleased
-	if entry.Legacy() || reason == "done" {
+	if entry.Legacy() || reason == "done" || env.LockOff {
 		if err := env.Lock.Journal.Drop(id); err != nil {
 			return out.fail(err)
 		}
@@ -819,16 +963,20 @@ func (e *Env) allHolds() []cloneHold {
 // ref, repairs the ledger display, and pushes.
 func Sync(ctx context.Context, env *Env, noPush bool) (*SyncOut, error) {
 	out := &SyncOut{StrandedHolds: []string{}, LostClaims: []string{}}
-	if err := env.Lock.Fetch(ctx); err != nil {
-		return out, err
-	}
-	seen, err := env.Lock.Seen(ctx)
-	if err != nil {
-		return out, err
-	}
-	refs := make(map[string]lock.Ref, len(seen))
-	for _, r := range seen {
-		refs[r.ID] = r
+	refs := map[string]lock.Ref{}
+	if env.LockOff {
+		out.Warnings = append(out.Warnings, lock.OffWarning)
+	} else {
+		if err := env.Lock.Fetch(ctx); err != nil {
+			return out, err
+		}
+		seen, err := env.Lock.Seen(ctx)
+		if err != nil {
+			return out, err
+		}
+		for _, r := range seen {
+			refs[r.ID] = r
+		}
 	}
 	if _, err := withLockRetry(ctx, env, "dolt", "pull"); err != nil {
 		return out, err
@@ -853,6 +1001,13 @@ func Sync(ctx context.Context, env *Env, noPush bool) (*SyncOut, error) {
 // order matters: an unfinished write or delete must be settled before an
 // absent ref can be read as a lost claim.
 func (e *Env) syncHold(ctx context.Context, h cloneHold, refs map[string]lock.Ref, out *SyncOut) bool {
+	if e.LockOff { // no ref to settle against, so no hold is lost here
+		if h.stranded {
+			out.StrandedHolds = append(out.StrandedHolds, h.id)
+			return false
+		}
+		return true
+	}
 	ref, found := refs[h.id]
 	live := ""
 	if found {

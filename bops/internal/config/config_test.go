@@ -154,3 +154,49 @@ func TestBadUserFileNamesItsPath(t *testing.T) {
 		t.Fatalf("err = %v, want the user file's path", err)
 	}
 }
+
+func TestLockModeDefaultsToRef(t *testing.T) {
+	c, err := newWorld(t, "", "").load()
+	if err != nil || c.LockMode != config.LockRef || c.LockOff() {
+		t.Fatalf("lock mode %q, off=%v, err %v", c.LockMode, c.LockOff(), err)
+	}
+}
+
+func TestLockModeNoneFromTheRepoFile(t *testing.T) {
+	w := newWorld(t, `{"lock":{"mode":"none"}}`, "")
+	w.env["BOPS_LOCK_MODE"] = "none" // repeating the repo's choice is allowed
+	c, err := w.load()
+	if err != nil || c.LockMode != config.LockNone || !c.LockOff() {
+		t.Fatalf("lock mode %q, err %v", c.LockMode, err)
+	}
+}
+
+// Turning the lock off on one machine of a shared ledger would silently drop
+// that machine's protection, so only the committed file may turn it off.
+func TestLockModeNoneRefusedOutsideTheRepoFile(t *testing.T) {
+	w := newWorld(t, "", `{"lock":{"mode":"none"}}`)
+	if _, err := w.load(); err == nil || !strings.Contains(err.Error(), "config.json") || !strings.Contains(err.Error(), ".bops.json") {
+		t.Errorf("user file: err = %v, want it to name the file and point at .bops.json", err)
+	}
+	w = newWorld(t, "", "")
+	w.env["BOPS_LOCK_MODE"] = "none"
+	if _, err := w.load(); err == nil || !strings.Contains(err.Error(), "BOPS_LOCK_MODE") || !strings.Contains(err.Error(), ".bops.json") {
+		t.Errorf("env: err = %v, want it to name BOPS_LOCK_MODE and point at .bops.json", err)
+	}
+}
+
+func TestLockModeRefMayOverrideTheRepoFile(t *testing.T) {
+	w := newWorld(t, `{"lock":{"mode":"none"}}`, "")
+	w.env["BOPS_LOCK_MODE"] = "ref"
+	c, err := w.load()
+	if err != nil || c.LockMode != config.LockRef {
+		t.Fatalf("lock mode %q, err %v", c.LockMode, err)
+	}
+}
+
+func TestLockModeRejectsUnknownValue(t *testing.T) {
+	_, err := newWorld(t, `{"lock":{"mode":"off"}}`, "").load()
+	if err == nil || !strings.Contains(err.Error(), "lock.mode") {
+		t.Fatalf("err = %v", err)
+	}
+}

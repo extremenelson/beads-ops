@@ -43,15 +43,26 @@ type Config struct {
 	LintStrict      bool     // lint.strict: promote warnings to failures
 	LintDisable     []string // lint.disable[]: rule ids to skip (loaded, not yet applied)
 	NoteRequireNext bool     // note.require_next (loaded, not yet applied)
+	LockMode        string   // lock.mode: ref|none; none only from the repo file
 	LockRemote      string   // lock.remote: git remote that holds the claim refs
 }
+
+// Lock modes. LockNone decides claims from the local ledger alone, with no
+// git ref and no network: only for a ledger used on one machine.
+const (
+	LockRef  = "ref"
+	LockNone = "none"
+)
+
+// LockOff reports whether lock.mode turns the claim lock off.
+func (c Config) LockOff() bool { return c.LockMode == LockNone }
 
 // DefaultMinutes is the default for hold_minutes and stale_minutes.
 const DefaultMinutes = 120
 
 // Default is the configuration with no files and no environment.
 func Default() Config {
-	return Config{HoldMinutes: DefaultMinutes, StaleMinutes: DefaultMinutes, Forge: "auto", LockRemote: "origin"}
+	return Config{HoldMinutes: DefaultMinutes, StaleMinutes: DefaultMinutes, Forge: "auto", LockMode: LockRef, LockRemote: "origin"}
 }
 
 // StaleAfter is stale_minutes as a duration.
@@ -68,6 +79,7 @@ const (
 	kMinutes
 	kBool
 	kForge
+	kLockMode
 	kRemote
 )
 
@@ -86,10 +98,25 @@ var keys = []key{
 	{"lint.strict", kBool, func(c *Config) any { return &c.LintStrict }},
 	{"lint.disable", kStrings, func(c *Config) any { return &c.LintDisable }},
 	{"note.require_next", kBool, func(c *Config) any { return &c.NoteRequireNext }},
+	{"lock.mode", kLockMode, func(c *Config) any { return &c.LockMode }},
 	{"lock.remote", kRemote, func(c *Config) any { return &c.LockRemote }},
 }
 
-var forges = []string{"auto", "github", "gitlab", "none"}
+var (
+	forges    = []string{"auto", "github", "gitlab", "none"}
+	lockModes = []string{LockRef, LockNone}
+)
+
+// lockOffHere refuses lock.mode=none from a layer above the repo file unless
+// the repo file already chose it. One machine of a shared ledger turning the
+// lock off would silently lose that machine's protection, so the choice is
+// the team's, in the committed file. Setting ref is always allowed.
+func lockOffHere(c *Config, repoMode string) error {
+	if c.LockMode == LockNone && repoMode != LockNone {
+		return fmt.Errorf("lock.mode none is accepted only from %s, the committed file every machine reads; set it there if this ledger is used on one machine", RepoFile)
+	}
+	return nil
+}
 
 // remoteName is a plausible git remote name: one refname segment that cannot
 // be read as a flag or a URL.
@@ -131,8 +158,15 @@ func Load(repoRoot string, getenv func(string) string) (Config, error) {
 	if u := UserPath(getenv); u != "" {
 		files = append(files, u)
 	}
-	for _, f := range files {
-		if err := mergeFile(&c, f); err != nil {
+	repoMode := c.LockMode
+	for n, f := range files {
+		err := mergeFile(&c, f)
+		if n == 0 {
+			repoMode = c.LockMode
+		} else if err == nil {
+			err = lockOffHere(&c, repoMode)
+		}
+		if err != nil {
 			return Config{}, fmt.Errorf("config %s: %w", f, err)
 		}
 	}
@@ -142,7 +176,11 @@ func Load(repoRoot string, getenv func(string) string) (Config, error) {
 		if v == "" {
 			continue
 		}
-		if err := setString(&c, k, v); err != nil {
+		err := setString(&c, k, v)
+		if err == nil && k.kind == kLockMode {
+			err = lockOffHere(&c, repoMode)
+		}
+		if err != nil {
 			return Config{}, fmt.Errorf("config %s: %w", name, err)
 		}
 	}
@@ -239,7 +277,7 @@ func strictJSON(b []byte, v any) error {
 
 func setJSON(c *Config, k key, raw json.RawMessage) error {
 	switch k.kind {
-	case kString, kForge, kRemote:
+	case kString, kForge, kLockMode, kRemote:
 		var s string
 		if err := json.Unmarshal(raw, &s); err != nil {
 			return fmt.Errorf("%s: want a string", k.path)
@@ -273,14 +311,18 @@ func setString(c *Config, k key, v string) error {
 	switch k.kind {
 	case kString:
 		*k.ref(c).(*string) = v
-	case kForge:
-		for _, f := range forges {
+	case kForge, kLockMode:
+		allowed := forges
+		if k.kind == kLockMode {
+			allowed = lockModes
+		}
+		for _, f := range allowed {
 			if v == f {
 				*k.ref(c).(*string) = v
 				return nil
 			}
 		}
-		return fmt.Errorf("%s: want one of %s, got %q", k.path, strings.Join(forges, ", "), v)
+		return fmt.Errorf("%s: want one of %s, got %q", k.path, strings.Join(allowed, ", "), v)
 	case kRemote:
 		if !validRemote(v) {
 			return fmt.Errorf("%s: want a git remote name such as origin, got %q", k.path, v)

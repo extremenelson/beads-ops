@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/extremenelson/beads-ops/bops/internal/lock"
 )
 
 // SessionStartOut is the `session-start` output: one compact document for a
@@ -42,13 +44,20 @@ func SessionStart(ctx context.Context, env *Env) (*SessionStartOut, error) {
 		out.Warnings = append(out.Warnings, what+": "+firstLine(err.Error()))
 	}
 
+	if env.LockOff { // said here too, because a failed sync drops its warnings
+		out.Warnings = append(out.Warnings, lock.OffWarning)
+	}
 	var syncErr error
 	if s, err := Sync(ctx, env, true); err != nil {
 		syncErr = errors.New("sync failed; the facts below are from this machine's last copy: " + firstLine(err.Error()))
 	} else {
 		out.Synced = true
 		out.LostClaims, out.StrandedHolds = s.LostClaims, s.StrandedHolds
-		out.Warnings = append(out.Warnings, s.Warnings...)
+		for _, w := range s.Warnings {
+			if w != lock.OffWarning {
+				out.Warnings = append(out.Warnings, w)
+			}
+		}
 	}
 
 	for id := range env.Run.Held {

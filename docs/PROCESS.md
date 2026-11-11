@@ -62,7 +62,7 @@ Never start editing files before the claim lands. In a multi-agent setup the cla
 | 3 | `lost`, `refused` | Do not work. Pick another bead; `holder` or `reason` says why |
 | 1 | `unreachable` and the rest | Stop. Rerun when the remote is reachable; the result's `side_effects` says what may have been written |
 
-Claiming needs the network: the lock lives on the remote. Notes work offline (§8). A ledger without `bops` keeps `bd update <id> --claim`, with the one-replica limit above.
+Claiming needs the network: the lock lives on the remote. Notes work offline (§8). The exception is a ledger used on one machine with `lock.mode: none` in `.bops.json` (§8): claims then go through `bd update --claim` with no ref and no network, and every result warns `lock.mode is none`. A ledger without `bops` keeps `bd update <id> --claim`, with the one-replica limit above.
 
 ### 2.3 Work
 
@@ -302,6 +302,7 @@ Beads is Dolt-backed; `.beads/issues.jsonl` is an export for viewers, not the so
 - **Per-machine work:** label it (`gpu-3090`, `debian-box`). Autonomous loops filter `bd ready --json` by their own machine label plus unlabeled work.
 - **Worktrees:** `bd worktree create .worktrees/<name> --branch feature/<name>` shares the repo's `.beads/` automatically; one worktree per concurrently active agent. `bd where` when anything looks wrong. Each worktree is its own `bops` run, so two agents on one clone cannot both hold a bead.
 - **The claim lock** (`bops` ledgers) is `refs/bops/claims/<id>` on the lock remote (`lock.remote`, default `origin`), which must be the same repository as `refs/dolt/data`; `bops claim` refuses if that remote is missing or is not the Dolt remote, and `bops doctor` checks it. Claim, release, land and sweep need the network. `note` works offline and refreshes the lock when it can. `bops sync` fetches every claim ref, repairs the assignee display from them, finishes deletes and ledger writes that failed, and reports `lost_claims` (someone took a bead from you) and `stranded_holds` (a worktree that no longer exists).
+- **One machine, no lock:** a ledger only ever used on one machine (with or without a remote) may set `{"lock": {"mode": "none"}}` in the committed `.bops.json`. Ownership is then the ledger alone, which separates the worktrees of that machine and nothing more; `claim --resume` is refused and `bops doctor` skips its checks (SPEC §3.0). Never set it anywhere else: a per-user file or `BOPS_LOCK_MODE` that turns the lock off is refused, because one machine of a shared ledger without the lock silently takes beads others hold. Release everything before switching modes. The lock remote is not used under `none`.
 - **Upgrades:** every machine on a ledger runs a `bops` that knows the lock before anyone claims with it; an older binary ignores the lock. Do not run `bd reclaim` on a `bops` ledger, by hand or on a timer: it ignores the lock.
 - **Local record:** each clone keeps `$XDG_STATE_HOME/bops/<hash>/events.jsonl` (default `~/.local/state/bops/…`), one line per step and outcome. Read it first when an outcome needs explaining.
 

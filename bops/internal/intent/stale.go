@@ -64,7 +64,9 @@ func Stale(ctx context.Context, env *Env, o StaleOpts) (*StaleOut, error) {
 	}
 	out := &StaleOut{Stale: []StaleClaim{}, Orphans: []Orphan{}, Warnings: []string{}}
 	refs := map[string]lock.Ref{}
-	if env.Lock != nil {
+	if env.LockOff {
+		out.Warnings = append(out.Warnings, lock.OffWarning) // every claim ages from the ledger
+	} else if env.Lock != nil {
 		if err := env.Lock.Fetch(ctx); err != nil {
 			out.Warnings = append(out.Warnings, "claim refs are as of the last sync: "+lock.Scrub(err.Error()))
 		}
