@@ -55,7 +55,7 @@ const (
 	CodeHoldNotRecorded = "hold_not_recorded"
 	CodeGit             = "git_failed"
 	CodeNoOrigin        = "no_origin"       // the lock remote is missing (named for the default)
-	CodeRemoteMismatch  = "remote_mismatch" // the lock remote is not the Dolt remote
+	CodeRemoteMismatch  = "remote_mismatch" // the lock remote is not the Dolt remote, or there is none
 )
 
 // Error carries a stable code. SHA is set when a ref may remain on the remote

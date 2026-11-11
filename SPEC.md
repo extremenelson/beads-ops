@@ -49,7 +49,7 @@ All keys are namespaced so that `bops` can coexist with any other tooling on the
 
 ### 3.0 The claim lock (ownership)
 
-One git ref per claimed bead, `refs/bops/claims/<id>`, on the lock remote: the git remote named by `lock.remote` (§10, default `origin`), which must be the same repository as the Dolt ledger. `claim` refuses with `no_origin` when no git remote has that name, and with `remote_mismatch` when its URL is not the Dolt remote. `doctor` checks the same remote. The ref's value is a commit on the empty tree, authored `bops <bops@invalid>`, whose message is one `key=value` per line:
+One git ref per claimed bead, `refs/bops/claims/<id>`, on the lock remote: the git remote named by `lock.remote` (§10, default `origin`), which must be the same repository as the Dolt ledger. `claim` refuses with `no_origin` when no git remote has that name, and with `remote_mismatch` when its URL is not the Dolt remote, or when there is no Dolt remote at all (`bd dolt remote list --json` lists none), before it pushes a ref or writes the ledger; the fix is a Dolt remote on the lock remote's repository, or `lock.mode: none` for a single-machine ledger. `claim --force` and `claim --resume` make the same check. A remote list that cannot be read or parsed is not compared, and the claim goes on. `doctor` checks the same remote. The ref's value is a commit on the empty tree, authored `bops <bops@invalid>`, whose message is one `key=value` per line:
 
 ```
 run=<ulid>
@@ -146,7 +146,7 @@ The manifest is [`bops/commands.json`](bops/commands.json). It is embedded in th
 | `refused` | 3 | false | A precondition failed; pick another bead. `reason` says which (`detail` on `release`, whose `reason` is the release reason) |
 | `unreachable` | 1 | false | Could not verify; stop or retry. `retry` bounds it and `side_effects` says what may have been written |
 
-**Stable codes** (`code` on a result that could not run, and in `events.jsonl`): `unreachable` (remote not reached), `git_auth` (credentials refused), `lock_unsupported` (the forge rejects custom refs), `ref_contention` (a local ref update collided), `state_write_failed` (the state file could not be written), `hold_not_recorded` (the ref was won but the hold could not be saved; the result names the sha and how to recover), `no_origin` (lock remote missing: no git remote named `lock.remote`, default `origin`) and `remote_mismatch` (the lock remote is not the Dolt remote), `bad_id` (not a bead id), `bad_message` (an unreadable claim ref), `git_failed` (any other git error).
+**Stable codes** (`code` on a result that could not run, and in `events.jsonl`): `unreachable` (remote not reached), `git_auth` (credentials refused), `lock_unsupported` (the forge rejects custom refs), `ref_contention` (a local ref update collided), `state_write_failed` (the state file could not be written), `hold_not_recorded` (the ref was won but the hold could not be saved; the result names the sha and how to recover), `no_origin` (lock remote missing: no git remote named `lock.remote`, default `origin`) and `remote_mismatch` (the lock remote is not the Dolt remote, including when there is no Dolt remote; `lock.mode: ref` only), `bad_id` (not a bead id), `bad_message` (an unreadable claim ref), `git_failed` (any other git error).
 
 ## 5. Ordering rules for `next`
 
