@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"flag"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/extremenelson/beads-ops/bops/internal/config"
 	"github.com/extremenelson/beads-ops/bops/internal/runstate"
 )
 
@@ -77,6 +81,66 @@ func TestNewEnvAppliesLockRemote(t *testing.T) {
 	defer store.Close()
 	if env.Lock.Remote != "upstream" {
 		t.Errorf("lock remote = %q, want upstream", env.Lock.Remote)
+	}
+}
+
+// forgeRunner answers get-url for the named remotes and logs every call.
+type forgeRunner struct {
+	urls  map[string]string
+	calls []string
+}
+
+func (r *forgeRunner) run(_ context.Context, name string, args ...string) ([]byte, error) {
+	r.calls = append(r.calls, name+" "+strings.Join(args, " "))
+	if name == "git" && len(args) == 3 && args[0] == "remote" && args[1] == "get-url" {
+		if u, ok := r.urls[args[2]]; ok {
+			return []byte(u + "\n"), nil
+		}
+	}
+	return nil, errors.New("exit 1")
+}
+
+func forgeFlags(t *testing.T, args ...string) *flag.FlagSet {
+	t.Helper()
+	fs := flag.NewFlagSet("sweep", flag.ContinueOnError)
+	fs.String("forge", "auto", "")
+	if err := fs.Parse(args); err != nil {
+		t.Fatal(err)
+	}
+	return fs
+}
+
+func TestSelectForgeHonoursConfigWithoutTheFlag(t *testing.T) {
+	r := &forgeRunner{urls: map[string]string{"origin": "https://github.com/o/r.git"}}
+	cfg := config.Default()
+	cfg.Forge = "none"
+	f, err := selectForge(context.Background(), forgeFlags(t), cfg, r.run)
+	if err != nil || f.Name() != "none" {
+		t.Fatalf("got %v, %v; want none from config", f, err)
+	}
+	f, err = selectForge(context.Background(), forgeFlags(t, "--forge", "gitlab"), cfg, r.run)
+	if err != nil || f.Name() != "gitlab" {
+		t.Fatalf("got %v, %v; want gitlab from the flag over config", f, err)
+	}
+	f, err = selectForge(context.Background(), forgeFlags(t, "--forge", "auto"), cfg, r.run)
+	if err != nil || f.Name() != "github" {
+		t.Fatalf("got %v, %v; want an explicit --forge auto to infer github over config", f, err)
+	}
+}
+
+func TestSelectForgeInfersFromTheLockRemote(t *testing.T) {
+	r := &forgeRunner{urls: map[string]string{
+		"origin":   "https://github.com/o/r.git",
+		"upstream": "git@gitlab.com:g/p.git",
+	}}
+	cfg := config.Default()
+	cfg.LockRemote = "upstream"
+	f, err := selectForge(context.Background(), forgeFlags(t), cfg, r.run)
+	if err != nil || f.Name() != "gitlab" {
+		t.Fatalf("got %v, %v; want gitlab inferred from upstream", f, err)
+	}
+	if len(r.calls) != 1 || r.calls[0] != "git remote get-url upstream" {
+		t.Errorf("calls = %v, want one get-url of upstream", r.calls)
 	}
 }
 

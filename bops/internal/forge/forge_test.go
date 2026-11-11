@@ -49,7 +49,7 @@ func TestSelect(t *testing.T) {
 		if tc.remote != "" {
 			s.out["git remote get-url origin"] = tc.remote + "\n"
 		}
-		f, err := Select(context.Background(), tc.name, s.run)
+		f, err := Select(context.Background(), tc.name, "origin", s.run)
 		if err != nil {
 			t.Fatalf("%+v: %v", tc, err)
 		}
@@ -60,8 +60,42 @@ func TestSelect(t *testing.T) {
 }
 
 func TestSelectRejectsUnknownName(t *testing.T) {
-	if _, err := Select(context.Background(), "bitbucket", (&stub{}).run); err == nil {
+	if _, err := Select(context.Background(), "bitbucket", "origin", (&stub{}).run); err == nil {
 		t.Fatal("want an error")
+	}
+}
+
+// The lock remote (lock.remote) may not be origin; inference reads it.
+func TestSelectInfersFromTheNamedRemote(t *testing.T) {
+	s := &stub{out: map[string]string{
+		"git remote get-url origin":   "https://github.com/o/r.git\n",
+		"git remote get-url upstream": "git@gitlab.com:g/p.git\n",
+	}}
+	f, err := Select(context.Background(), "auto", "upstream", s.run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Name() != "gitlab" {
+		t.Errorf("got %s, want gitlab from upstream", f.Name())
+	}
+	if want := []string{"git remote get-url upstream"}; !reflect.DeepEqual(s.calls, want) {
+		t.Errorf("calls = %v, want %v", s.calls, want)
+	}
+}
+
+// A named remote that does not exist infers none, as a missing origin does,
+// and an empty name means origin.
+func TestSelectRemoteFallbacks(t *testing.T) {
+	s := &stub{out: map[string]string{"git remote get-url origin": "https://github.com/o/r.git\n"}}
+	if f, err := Select(context.Background(), "auto", "mirror", s.run); err != nil || f.Name() != "none" {
+		t.Errorf("missing remote: got %v, %v; want none", f, err)
+	}
+	s.calls = nil
+	if f, err := Select(context.Background(), "auto", "", s.run); err != nil || f.Name() != "github" {
+		t.Errorf("empty remote: got %v, %v; want github from origin", f, err)
+	}
+	if want := []string{"git remote get-url origin"}; !reflect.DeepEqual(s.calls, want) {
+		t.Errorf("calls = %v, want %v", s.calls, want)
 	}
 }
 

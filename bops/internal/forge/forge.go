@@ -48,14 +48,21 @@ func Exec(ctx context.Context, name string, args ...string) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// Select returns the named forge. "auto" or "" infers it from the origin
-// remote, falling back to none.
-func Select(ctx context.Context, name string, run Runner) (Forge, error) {
+// Select returns the named forge. "auto" or "" infers it from the URL of
+// remote, the repository's lock.remote ("" means origin), falling back to
+// none when that remote is missing or has no recognisable host. The lock
+// remote is used even under lock.mode none: it is the remote the repository
+// is configured to share through. A named github or gitlab forge also takes
+// its API host from that remote.
+func Select(ctx context.Context, name, remote string, run Runner) (Forge, error) {
 	if name != "" && name != "auto" && name != "github" && name != "gitlab" && name != "none" {
 		return nil, fmt.Errorf("unknown forge %q (have: auto, github, gitlab, none)", name)
 	}
+	if remote == "" {
+		remote = "origin"
+	}
 	host := ""
-	if out, err := run(ctx, "git", "remote", "get-url", "origin"); err == nil {
+	if out, err := run(ctx, "git", "remote", "get-url", remote); err == nil {
 		host = remoteHost(strings.TrimSpace(string(out)))
 	}
 	if name == "" || name == "auto" {
