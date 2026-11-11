@@ -148,6 +148,26 @@
           (is (= "unreachable" (:code (ex-data e)))))
         (is (empty? @bd-calls))))))
 
+(deftest gate-human-writes-the-gate-and-no-label
+  (let [bd-calls (atom [])]
+    (with-redefs [b/bops (stub-bops (atom []) {"release" released})
+                  b/bd   (fn [& args] (swap! bd-calls conj (vec args)) {})]
+      (b/gate-human! {} "bd-a1" "why")
+      (is (= [["gate" "create" "--type" "human" "--blocks" "bd-a1" "--reason" "why"]] @bd-calls)
+          "bops release --reason human writes needs-human; no second label write"))))
+
+(deftest session-start-skips-both-needs-human-spellings
+  (with-redefs [b/bops (stub-bops (atom []) {"sync" {:exit 0 :err "" :doc {:ok true :pulled true :pushed true}}})
+                b/bd   (fn [& args]
+                         (case (vec args)
+                           ["list" "--status" "in_progress"] []
+                           ["ready"] [{:id "bd-h" :priority 0 :status "open" :labels ["needs-human"]}
+                                      {:id "bd-l" :priority 0 :status "open" :labels ["needs:human"]}
+                                      {:id "bd-ok" :priority 2 :status "open" :labels []}]
+                           {}))]
+    (let [r (b/session-start {:actor "me" :machine-label "debian-box"})]
+      (is (= "bd-ok" (get-in r [:resume :id]))))))
+
 (deftest close-lands-then-releases-done
   (let [calls (atom [])]
     (with-redefs [b/bops (stub-bops calls {"land" landed "release" released})

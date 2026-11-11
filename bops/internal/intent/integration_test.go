@@ -132,7 +132,7 @@ func TestLiveClaimAndRelease(t *testing.T) {
 	}{
 		{"scope", "open", "bops:hold", true},
 		{"abandoned", "open", "bops:hold", true},
-		{"human", "open", "needs:human", true},
+		{"human", "open", "needs-human", true},
 		{"blocked", "blocked", "", false},
 		{"done", "in_progress", "bops:landing", false},
 	} {

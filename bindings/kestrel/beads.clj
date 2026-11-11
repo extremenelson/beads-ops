@@ -115,10 +115,15 @@
    (let [{:keys [exit doc err]} (bops cfg "sync")]
      (assoc (parse-sync exit doc) :err err))))
 
+(def ^:private legacy-needs-human
+  "The spelling early bops wrote. Read as needs-human; drop with bops v0.2.0."
+  "needs:human")
+
 (defn session-start
   "Returns {:sync .. :in-progress [...] :ready [...] :resume bead-or-nil}.
-   in_progress beats ready. Skips beads labelled needs-human (PROCESS.md) or
-   needs:human (`bops release --reason human`), and foreign-machine beads.
+   in_progress beats ready. Skips beads labelled needs-human, or the legacy
+   needs:human that early bops wrote (read until bops v0.2.0, SPEC §3.1), and
+   foreign-machine beads.
    :sync is `sync!`'s map. Throws if the resume target is in_progress with no
    NEXT in its handoff."
   [{:keys [actor machine-label] :as cfg}]
@@ -131,7 +136,7 @@
                               (or (empty? bound) (contains? ls machine-label))))
         mine        (filter #(= actor (:assignee %)) in-prog)
         eligible    (->> ready
-                         (remove #(some #{"needs-human" "needs:human"} (:labels %)))
+                         (remove #(some #{"needs-human" legacy-needs-human} (:labels %)))
                          (filter machine?))
         resume      (or (first (sort-by :priority mine))
                         (first (sort-by :priority eligible)))]
@@ -262,18 +267,16 @@
 
 (defn gate-human!
   "`bops release <id> --reason human`: deletes the claim ref, drops this run's
-   hold, clears the assignee, reopens the bead and labels it needs:human.
+   hold, clears the assignee, reopens the bead and labels it needs-human.
    Returns the `parse-release` map. Only on :released does it then, with raw
    bd, create the human gate (`bd gate create --type human`; bops has no gate
-   command in contract 1) and add the PROCESS.md `needs-human` label, which
-   scripts/bd-lint-claim.sh row 8 checks. :lost and :refused write nothing.
+   command in contract 1). :lost and :refused write nothing.
    Throws ex-info \"bops release could not run\" on exit 1 or 2, and bd's
-   ex-info if a gate or label write fails after the release."
+   ex-info if the gate write fails after the release."
   [cfg id reason]
   (let [result (owned! cfg "release" id "--reason" "human")]
     (when (= :released (:outcome result))
-      (bd "gate" "create" "--type" "human" "--blocks" id "--reason" reason)
-      (bd "label" "add" id "needs-human"))
+      (bd "gate" "create" "--type" "human" "--blocks" id "--reason" reason))
     result))
 
 (defn close!

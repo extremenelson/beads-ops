@@ -32,11 +32,11 @@ There is no Stop hook yet, because `bops sync` runs a fetch, pull and push and i
 
 ## Autonomous dispatch
 
-Upstream ships `agents/task-agent.md` (ready → claim → execute → close loop). To run it under this process, filter `needs-human` and machine labels before dispatch:
+Upstream ships `agents/task-agent.md` (ready → claim → execute → close loop). To run it under this process, filter `needs-human` (and the legacy `needs:human` until bops v0.2.0, SPEC §3.1) and machine labels before dispatch:
 
 ```bash
 bd ready --json \
- | jq -r --arg m "$(hostname -s)" '.[] | select((.labels // []) | index("needs-human") | not)
+ | jq -r --arg m "$(hostname -s)" '.[] | select((.labels // []) | (index("needs-human") or index("needs:human")) | not)
      | select(((.labels // []) | map(select(startswith("gpu-") or startswith("host-"))) | length == 0)
               or ((.labels // []) | index($m)))
      | .id' \

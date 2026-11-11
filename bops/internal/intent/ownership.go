@@ -1009,7 +1009,7 @@ func (e *Env) releaseDisplay(ctx context.Context, id, reason string, publish boo
 			return err
 		}
 	}
-	label := map[string]string{"human": "needs:human", "scope": "bops:hold", "abandoned": "bops:hold", "done": "bops:landing"}[reason]
+	label := map[string]string{"human": LabelNeedsHuman, "scope": "bops:hold", "abandoned": "bops:hold", "done": "bops:landing"}[reason]
 	if label != "" {
 		if _, err := e.BD.Run(ctx, "label", "add", id, label); err != nil {
 			return err
