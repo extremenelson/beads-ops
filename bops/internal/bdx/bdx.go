@@ -11,7 +11,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -38,6 +40,7 @@ func (e Exec) Run(ctx context.Context, args ...string) ([]byte, error) {
 		return nil, ErrNotFound
 	}
 	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Env = GitEnv(os.Environ())
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
@@ -53,6 +56,51 @@ func (e Exec) Run(ctx context.Context, args ...string) ([]byte, error) {
 		return out.Bytes(), fmt.Errorf("bd %s: %w: %s", strings.Join(args, " "), err, msg)
 	}
 	return out.Bytes(), nil
+}
+
+// foregroundMaintenance keeps git's automatic maintenance from detaching.
+// bd syncs through a git remote cache inside the Dolt database, and each
+// fetch into it starts `git maintenance run --auto`, which by default
+// detaches and can run `git repack -d`. A detached repack deletes packs
+// while the next bd command's `git cat-file` reads them, and Dolt then fails
+// with "packfile ... index unavailable" (bops-3tm). In the foreground the
+// repack finishes before bd exits. maintenance.autoDetach is git >= 2.48;
+// older git reads gc.autoDetach, which the newer key falls back to.
+var foregroundMaintenance = [][2]string{
+	{"maintenance.autoDetach", "false"},
+	{"gc.autoDetach", "false"},
+}
+
+// GitEnv returns env with foregroundMaintenance added as GIT_CONFIG_*
+// entries, after any the caller already set. An unreadable GIT_CONFIG_COUNT
+// is left as it is: git refuses it either way, and says why.
+func GitEnv(env []string) []string {
+	n, at := 0, -1
+	for i, kv := range env {
+		if v, ok := strings.CutPrefix(kv, "GIT_CONFIG_COUNT="); ok {
+			at = i
+			if v == "" {
+				n = 0
+				continue
+			}
+			c, err := strconv.Atoi(v)
+			if err != nil || c < 0 {
+				return env
+			}
+			n = c
+		}
+	}
+	out := make([]string, 0, len(env)+1+2*len(foregroundMaintenance))
+	for i, kv := range env {
+		if i != at {
+			out = append(out, kv)
+		}
+	}
+	for _, kv := range foregroundMaintenance {
+		out = append(out, fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", n, kv[0]), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", n, kv[1]))
+		n++
+	}
+	return append(out, fmt.Sprintf("GIT_CONFIG_COUNT=%d", n))
 }
 
 // Fake replays canned responses keyed by the joined argument string.
