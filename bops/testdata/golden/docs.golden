@@ -311,6 +311,10 @@ Output:
 
 Orient a fresh agent session
 
+| Arg | Type | Default | Doc |
+|---|---|---|---|
+| `--hook-json` | bool | `false` | Print the document as Claude Code SessionStart hook output ({hookSpecificOutput:{hookEventName,additionalContext}}) and always exit 0, so the harness injects it. |
+
 Wraps: `sync --no-push`, `stale (stale_minutes; count, all machines)`, `next (count of workable)`, `bd prime --mcp --max-memory-chars 600 (capped at 3000 bytes)`.
 
 Output:

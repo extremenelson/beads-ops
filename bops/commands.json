@@ -139,7 +139,7 @@
       "name": "session-start",
       "intent": "Orient a fresh agent session",
       "kind": "read+sync",
-      "args": {},
+      "args": { "hook-json": { "type": "bool", "default": false, "doc": "Print the document as Claude Code SessionStart hook output ({hookSpecificOutput:{hookEventName,additionalContext}}) and always exit 0, so the harness injects it." } },
       "wraps": ["sync --no-push", "stale (stale_minutes; count, all machines)", "next (count of workable)", "bd prime --mcp --max-memory-chars 600 (capped at 3000 bytes)"],
       "output": { "mine": "string[]", "lost_claims": "string[]", "stranded_holds": "string[]", "stale": "int", "ready_count": "int", "synced": "bool", "prime": "string", "warnings": "string[]" },
       "surfaces": { "cc": ["hook:SessionStart"], "codex": ["hook:SessionStart"], "clj": "fn" }

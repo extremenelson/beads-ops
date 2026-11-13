@@ -1,11 +1,11 @@
 {
-  "_comment": "Hooks for the bops loop; use in place of settings.json. `bops session-start` pulls (no push), then prints one document: the beads this worktree holds, lost and stranded claims, the stale count, the workable count and bd's minimal prime (about 2 kB, 3-4 s). It replaces upstream's SessionStart `bd prime` hook, so remove that one if `bd setup claude` installed it; keep upstream's PreCompact `bd prime`. `|| true` keeps a failed sync from hiding the document, which then says ok:false. There is deliberately no Stop hook: a full `bops sync` measured about 3 s and pushes the ledger (2026-11-10), and Stop runs after every reply. The skill tells the agent to run `bops sync` before stopping instead.",
+  "_comment": "Hooks for the bops loop; use in place of settings.json. `bops session-start` pulls (no push), then prints one document: the beads this worktree holds, lost and stranded claims, the stale count, the workable count and bd's minimal prime (about 2 kB, 3-4 s). It replaces upstream's SessionStart `bd prime` hook, so remove that one if `bd setup claude` installed it; keep upstream's PreCompact `bd prime`. `--hook-json` wraps the document in Claude Code's hook envelope (hookSpecificOutput.additionalContext); bare JSON on stdout is parsed as hook control and injects nothing. It always exits 0, so a failed sync still shows the document, which then says ok:false; `|| true` covers a missing binary. There is deliberately no Stop hook: a full `bops sync` measured about 3 s and pushes the ledger (2026-11-10), and Stop runs after every reply. The skill tells the agent to run `bops sync` before stopping instead.",
   "hooks": {
     "SessionStart": [
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "bops session-start || true" }
+          { "type": "command", "command": "bops session-start --hook-json || true" }
         ]
       }
     ]

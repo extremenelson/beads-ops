@@ -525,3 +525,47 @@ func TestManifestArgsMatchFlags(t *testing.T) {
 		t.Errorf("only %d commands checked", checked)
 	}
 }
+
+func TestEmitHookEnvelope(t *testing.T) {
+	m, err := manifest.Parse(bops.ManifestJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		result *intent.SessionStartOut
+		err    error
+		ok     string
+	}{
+		{"synced", &intent.SessionStartOut{Mine: []string{"x-1"}, Synced: true, Prime: "# Beads\n\nStart: ready"}, nil, `"ok": true`},
+		{"failed sync still exits 0", &intent.SessionStartOut{Mine: []string{"x-1"}, Prime: "# Beads"}, errors.New("sync failed"), `"ok": false`},
+		{"no result", nil, errors.New("no repo"), `"ok": false`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, stderr strings.Builder
+			if code := emitHook(m, "session-start", "SessionStart", tc.result, tc.err, &out, &stderr); code != exitVerdict {
+				t.Fatalf("exit %d, want 0: Claude Code drops stdout on any other code", code)
+			}
+			var got struct {
+				H struct {
+					Event   string `json:"hookEventName"`
+					Context string `json:"additionalContext"`
+				} `json:"hookSpecificOutput"`
+			}
+			if err := json.Unmarshal([]byte(out.String()), &got); err != nil {
+				t.Fatalf("%v: %s", err, out.String())
+			}
+			if got.H.Event != "SessionStart" || !strings.Contains(got.H.Context, tc.ok) {
+				t.Errorf("envelope = %+v", got.H)
+			}
+			if tc.result != nil {
+				if !strings.Contains(got.H.Context, `"x-1"`) || !strings.HasSuffix(got.H.Context, tc.result.Prime) {
+					t.Errorf("context must hold the document and end with the raw prime: %q", got.H.Context)
+				}
+				if strings.Contains(got.H.Context, `"prime"`) {
+					t.Errorf("prime must not be repeated as an escaped field: %q", got.H.Context)
+				}
+			}
+		})
+	}
+}
