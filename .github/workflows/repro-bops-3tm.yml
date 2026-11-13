@@ -1,0 +1,79 @@
+# TEMPORARY (bops-3tm): reproduce the flaky replicas failure on the real
+# runner with git tracing. Runs only on pushes to work/bops-3tm. Remove this
+# file before the bead's PR.
+name: repro-bops-3tm
+on:
+  push:
+    branches: [work/bops-3tm]
+jobs:
+  race:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        attempt: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    defaults: { run: { working-directory: bops } }
+    env:
+      BD_VERSION: 1.3.4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: bops/go.mod }
+      - name: Install bd ${{ env.BD_VERSION }}, verified against its checksums
+        working-directory: ${{ runner.temp }}
+        run: |
+          base="https://github.com/gastownhall/beads/releases/download/v${BD_VERSION}"
+          tarball="beads_${BD_VERSION}_linux_amd64.tar.gz"
+          curl -fsSLO "$base/$tarball"
+          curl -fsSLO "$base/checksums.txt"
+          grep " $tarball\$" checksums.txt | sha256sum -c -
+          tar xzf "$tarball" bd
+          sudo install bd /usr/local/bin/bd
+          bd version
+          git --version
+      - name: Put a tracing git wrapper first on PATH
+        working-directory: ${{ runner.temp }}
+        run: |
+          real=$(command -v git)
+          logs="$RUNNER_TEMP/gitlogs"
+          mkdir -p shim "$logs/trace2"
+          cat > shim/git <<EOF
+          #!/usr/bin/env bash
+          # fetch: trace2 events for fetch and every child (maintenance, repack).
+          # cat-file: log failures only, with a timestamp.
+          case "\$1" in
+            fetch)
+              GIT_TRACE2_EVENT="$logs/trace2/fetch-\$\$.json" exec "$real" "\$@" ;;
+            cat-file)
+              err=\$(mktemp)
+              "$real" "\$@" 2>"\$err"; rc=\$?
+              if [ \$rc -ne 0 ] || [ -s "\$err" ]; then
+                { date -u +%Y-%m-%dT%H:%M:%S.%NZ; echo "pid=\$\$ rc=\$rc cwd=\$PWD args=\$*"; cat "\$err"; ls -la objects/pack 2>/dev/null || ls -la "\$($real rev-parse --git-dir 2>/dev/null)/objects/pack" 2>/dev/null; echo; } >> "$logs/catfile-failures.log"
+              fi
+              cat "\$err" >&2; rm -f "\$err"; exit \$rc ;;
+            *) exec "$real" "\$@" ;;
+          esac
+          EOF
+          chmod +x shim/git
+          echo "$RUNNER_TEMP/shim" >> "$GITHUB_PATH"
+      - name: TestReplicaRaceSharedActor, attempt ${{ matrix.attempt }}
+        env:
+          BOPS_INTEGRATION: "1"
+        run: |
+          command -v git
+          go test -v -count=1 -timeout 40m -run '^TestReplicaRaceSharedActor$' ./cmd/bops
+      - name: Upload git logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitlogs-${{ matrix.attempt }}
+          path: ${{ runner.temp }}/gitlogs
+          retention-days: 7
+      - name: Summarise git logs (always)
+        if: always()
+        working-directory: ${{ runner.temp }}
+        run: |
+          ls gitlogs/trace2 | wc -l
+          test -f gitlogs/catfile-failures.log && head -c 4000 gitlogs/catfile-failures.log || echo "no cat-file failures"
+          grep -h -o '"event":"child_start"[^}]*"argv":\[[^]]*\]' gitlogs/trace2/*.json | grep -o '"argv":\[[^]]*\]' | sort | uniq -c | sort -rn | head
