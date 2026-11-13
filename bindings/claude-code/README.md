@@ -5,7 +5,7 @@
 | 1 Session start | `settings.json` `SessionStart` hooks: `bd sync` → `bd prime` → `bd gate check` → `bd list --status in_progress --json` | SessionStart/PreCompact shapes match upstream `plugins/beads/.claude-plugin/plugin.json`. The added commands are plain shell. |
 | 2 Claim | `CLAUDE.md.snippet` policy + `bdclaim` alias through `bd-lint-claim.sh` | Policy text only; relies on the model following it. The lint itself is tested against a stub `bd`. |
 | 3 Handoff note | `CLAUDE.md.snippet` policy; `PreCompact` re-primes but cannot write notes for you | Policy text only. |
-| 4 Stop | `settings.json` `Stop` hook runs `bd sync` | **Hook name unverified** against current Claude Code — check `claude --help` / hooks docs; `SessionEnd` may be the right event on your version. |
+| 4 Stop | `settings.json` `Stop` hook runs `bd sync` | `Stop` is a Claude Code hook event, seen firing on this maintainer's sessions (2026-11). It runs after **every** reply, not once per session, so this costs one `bd sync` per turn; use `SessionEnd` instead if you only want it at exit. |
 
 ## Install
 
@@ -28,7 +28,11 @@ mkdir -p .claude/skills && cp -R bindings/claude-code/skills/bops .claude/skills
 # use settings.bops.json in place of settings.json when merging into .claude/settings.json
 ```
 
-There is no Stop hook yet, because `bops sync` runs a fetch, pull and push and its cost on every turn has not been measured. The skill tells the agent to run it before stopping.
+`bops session-start --hook-json` replaces upstream's SessionStart `bd prime` hook (remove that one if `bd setup claude` installed it; keep the PreCompact one). It prints what this worktree holds, lost and stranded claims, the stale and workable counts and a trimmed `bd prime`, wrapped in Claude Code's hook envelope, and always exits 0. This repo uses the same hook in its own [`.claude/settings.json`](../../.claude/settings.json).
+
+There is deliberately no Stop hook: a full `bops sync` fetches, pulls and pushes, measured at about 3 s (2026-11-10), and Stop fires after every reply. The skill tells the agent to run `bops sync` before stopping instead.
+
+Before the first claim, run `bops doctor` on each machine ([how-to](../../docs/howto-claim-lock.md)). New to `bops`? The [tutorial](../../docs/tutorial-first-loop.md) runs the loop by hand first.
 
 ## Autonomous dispatch
 

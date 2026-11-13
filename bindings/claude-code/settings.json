@@ -1,5 +1,5 @@
 {
-  "_comment": "Merge into .claude/settings.json (project) or ~/.claude/settings.json (global). Upstream `bd setup claude` installs SessionStart+PreCompact running `bd prime`; this adds sync, gate check, and in_progress report. Verify the `Stop` hook name against your Claude Code version.",
+  "_comment": "Merge into .claude/settings.json (project) or ~/.claude/settings.json (global). Upstream `bd setup claude` installs SessionStart+PreCompact running `bd prime`; this adds sync, gate check, and in_progress report. The `Stop` hook runs after every reply, not once per session; move it to `SessionEnd` if one sync per session is enough.",
   "hooks": {
     "SessionStart": [
       {
