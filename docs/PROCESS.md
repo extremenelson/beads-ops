@@ -41,7 +41,7 @@ bd list --status in_progress --json   # what was I (or another agent) in the mid
 bd ready --json                       # current ready front
 ```
 
-On a `bops` ledger, `bops session-start` does the pull and the reports in one call, and is what the Claude Code hook runs ([`settings.bops.json`](../bindings/claude-code/settings.bops.json)): `mine` (what this worktree holds), `lost_claims`, `stranded_holds`, the `stale` count, `ready_count` and bd's minimal prime. It does not run `bd gate check`. A failed sync still prints the document, with `ok:false`.
+On a `bops` ledger, `bops session-start` does the pull and the reports in one call, and is what the Claude Code hook runs as `bops session-start --hook-json`, which wraps the document in the hook envelope Claude Code injects ([`settings.bops.json`](../bindings/claude-code/settings.bops.json)): `mine` (what this worktree holds), `lost_claims`, `stranded_holds`, the `stale` count, `ready_count` and bd's minimal prime. It does not run `bd gate check`. A failed sync still prints the document, with `ok:false`.
 
 Then **report before acting**: "N in progress (ids), M ready. Last note on `<id>`: NEXT = …. Continue with that?" In an unattended run, skip the question, pick the highest-priority `in_progress` item assigned to this actor, else the highest-priority `ready` item, and say which you chose in your first line of output.
 

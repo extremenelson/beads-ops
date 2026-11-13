@@ -4,7 +4,7 @@
       {
         "hooks": [
           {
-            "command": "bops session-start || true",
+            "command": "bops session-start --hook-json || true",
             "type": "command"
           }
         ],

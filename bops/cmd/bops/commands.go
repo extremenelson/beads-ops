@@ -39,24 +39,9 @@ type verdict interface{ Negative() bool }
 // emit writes the result in JSON or key=value form and picks the exit code:
 // nil → 0; a negative verdict → 3 with ok:false; any error → 1.
 func emit(m *manifest.Manifest, cmd string, asJSON bool, result any, err error, stdout, stderr *os.File) int {
-	negative := false
-	if v, ok := result.(verdict); ok && err == nil {
-		negative = v.Negative()
-	}
-	env := envelope{Contract: m.Contract, Command: cmd, OK: err == nil && !negative}
-	if err != nil {
-		env.Error = lock.Scrub(err.Error())
-		env.Code = lock.CodeOf(err)
-		fmt.Fprintf(stderr, "bops %s: %s (did NOT run to completion)\n", cmd, env.Error)
-	}
+	env, negative := wrap(m, cmd, result, err, stderr)
 	if asJSON {
-		merged := map[string]any{}
-		eb, _ := json.Marshal(env)
-		_ = json.Unmarshal(eb, &merged)
-		if result != nil && !reflect.ValueOf(result).IsNil() {
-			rb, _ := json.Marshal(result)
-			_ = json.Unmarshal(rb, &merged)
-		}
+		merged := document(env, result)
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(merged)
@@ -72,6 +57,55 @@ func emit(m *manifest.Manifest, cmd string, asJSON bool, result any, err error, 
 	case negative:
 		return exitNegative
 	}
+	return exitVerdict
+}
+
+// wrap builds the envelope for a result and reports a failed run on stderr.
+func wrap(m *manifest.Manifest, cmd string, result any, err error, stderr io.Writer) (envelope, bool) {
+	negative := false
+	if v, ok := result.(verdict); ok && err == nil {
+		negative = v.Negative()
+	}
+	env := envelope{Contract: m.Contract, Command: cmd, OK: err == nil && !negative}
+	if err != nil {
+		env.Error = lock.Scrub(err.Error())
+		env.Code = lock.CodeOf(err)
+		fmt.Fprintf(stderr, "bops %s: %s (did NOT run to completion)\n", cmd, env.Error)
+	}
+	return env, negative
+}
+
+// document merges the envelope and the result into one JSON object.
+func document(env envelope, result any) map[string]any {
+	merged := map[string]any{}
+	eb, _ := json.Marshal(env)
+	_ = json.Unmarshal(eb, &merged)
+	if result != nil && !reflect.ValueOf(result).IsNil() {
+		rb, _ := json.Marshal(result)
+		_ = json.Unmarshal(rb, &merged)
+	}
+	return merged
+}
+
+// emitHook writes a SessionStart document as Claude Code hook output: the
+// harness parses JSON on stdout as hook control and injects only
+// hookSpecificOutput.additionalContext, so bare JSON reaches the model as
+// nothing. The context is the document without prime, as indented JSON, then
+// the prime text verbatim, which is markdown and reads badly as an escaped
+// string. It always exits 0, because Claude Code ignores stdout on any other
+// exit code; a failed sync shows as ok:false inside the context instead.
+func emitHook(m *manifest.Manifest, cmd, event string, result any, err error, stdout, stderr io.Writer) int {
+	env, _ := wrap(m, cmd, result, err, stderr)
+	doc := document(env, result)
+	prime, _ := doc["prime"].(string)
+	delete(doc, "prime")
+	b, _ := json.MarshalIndent(doc, "", "  ")
+	text := "bops " + cmd + ":\n" + string(b)
+	if prime != "" {
+		text += "\n\n" + prime
+	}
+	out := map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": event, "additionalContext": text}}
+	_ = json.NewEncoder(stdout).Encode(out)
 	return exitVerdict
 }
 
@@ -368,17 +402,23 @@ func cmdSync(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 func cmdSessionStart(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
 	fs := newFlagSet("session-start", stderr)
 	fs.Bool("json", false, "")
+	hook := fs.Bool("hook-json", false, "print the document as Claude Code SessionStart hook output")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
-		fmt.Fprintln(stderr, "usage: bops session-start")
+		fmt.Fprintln(stderr, "usage: bops session-start [--hook-json]")
 		return exitUsage
+	}
+	show := func(out *intent.SessionStartOut, err error) int {
+		if *hook {
+			return emitHook(m, "session-start", "SessionStart", out, err, stdout, stderr)
+		}
+		return emit(m, "session-start", asJSON, out, err, stdout, stderr)
 	}
 	env, store, err := newEnv(runstate.Read)
 	if err != nil {
-		return emit(m, "session-start", asJSON, nil, err, stdout, stderr)
+		return show(nil, err)
 	}
 	defer store.Close()
-	out, err := intent.SessionStart(ctx, env)
-	return emit(m, "session-start", asJSON, out, err, stdout, stderr)
+	return show(intent.SessionStart(ctx, env))
 }
 
 // worktreeRoot is the top of dir's git worktree, where .bops.json lives, or
