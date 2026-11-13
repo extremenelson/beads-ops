@@ -151,8 +151,21 @@ func TestLiveClaimAndRelease(t *testing.T) {
 				t.Fatalf("after claim: status=%s assignee=%q labels=%v", got.Status, got.Assignee, got.Labels)
 			}
 
-			if _, err := intent.Release(ctx, env, id, tc.reason); err != nil {
-				t.Fatalf("release: %v", err)
+			if tc.reason == "done" {
+				// Real bd: with nothing landed, done is refused and the claim stays.
+				out, err := intent.Release(ctx, env, id, "done")
+				if err != nil || out.Outcome != intent.OutcomeRefused {
+					t.Fatalf("release done before land: %+v, %v", out, err)
+				}
+				if got := liveShow(t, env, id); got.Assignee == "" || !got.HasLabel("run:ITRUN") || got.HasLabel("bops:landing") {
+					t.Fatalf("a refused release must leave the claim: assignee=%q labels=%v", got.Assignee, got.Labels)
+				}
+				if l, err := intent.Land(ctx, env, id, intent.LandOpts{Ref: "https://github.com/o/r/pull/1", SHA: "abc1234"}); err != nil || l.Outcome != intent.OutcomeLanded {
+					t.Fatalf("land: %+v, %v", l, err)
+				}
+			}
+			if out, err := intent.Release(ctx, env, id, tc.reason); err != nil || out.Outcome != intent.OutcomeReleased {
+				t.Fatalf("release: %+v, %v", out, err)
 			}
 			got = liveShow(t, env, id)
 			if got.Status != tc.status {
