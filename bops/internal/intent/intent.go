@@ -646,6 +646,14 @@ func (e *Env) sweepOne(ctx context.Context, c sweepCandidate, refs map[string]lo
 	}
 	out.Closed = append(out.Closed, id)
 	e.event("sweep", id, "close", "closed", "", nil)
+	// bops:landing displays the landing ref, which is gone now (SPEC §3.1).
+	// The close is the outcome that matters, so a label that stays is a
+	// warning with the command that removes it, never an unclosed bead.
+	if c.issue.HasLabel("bops:landing") {
+		if _, err := e.BD.Run(ctx, "label", "remove", id, "bops:landing"); err != nil {
+			out.Warnings = append(out.Warnings, fmt.Sprintf("%s closed, but its bops:landing label stayed: run `bd label remove %s bops:landing`: %s", id, id, lock.Scrub(err.Error())))
+		}
+	}
 	return nil
 }
 

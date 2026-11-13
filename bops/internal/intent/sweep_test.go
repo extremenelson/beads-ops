@@ -91,6 +91,61 @@ func TestSweepClosesOnlyMergedAndSortsTheRest(t *testing.T) {
 	}
 }
 
+// SPEC §3.1: bops:landing displays a landing ref, so sweep removes it once
+// the bead is closed and the ref is gone (bops-oy9.4).
+func TestSweepRemovesTheLandingLabelAfterClosing(t *testing.T) {
+	b, f := sweepFixture()
+	b.Responses["label remove x-merged bops:landing"] = []byte(``)
+	out, err := intent.Sweep(context.Background(), sweepEnv(t, b), f, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(out.Closed, []string{"x-merged"}) || len(out.Warnings) != 0 {
+		t.Fatalf("%+v", out)
+	}
+	closeAt, removeAt := -1, -1
+	for i, c := range b.Calls {
+		switch strings.Join(c, " ") {
+		case "close x-merged --reason merged via https://github.com/o/r/pull/1 (" + sha + ")":
+			closeAt = i
+		case "label remove x-merged bops:landing":
+			removeAt = i
+		}
+	}
+	if closeAt < 0 || removeAt < 0 || removeAt < closeAt {
+		t.Errorf("want bd close, then bd label remove bops:landing; calls = %v", b.Calls)
+	}
+}
+
+// The close is what matters: a label that will not come off is a warning,
+// and the bead still counts as closed.
+func TestSweepWarnsWhenTheLandingLabelStays(t *testing.T) {
+	b, f := sweepFixture() // no response for the label removal: bd fails it
+	out, err := intent.Sweep(context.Background(), sweepEnv(t, b), f, false)
+	if err != nil {
+		t.Fatalf("a label removal failure must not fail the sweep: %v", err)
+	}
+	if !slices.Equal(out.Closed, []string{"x-merged"}) {
+		t.Errorf("closed = %v", out.Closed)
+	}
+	if len(out.Warnings) != 1 || !strings.Contains(out.Warnings[0], "x-merged") || !strings.Contains(out.Warnings[0], "bd label remove x-merged bops:landing") {
+		t.Errorf("warnings = %q, want one naming the bead and the command to rerun", out.Warnings)
+	}
+}
+
+// A dry run never touches labels.
+func TestSweepDryRunLeavesTheLandingLabel(t *testing.T) {
+	b, f := sweepFixture()
+	if _, err := intent.Sweep(context.Background(), sweepEnv(t, b), f, true); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range b.Calls {
+		if c[0] == "label" {
+			t.Errorf("dry run wrote a label: %v", c)
+		}
+	}
+}
+
 func TestSweepUsesTheLatestLanding(t *testing.T) {
 	list := `[{"id":"x-1","status":"in_progress","metadata":{"bops":{"landed":[{"ref":"` + refMerged + `","sha":"` + sha + `"},{"ref":"` + refOpen + `","sha":"` + sha + `"}]}},"created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}]`
 	b := &bdx.Fake{Responses: map[string][]byte{"dolt pull": []byte(``), "list --status in_progress --limit 0 --json": []byte(list)}}
@@ -162,15 +217,15 @@ func TestLiveSweep(t *testing.T) {
 	if err != nil || !slices.Contains(dry.WouldClose, id) {
 		t.Fatalf("dry run: %+v, %v", dry, err)
 	}
-	if got := liveShow(t, env, id); got.Status != "in_progress" {
-		t.Errorf("dry run changed status to %s", got.Status)
+	if got := liveShow(t, env, id); got.Status != "in_progress" || !got.HasLabel("bops:landing") {
+		t.Errorf("after the dry run: status %s, labels %v; want in_progress with bops:landing", got.Status, got.Labels)
 	}
 	out, err = intent.Sweep(ctx, env, f, false)
-	if err != nil || !slices.Contains(out.Closed, id) {
+	if err != nil || !slices.Contains(out.Closed, id) || len(out.Warnings) != 0 {
 		t.Fatalf("sweep: %+v, %v", out, err)
 	}
-	if got := liveShow(t, env, id); got.Status != "closed" {
-		t.Errorf("status = %s, want closed", got.Status)
+	if got := liveShow(t, env, id); got.Status != "closed" || got.HasLabel("bops:landing") {
+		t.Errorf("status %s, labels %v; want closed without bops:landing", got.Status, got.Labels)
 	}
 }
 
