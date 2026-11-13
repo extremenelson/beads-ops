@@ -4,14 +4,15 @@
 
 Beads gives agents a dependency-aware, git-synced task memory. It deliberately stops at the mechanics (`bd ready`, `bd prime`, Dolt sync) and leaves the *policy* open: who closes epics, what a handoff note must contain, when a bead is actually workable, how sync runs on a laptop that's sometimes offline. This repo fills that gap with opinionated, tested defaults you can adopt wholesale or cherry-pick.
 
-> Status: **v0.2, early.** Used daily by the maintainer across Claude Code, Hermes, and a Clojure orchestrator. Field names and `bd` behaviors are verified against upstream at the commit pinned in [`vendor/beads-skill/SOURCE.md`](vendor/beads-skill/SOURCE.md). Requires `bd` ≥ 1.3 (CI tests 1.3.4); pin one `bd` version per shared ledger.
+> Status: **early.** `bops` v0.1.0 (contract 1) shipped 2026-11-12; the process docs are at v0.2. Used daily by the maintainer across Claude Code, Hermes, and a Clojure orchestrator. Field names and `bd` behaviors are verified against upstream at the commit pinned in [`vendor/beads-skill/SOURCE.md`](vendor/beads-skill/SOURCE.md). Requires `bd` ≥ 1.3 (CI tests 1.3.4); pin one `bd` version per shared ledger.
 
 ## What's here
 
 | Path | What it is |
 |---|---|
 | [`SPEC.md`](SPEC.md) | **`bops` contract 1** — the intent-level command layer over `bd`: glossary, ledger state conventions, the claim lock, command manifest, outcomes and exit codes, `next` ordering, lint rules, forge adapter, generated bindings |
-| [`bops/`](bops/) | Go reference implementation of `SPEC.md`: `session-start next claim note release land sweep sync stale lint version` (`gates deps` are specified, not built); `bops/commands.json` is the manifest every binding is generated from; [`docs/COMMANDS.md`](docs/COMMANDS.md) is its generated reference |
+| [`bops/`](bops/) | Go reference implementation of `SPEC.md`: `session-start next claim note release land sweep sync stale lint doctor version` (`gates deps` are specified, not built); `bops/commands.json` is the manifest every binding is generated from; [`docs/COMMANDS.md`](docs/COMMANDS.md) is its generated reference |
+| [`docs/`](docs/README.md) | **Start here.** Index of everything below, plus a [tutorial](docs/tutorial-first-loop.md) (one bead through the loop in ten minutes), [how to set up the claim lock](docs/howto-claim-lock.md), the [configuration reference](docs/reference/configuration.md) and the [architecture](docs/ARCHITECTURE.md) |
 | [`docs/adr/`](docs/adr/) | Architecture decisions with ranked options and switching conditions: [0001](docs/adr/0001-derived-read-model-not-write-path.md) derived read model, never a write path; [0002](docs/adr/0002-go-reference-implementation.md) manifest-driven CLI, Go reference implementation |
 | [`docs/plan/`](docs/plan/) | One file per milestone; [`v0.1.0.md`](docs/plan/v0.1.0.md) is the epic + 14 tasks that [`scripts/plan/v0.1.0-beads.sh`](scripts/plan/v0.1.0-beads.sh) creates in the ledger |
 | [`docs/research/`](docs/research/) | Dated research snapshots behind the ADRs; each carries a "status as of" header |
@@ -32,9 +33,11 @@ bd init                                   # or: bd dolt remote list  (verify ori
 bd setup claude                           # upstream hooks + CLAUDE.md section
 
 # 1. install bops
-go install github.com/extremenelson/beads-ops/bops/cmd/bops@v0.1.0   # once the bops/v0.1.0 tag exists
-#    until then, from a clone of this repo:  (cd bops && go install ./cmd/bops)
+go install github.com/extremenelson/beads-ops/bops/cmd/bops@v0.1.0
+#    or the latest main, from a clone of this repo:  (cd bops && go install ./cmd/bops)
 bops version                              # prints contract 1 and the bd it found
+bops doctor                               # can the claim lock work against origin? exit 0 = yes
+#    one machine, no shared remote: echo '{"lock":{"mode":"none"}}' > .bops.json
 
 # 2. adopt the process
 git clone https://github.com/extremenelson/beads-ops ../beads-ops
@@ -47,8 +50,12 @@ cat ../beads-ops/bindings/claude-code/CLAUDE.md.snippet >> CLAUDE.md
 bops next                                 # ranked, workable candidates
 bops claim bd-a1b2 && echo mine           # exit 0 claimed or held; exit 3 lost or refused: pick another
 echo "NEXT: write the parser test" | bops note bd-a1b2
+bops land bd-a1b2 --ref <pr-url> --sha <sha>   # record where the work went; never merges
 bops release bd-a1b2 --reason done        # or blocked|scope|abandoned|human
+bops sweep --dry-run=false                # closes landed beads once their PRs merge
 ```
+
+New to `bops`? The [tutorial](docs/tutorial-first-loop.md) walks this loop on a scratch ledger with real output at every step.
 
 `bops claim` takes a bead through a git ref on your remote (`refs/bops/claims/<id>`), so two machines can never both hold it. `bd update --claim` cannot promise that across machines. Claims made with raw `bd` bypass the lock. The Kestrel binding claims through `bops claim`; `/bead-loop` still claims through raw `bd` until bead `bops-t8j` moves it. When something gets stuck, [`PROCESS.md` §12](docs/PROCESS.md#12-recovery-runbook-bops-ledgers) is the runbook.
 

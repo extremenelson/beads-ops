@@ -17,7 +17,7 @@ Anything beyond these four (slash commands, autonomous loops, worktree dispatch)
 
 | Harness | Status | Covers |
 |---|---|---|
-| [`claude-code/`](claude-code/) | **Reference.** Maintainer uses daily | 1 (hooks), 2–4 (CLAUDE.md policy + lint alias) |
+| [`claude-code/`](claude-code/) | **Reference.** Maintainer uses daily, including the `bops` variant (`skills/bops/`, `settings.bops.json`) in this repo | 1 (hooks), 2–4 (CLAUDE.md policy + lint alias, or the `bops` skill) |
 | [`hermes/`](hermes/) | Maintainer's stack; hook surface unverified | 1 via AGENTS.md, 2–4 via policy block |
 | [`kestrel/`](kestrel/) | Maintainer's Clojure orchestrator; draft, not yet run against live `bd` or `bops`; claims, lands, releases and syncs through `bops` | 1–4 programmatically |
 | Aider, Cursor, Codex, OpenCode, Gemini CLI, Copilot CLI, Kiro… | **Wanted** | `bd setup <harness>` gives you point 1; the rest is a policy block in the file that harness reads |
@@ -31,3 +31,5 @@ Anything beyond these four (slash commands, autonomous loops, worktree dispatch)
 5. `README.md` in your directory: which of the four points are covered, by what mechanism, and what you have actually run.
 
 Open a PR. Unverified is fine as long as it's labeled.
+
+If your harness can run shell commands, prefer driving the contract through `bops` (`session-start`, `next`, `claim`, `note`, `land`, `release`, `sync`) over raw `bd`: the readiness rules and the cross-machine claim lock then come from one implementation instead of your policy text. Read its JSON and branch on the exit code (0 go on, 3 pick another bead, 1 stop). The [command reference](../docs/COMMANDS.md) lists every output field; the [tutorial](../docs/tutorial-first-loop.md) shows the loop end to end.
