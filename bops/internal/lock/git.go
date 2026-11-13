@@ -13,6 +13,15 @@ import (
 // the ref, so a timeout cannot produce a wrong answer.
 const callTimeout = 20 * time.Second
 
+// waitDelay bounds how long Run waits, after the deadline kills git, for git's
+// output pipes to close. git's ssh child inherits them and can outlive git by
+// minutes (ServerAliveInterval*ServerAliveCountMax), so without this a call cut
+// off at callTimeout could still block long after it.
+const waitDelay = 2 * time.Second
+
+// sshConnectTimeout keeps a silently dropped connect from using the whole call.
+const sshConnectTimeout = "10"
+
 // Cmd is one git invocation.
 type Cmd struct {
 	Args  []string
@@ -50,6 +59,7 @@ func (e Exec) Run(ctx context.Context, c Cmd) (Output, error) {
 	cmd.Stdin = strings.NewReader(c.Stdin)
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
+	cmd.WaitDelay = waitDelay
 	err := cmd.Run()
 	return Output{Stdout: out.String(), Stderr: errb.String()}, err
 }
@@ -74,9 +84,10 @@ func (e Exec) env(ctx context.Context, c Cmd) []string {
 	return vars
 }
 
-// sshCommand adds BatchMode to the command git would run, because setting
-// GIT_SSH_COMMAND outright replaces core.sshCommand (probed). A wrapper that
-// is not ssh may not accept the option, so it is left alone.
+// sshCommand adds BatchMode and ConnectTimeout to the command git would run,
+// because setting GIT_SSH_COMMAND outright replaces core.sshCommand (probed). An
+// option already present is left as the user set it. A wrapper that is not ssh
+// may not accept the options, so it is left alone.
 func sshCommand(getenv func(string) string, configured string) string {
 	base := getenv("GIT_SSH_COMMAND")
 	if base == "" && getenv("GIT_SSH") != "" {
@@ -89,12 +100,18 @@ func sshCommand(getenv func(string) string, configured string) string {
 		base = "ssh"
 	}
 	fields := strings.Fields(base)
-	if len(fields) == 0 || strings.Contains(base, "BatchMode") {
+	if len(fields) == 0 {
 		return base
 	}
 	program := fields[0][strings.LastIndexAny(fields[0], `/\`)+1:]
 	if program != "ssh" && program != "ssh.exe" {
 		return base
 	}
-	return base + " -o BatchMode=yes"
+	if !strings.Contains(base, "BatchMode") {
+		base += " -o BatchMode=yes"
+	}
+	if !strings.Contains(base, "ConnectTimeout") {
+		base += " -o ConnectTimeout=" + sshConnectTimeout
+	}
+	return base
 }

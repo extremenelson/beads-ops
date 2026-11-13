@@ -71,7 +71,7 @@ Inputs and identity:
 - A ref message is untrusted input. Unknown keys are ignored, size is limited, and a malformed `at` is unknown, which never counts as stale.
 - `actor` is unauthenticated free text, and anyone with push access can write these refs. The actor check on `--resume` is a safety check, not authentication.
 - Claim resolves the lock remote's URL and compares it with the Dolt remote, normalizing scheme, the `git+` prefix, ssh and https spellings, and `.git`. A mismatch refuses with `remote_mismatch` and a missing lock remote with `no_origin` (the code keeps its name whatever the remote is called), because the lock must live beside the ledger. `bops doctor` checks the same remote.
-- Lock git calls set `GIT_TERMINAL_PROMPT=0`, and add SSH `BatchMode` by extending the resolved SSH command. Setting `GIT_SSH_COMMAND` outright would replace the user's `core.sshCommand` (probed).
+- Lock git calls set `GIT_TERMINAL_PROMPT=0`, and add SSH `BatchMode` by extending the resolved SSH command. Setting `GIT_SSH_COMMAND` outright would replace the user's `core.sshCommand` (probed). They also add `ConnectTimeout=10` unless one is already set. Each call is bounded by a 20 s deadline plus a 2 s `WaitDelay`: git's ssh child inherits its output pipes and can outlive a killed git by minutes, so without the delay the deadline did not bound the call (bops-ss6.27).
 
 Every lock push is `git push --porcelain --no-verify <remote> --force-with-lease=<ref>:<expected> <sha>:<ref>`, with an empty `<expected>` for create-only. `--no-verify` applies only to these pushes (D19). **Never pass `-f`: it cancels the lease, and a wrong lease then succeeds (measured).**
 

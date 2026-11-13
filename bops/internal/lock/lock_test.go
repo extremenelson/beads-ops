@@ -601,15 +601,43 @@ func TestStaleness(t *testing.T) {
 	}
 }
 
+// TestExecRunBoundedByWaitDelay stands in for git whose ssh child stalls: the
+// fake git leaves a grandchild holding stdout and stderr open after git itself
+// is killed. Run must still return within its timeout plus waitDelay, not when
+// the grandchild exits (bops-ss6.27).
+func TestExecRunBoundedByWaitDelay(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("needs sh")
+	}
+	bin := t.TempDir()
+	fake := "#!/bin/sh\nsleep 30 &\nsleep 30\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	const timeout = 200 * time.Millisecond
+	start := time.Now()
+	_, err := Exec{Dir: t.TempDir(), Timeout: timeout}.Run(ctx, Cmd{Args: []string{"status"}})
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("Run returned no error for a git killed at its deadline")
+	}
+	if limit := timeout + waitDelay + 3*time.Second; elapsed > limit {
+		t.Fatalf("Run took %v, want under %v", elapsed, limit)
+	}
+}
+
 func TestSSHCommand(t *testing.T) {
 	cases := []struct {
 		name, env, gitSSH, config, want string
 	}{
-		{"default", "", "", "", "ssh -o BatchMode=yes"},
-		{"config kept", "", "", "ssh -i ~/.ssh/work", "ssh -i ~/.ssh/work -o BatchMode=yes"},
-		{"env wins", "ssh -p 2222", "", "ssh -i x", "ssh -p 2222 -o BatchMode=yes"},
-		{"full path", "/usr/bin/ssh", "", "", "/usr/bin/ssh -o BatchMode=yes"},
-		{"already set", "ssh -o BatchMode=no", "", "", "ssh -o BatchMode=no"},
+		{"default", "", "", "", "ssh -o BatchMode=yes -o ConnectTimeout=10"},
+		{"config kept", "", "", "ssh -i ~/.ssh/work", "ssh -i ~/.ssh/work -o BatchMode=yes -o ConnectTimeout=10"},
+		{"env wins", "ssh -p 2222", "", "ssh -i x", "ssh -p 2222 -o BatchMode=yes -o ConnectTimeout=10"},
+		{"full path", "/usr/bin/ssh", "", "", "/usr/bin/ssh -o BatchMode=yes -o ConnectTimeout=10"},
+		{"batch already set", "ssh -o BatchMode=no", "", "", "ssh -o BatchMode=no -o ConnectTimeout=10"},
+		{"timeout already set", "ssh -o ConnectTimeout=30", "", "", "ssh -o ConnectTimeout=30 -o BatchMode=yes"},
+		{"both already set", "ssh -o BatchMode=yes -o ConnectTimeout=5", "", "", "ssh -o BatchMode=yes -o ConnectTimeout=5"},
 		{"wrapper left alone", "", "", "plink -batch", "plink -batch"},
 		{"GIT_SSH left alone", "", "/opt/wrap", "", ""},
 	}
