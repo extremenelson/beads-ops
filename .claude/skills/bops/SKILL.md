@@ -57,6 +57,7 @@ Do not close beads yourself. `bops sweep` previews which landed beads have merge
 ## When something goes wrong
 
 - **`refused`, `not held by this run`:** you are in the wrong directory, or another run owns the bead. Check `pwd` first.
+- **`release --reason done` is `refused` with `no land record`:** `bops land` has not succeeded for this bead. Fix and rerun `land`, then release again; you still hold the bead. If there is no PR to land, use `--reason scope` instead.
 - **`lost`:** someone else holds the bead now, and `holder` says who. Stop work on it and tell the person. A refused note's text is at `saved_to`.
 - **`sync` lists `lost_claims`:** those beads were taken over. Stop work on them.
 - **`unreachable` or `git_auth`:** `bops` could not reach `origin`. Follow `retry`, or run the credential command in `error`.

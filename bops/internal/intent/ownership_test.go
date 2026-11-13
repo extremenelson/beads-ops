@@ -913,6 +913,7 @@ func TestReleaseDoneKeepsTheRefAsLanding(t *testing.T) {
 	bd.add("x-1")
 	a := client(t, remote, "A", bd)
 	mustClaim(t, a, "x-1")
+	markLanded(a.bd.beads["x-1"])
 	if out, err := intent.Release(bg, a.env, "x-1", "done"); err != nil || out.Outcome != intent.OutcomeReleased {
 		t.Fatalf("%+v, %v", out, err)
 	}
@@ -1013,6 +1014,7 @@ func TestLandingRewriteFailureWritesNothing(t *testing.T) {
 	bd.add("x-1")
 	a := client(t, remote, "A", bd)
 	mustClaim(t, a, "x-1")
+	markLanded(a.bd.beads["x-1"])
 	before := len(bd.calls)
 	a.git.offline = true
 	out, err := intent.Release(bg, a.env, "x-1", "done")
@@ -1372,6 +1374,7 @@ func TestForceRefusals(t *testing.T) {
 	t.Run("landing", func(t *testing.T) {
 		a, b, _, _ := pair(t, "x-1")
 		mustClaim(t, a, "x-1")
+		markLanded(a.bd.beads["x-1"])
 		if out, err := intent.Release(bg, a.env, "x-1", "done"); err != nil || out.Outcome != intent.OutcomeReleased {
 			t.Fatal(out, err)
 		}
@@ -1524,6 +1527,7 @@ func TestResumeRefusals(t *testing.T) {
 	t.Run("another actor", func(t *testing.T) {
 		a, b, _, _ := pair(t, "x-1")
 		mustClaim(t, a, "x-1")
+		markLanded(a.bd.beads["x-1"])
 		if _, err := intent.Release(bg, a.env, "x-1", "done"); err != nil {
 			t.Fatal(err)
 		}
@@ -1555,6 +1559,7 @@ func TestResumeRefusals(t *testing.T) {
 func TestSecondMachineCannotDisplaceAResumedHolder(t *testing.T) {
 	a, b, _, bdB := pair(t, "x-1")
 	mustClaim(t, a, "x-1")
+	markLanded(a.bd.beads["x-1"])
 	if _, err := intent.Release(bg, a.env, "x-1", "done"); err != nil {
 		t.Fatal(err)
 	}
@@ -1578,6 +1583,7 @@ func TestFailedLandingLabelStillRefusesForce(t *testing.T) {
 		}
 		return nil
 	}
+	markLanded(a.bd.beads["x-1"])
 	rel, err := intent.Release(bg, a.env, "x-1", "done")
 	if err != nil || !rel.LedgerPending {
 		t.Fatalf("%+v, %v", rel, err)
@@ -1768,6 +1774,7 @@ func TestSweepLeavesALandingRefFromAnotherRun(t *testing.T) {
 	if out, err := intent.ClaimResume(bg, b.env, "x-1"); err != nil || out.Outcome != intent.OutcomeClaimed {
 		t.Fatal(out, err)
 	}
+	markLanded(b.bd.beads["x-1"])
 	if out, err := intent.Release(bg, b.env, "x-1", "done"); err != nil || out.Outcome != intent.OutcomeReleased {
 		t.Fatal(out, err)
 	}
@@ -1871,5 +1878,56 @@ func TestFullLoopThroughRework(t *testing.T) {
 	out, err := intent.Sweep(bg, a.env, mergedForge{}, false)
 	if err != nil || strings.Join(out.Closed, ",") != "x-1" || n.Status != "closed" || liveSHA(t, a, "x-1") != "" {
 		t.Fatalf("%+v, %v, %+v", out, err, n)
+	}
+}
+
+// markLanded gives a fake bead the landed record `bops land` writes, so a done
+// release has evidence to point at.
+func markLanded(b *bead) {
+	b.Metadata = json.RawMessage(`{"bops":{"landed":[{"ref":"https://github.com/o/r/pull/1","sha":"abc1234","run":"R","at":"t"}]}}`)
+}
+
+// A done release with nothing landed would leave a landing that sweep skips,
+// stale ignores and next excludes, so it is refused before the ref changes.
+func TestReleaseDoneWithoutALandRecordIsRefused(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	before, calls := liveSHA(t, a, "x-1"), len(bd.calls)
+	out, err := intent.Release(bg, a.env, "x-1", "done")
+	if err != nil || out.Outcome != intent.OutcomeRefused || !out.Negative() || !strings.Contains(out.Detail, "bops land") || !strings.Contains(out.Detail, "--reason scope") {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	ref, err := a.env.Lock.Read(bg, "x-1")
+	if err != nil || ref == nil || ref.State != lock.StateHeld || ref.SHA != before {
+		t.Fatalf("the ref must be untouched: %+v, %v", ref, err)
+	}
+	for _, c := range bd.calls[calls:] {
+		if c[0] != "show" {
+			t.Errorf("only a read expected, got %v", c)
+		}
+	}
+	if _, ok := a.store.Entry("x-1"); !ok {
+		t.Error("the hold must survive, so the run can land and release again")
+	}
+	markLanded(bd.beads["x-1"])
+	if out, err := intent.Release(bg, a.env, "x-1", "done"); err != nil || out.Outcome != intent.OutcomeReleased {
+		t.Fatalf("after landing: %+v, %v", out, err)
+	}
+}
+
+// Metadata that cannot be read is an error, not permission to release done.
+func TestReleaseDoneWithMalformedLandRecordFails(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	bd.beads["x-1"].Metadata = json.RawMessage(`{"bops":{"landed":"nope"}}`)
+	if out, err := intent.Release(bg, a.env, "x-1", "done"); err == nil || out.Outcome == intent.OutcomeReleased {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if ref, err := a.env.Lock.Read(bg, "x-1"); err != nil || ref == nil || ref.State != lock.StateHeld {
+		t.Fatalf("the ref must be untouched: %+v, %v", ref, err)
 	}
 }

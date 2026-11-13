@@ -54,6 +54,7 @@ func staleWorld(t *testing.T) (a *rig, bd *fakeBD, now time.Time) {
 	at(a, old)
 	mustClaim(t, a, "x-here")
 	mustClaim(t, a, "x-land")
+	markLanded(a.bd.beads["x-land"])
 	if out, err := intent.Release(bg, a.env, "x-land", "done"); err != nil || out.Outcome != intent.OutcomeReleased {
 		t.Fatalf("release done: %+v, %v", out, err)
 	}

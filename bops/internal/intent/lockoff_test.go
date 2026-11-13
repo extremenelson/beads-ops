@@ -494,3 +494,19 @@ func TestLockOffWithADoltRemoteAFailedPublishStillFails(t *testing.T) {
 		t.Errorf("never pushed: %v", bd.calls)
 	}
 }
+
+func TestLockOffReleaseDoneWithoutALandRecordIsRefused(t *testing.T) {
+	bd := newBD()
+	bd.add("x-1")
+	r := lockOffRig(t, "A", bd)
+	if out, err := intent.Claim(bg, r.env, "x-1", false); err != nil || out.Outcome != intent.OutcomeClaimed {
+		t.Fatalf("claim: %+v, %v", out, err)
+	}
+	out, err := intent.Release(bg, r.env, "x-1", "done")
+	if err != nil || out.Outcome != intent.OutcomeRefused || !strings.Contains(out.Detail, "bops land") {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if b := bd.beads["x-1"]; b.Status != "in_progress" || b.Assignee == "" || slices.Contains(b.Labels, "bops:landing") {
+		t.Fatalf("the claim must be untouched: %+v", b)
+	}
+}

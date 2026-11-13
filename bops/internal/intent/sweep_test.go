@@ -173,3 +173,19 @@ func TestLiveSweep(t *testing.T) {
 		t.Errorf("status = %s, want closed", got.Status)
 	}
 }
+
+// A landing with no landed record has no PR to check. Sweep reports it under
+// unknown instead of skipping it, so it cannot sit unseen; an in-progress bead
+// that is not landing stays out of the report.
+func TestSweepReportsALandingWithNoLandRecord(t *testing.T) {
+	list := `[{"id":"x-orphan","status":"in_progress","labels":["bops:landing"],"created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"},` +
+		`{"id":"x-working","status":"in_progress","labels":["run:A"],"created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}]`
+	b := &bdx.Fake{Responses: map[string][]byte{"list --status in_progress --limit 0 --json": []byte(list)}}
+	out, err := intent.Sweep(context.Background(), sweepEnv(t, b), &fakeForge{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(out.Unknown, ",") != "x-orphan" || len(out.Pending) != 0 || len(out.WouldClose) != 0 {
+		t.Fatalf("%+v", out)
+	}
+}
