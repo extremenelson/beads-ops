@@ -83,22 +83,36 @@ The git remote that holds the claim refs. It must be the same repository as the 
 
 ## Validation
 
-`bops` never ignores a bad setting. An unknown key, a wrong type, or an out-of-range value makes every command exit 1 before it does anything, naming the file or variable at fault. The messages below are real output:
+`bops` never ignores a bad setting. An unknown key, a wrong type, or an out-of-range value makes every command exit 1 before it does anything, naming the file or variable at fault. The JSON result carries `"code": "bad_config"`, so a binding can tell a config mistake from an unreachable remote without parsing the message. The messages below are real output:
 
 ```console
 $ cat .bops.json
 {"stale_minute": 60}
 $ bops next
-bops next: config /path/to/repo/.bops.json: unknown key "stale_minute" (have: pool, caps, hold_minutes, stale_minutes, forge, lint.strict, lint.disable, note.require_next, lock.mode, lock.remote) (did NOT run to completion)
+bops next: bad_config: config /path/to/repo/.bops.json: unknown key "stale_minute" (have: pool, caps, hold_minutes, stale_minutes, forge, lint.strict, lint.disable, note.require_next, lock.mode, lock.remote) (did NOT run to completion)
 
 $ BOPS_STALE_MINUTES=0 bops next
-bops next: config BOPS_STALE_MINUTES: stale_minutes: want at least 1, got 0 (did NOT run to completion)
+bops next: bad_config: config BOPS_STALE_MINUTES: stale_minutes: want at least 1, got 0 (did NOT run to completion)
 
 $ cat ~/.config/bops/config.json
 {"lock":{"mode":"none"}}
 $ bops next
-bops next: config /home/you/.config/bops/config.json: lock.mode none is accepted only from .bops.json, the committed file every machine reads; set it there if this ledger is used on one machine (did NOT run to completion)
+bops next: bad_config: config /home/you/.config/bops/config.json: lock.mode none is accepted only from .bops.json, the committed file every machine reads; set it there if this ledger is used on one machine (did NOT run to completion)
 ```
+
+With `--json` (or when piped), the same failure is one document on stdout:
+
+```json
+{
+  "code": "bad_config",
+  "command": "next",
+  "contract": 1,
+  "error": "bad_config: config /path/to/repo/.bops.json: unknown key \"stale_minute\" (have: …)",
+  "ok": false
+}
+```
+
+`bad_config` is reported in the result only. It isn't written to `events.jsonl`, which records the steps of ownership commands, and a config error stops a command before its first step.
 
 Other rejected values: minute counts that aren't whole numbers, a `forge` outside `auto|github|gitlab|none`, a `lock.mode` outside `ref|none`, a list key given a non-list in JSON, and a non-object where a section (`lint`, `note`, `lock`) is expected. In the environment, a list is comma-separated and an empty variable counts as unset.
 

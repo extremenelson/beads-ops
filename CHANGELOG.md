@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- An invalid `.bops.json`, user config file or `BOPS_*` variable now carries the stable code `bad_config` in the result (exit 1 as before), so bindings can branch on it. The message gains a `bad_config:` prefix. Additive; contract 1 is unchanged (bops-oy9.1).
 - `bops release --reason done` is refused (exit 3, `outcome: refused`) when the bead has no land record. Run `bops land` first. The check runs before the claim ref or the ledger changes, in both lock modes, and the hold is kept (bops-0g6).
 - Docs: a [tutorial](docs/tutorial-first-loop.md), [how to set up the claim lock](docs/howto-claim-lock.md), a [configuration reference](docs/reference/configuration.md), an [architecture overview](docs/ARCHITECTURE.md) and a [docs index](docs/README.md). README, `bops/README.md`, CONTRIBUTING and the Claude Code binding brought up to date (bops-ilg).
 
