@@ -129,9 +129,11 @@ Give the claim back
 | `--reason` | enum: done \| blocked \| scope \| abandoned \| human |  |  |
 | `--file <path>` \| `--file -` | stdin\|file? |  | Optional. Read only when asked: --file <path>, or --file - for stdin. Never on the command line. Recorded below the event line of the release's bops:released comment; a lost or refused release writes none of it. |
 
+Preconditions: this run holds the bead and its ref still matches; done: the bead has a landed record (bops land first); else refused, before the ref or the ledger changes.
+
 Effects by reason: `abandoned` → +bops:hold; `blocked` → status→blocked; `done` → none; await land/sweep; `human` → +needs-human; `scope` → +bops:hold.
 
-Wraps: `git fetch refs/bops/claims/<id>`, `git push (lease): state=landing on done, delete otherwise`, `bd update <id> --assignee ''`, `bd label remove <id> run:*`, `bd comments add <id> <event> (no text), or bd comments add <id> -f <file> (event line, then the --file text)`, `bd dolt push`.
+Wraps: `git fetch refs/bops/claims/<id>`, `bd show <id> --json (done: the landed record)`, `git push (lease): state=landing on done, delete otherwise`, `bd update <id> --assignee ''`, `bd label remove <id> run:*`, `bd comments add <id> <event> (no text), or bd comments add <id> -f <file> (event line, then the --file text)`, `bd dolt push`.
 
 Output:
 
@@ -192,6 +194,8 @@ Close landed beads whose refs are merged
 |---|---|---|---|
 | `--dry-run` | bool | `true` |  |
 | `--forge` | enum: auto \| github \| gitlab \| none | `auto` |  |
+
+Never: skip a bops:landing bead with no landed record (it is listed under unknown).
 
 Wraps: `bd dolt pull`, `bd list --status in_progress --limit 0 --json`, `forge.is_merged(ref)`, `git fetch --prune refs/bops/claims/*`, `git push (lease): delete the ref`, `bd close <id> --reason 'merged via <ref> (<sha>)'`, `bd dolt push`.
 

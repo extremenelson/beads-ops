@@ -35,7 +35,7 @@ Non-goals: `bops` is not a tracker, not a sync protocol, not a merge tool, and n
 | **lease** | beads' node-local TTL on a claim (`bd heartbeat` / `bd reclaim`); not committed to Dolt, and not used by `bops` to decide ownership | claim |
 | **run** | one worktree's execution of an agent loop on one machine; identified by a ULID kept in per-clone state and shown as a `run:` label | session |
 | **note** | milestone state written while *keeping* the claim; also refreshes the claim ref's time | release |
-| **release** | returning a claim with a classified reason; the claim ref is deleted and the bead goes back to the pool, except `done`, which keeps the ref as `landing` | close |
+| **release** | returning a claim with a classified reason; the claim ref is deleted and the bead goes back to the pool, except `done`, which keeps the ref as `landing`. `done` needs a landed record (`land` first): without one it is refused (exit 3) before the ref or the ledger changes, in both lock modes, and the hold is kept | close |
 | **land** | recording evidence that work reached its destination (PR/MR URL + sha); **never** performs the merge | close |
 | **landing** | a bead released `done` whose PR is not yet merged; its ref has `state=landing` and only `sweep` or `claim --resume` acts on it | held |
 | **close** | terminal status; only `bops sweep` or a human closes, never a worker mid-run | land |
@@ -82,7 +82,7 @@ at=<iso8601>
 | Label | Set by | Meaning |
 |---|---|---|
 | `run:<ulid>` | `claim` | display of the run holding the bead; removed by `release`/`sweep`. The claim ref is authoritative |
-| `bops:landing` | `release --reason done` | display of a landing ref; removed by `claim --resume` and `sweep` |
+| `bops:landing` | `release --reason done` | display of a landing ref; removed by `claim --resume` and `sweep`. `sweep` lists a `bops:landing` bead with no landed record under `unknown` (no PR to check) rather than skipping it |
 | `pool:<name>` | humans / `bd` | partition; absence = default pool |
 | `needs:<cap>` | humans | required machine capability (`gpu`, `macos`, `net:internal`, …) |
 | `needs-human` | humans / `release --reason human` | excluded from `next` until removed. Hyphen, not colon: it is a policy label shared with PROCESS.md and `scripts/bd-lint-claim.sh`, not a `needs:<cap>` capability. bops writes only `needs-human`. **Transition:** bops before bops-cgw wrote `needs:human`; every read (W03, so `next`, `claim` and `lint`) treats `needs:human` as `needs-human` until it is dropped in v0.2.0, and `needs:<cap>` never matches `human`. Relabel old beads with the command in PROCESS.md §3.5 |

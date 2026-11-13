@@ -907,11 +907,23 @@ func ReleaseWithText(ctx context.Context, env *Env, id, reason, text string) (*R
 			env.event("release", id, "ledger_check", OutcomeLost, "", nil)
 			return out, nil
 		}
+		if refused, err := env.refuseUnlanded(cur, id, reason, sha, out); refused || err != nil {
+			return out, err
+		}
 		if env.unpublished(ctx) {
 			publish = false
 			out.Warnings = append(out.Warnings, noDoltRemoteWarning)
 		}
 	} else {
+		if entry.Legacy() && reason == "done" { // no ref to verify; check the ledger alone
+			cur, err := env.show(ctx, id)
+			if err != nil {
+				return out.fail(err)
+			}
+			if refused, err := env.refuseUnlanded(cur, id, reason, sha, out); refused || err != nil {
+				return out, err
+			}
+		}
 		if !entry.Legacy() {
 			var done bool
 			var err error
@@ -952,6 +964,28 @@ func ReleaseWithText(ctx context.Context, env *Env, id, reason, text string) (*R
 	return out, nil
 }
 
+// refuseUnlanded refuses a done release of a bead with no landed record. Such
+// a landing has no PR for sweep to check, stale treats landing as waiting and
+// next excludes it, so nothing would report it again. It runs before the ref
+// or the ledger changes, and keeps the hold so the run can land and retry.
+func (e *Env) refuseUnlanded(cur *ledger.Issue, id, reason, sha string, out *ReleaseOut) (bool, error) {
+	if reason != "done" {
+		return false, nil
+	}
+	landed, err := cur.Landed()
+	if err != nil {
+		_, err = out.fail(err)
+		return true, err
+	}
+	if len(landed) > 0 {
+		return false, nil
+	}
+	out.Outcome = OutcomeRefused
+	out.Detail = id + " has no land record: run `bops land " + id + " --ref <pr-url> --sha <sha>` first, or give it back with --reason scope"
+	e.event("release", id, "land_check", OutcomeRefused, sha, nil)
+	return true, nil
+}
+
 // verifyHold confirms the ref is still this run's, and for a done release
 // marks it landing before any ledger write. It returns the ref's sha.
 func (e *Env) verifyHold(ctx context.Context, id, reason string, out *ReleaseOut) (string, bool, error) {
@@ -980,6 +1014,16 @@ func (e *Env) verifyHold(ctx context.Context, id, reason string, out *ReleaseOut
 	}
 	if reason != "done" {
 		return live, false, nil
+	}
+	// Still this run's: refuse a done with nothing landed before the ref
+	// becomes landing, so a displaced holder hears lost, not this.
+	cur, err := e.show(ctx, id)
+	if err != nil {
+		_, err = out.fail(err)
+		return "", true, err
+	}
+	if refused, err := e.refuseUnlanded(cur, id, reason, live, out); refused || err != nil {
+		return "", true, err
 	}
 	res, err := e.Lock.Replace(ctx, id, live, lock.StateLanding)
 	if err != nil {

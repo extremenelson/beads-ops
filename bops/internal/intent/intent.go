@@ -557,6 +557,11 @@ func Sweep(ctx context.Context, env *Env, f forge.Forge, dryRun bool) (*SweepOut
 			continue
 		}
 		if len(landed) == 0 {
+			// A landing with nothing landed has no PR to check; report it rather
+			// than skip it, or nothing would (stale and next leave landings out).
+			if i.HasLabel("bops:landing") {
+				out.Unknown = append(out.Unknown, i.ID)
+			}
 			continue
 		}
 		last := landed[len(landed)-1]
