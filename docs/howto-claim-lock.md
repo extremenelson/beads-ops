@@ -182,7 +182,7 @@ These are the failures `doctor` reports, with the `next` text it prints. Stuck c
 | `fetch` or `push`, `unreachable` | Network or host down | Retry once you can reach the remote |
 | `lock`, `lock_unsupported` | The forge rejects pushes to `refs/bops/*` | Check branch/ref protection rules on the forge. There's no fallback in v0.1.0 |
 | `dolt_remote`, `remote_mismatch` | No Dolt remote, or it points at a different repository | `bd dolt remote add origin git+<the lock remote's URL>`, or set `lock.mode: none` in `.bops.json` for a one-machine repo |
-| Exit 1 before any check runs, message starts `config …` | A bad `.bops.json`, user config or `BOPS_*` value | Fix the named file or variable ([validation](reference/configuration.md#validation)) |
+| Exit 1 before any check runs, `code: bad_config` | A bad `.bops.json`, user config or `BOPS_*` value | Fix the named file or variable ([validation](reference/configuration.md#validation)) |
 
 Never run `bd reclaim` (by hand or on a timer) on a ledger that uses the lock. It ignores claim refs and would hand out beads someone still holds.
 

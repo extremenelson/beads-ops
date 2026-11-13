@@ -180,7 +180,7 @@ func newEnv(mode runstate.Mode) (*intent.Env, *runstate.Store, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("run state: %w", err)
 	}
-	cfg, err := config.Load(store.Worktree(), os.Getenv) // flags override it per command
+	cfg, err := configAt(store.Worktree()) // flags override it per command
 	if err != nil {
 		store.Close()
 		return nil, nil, err
@@ -438,7 +438,18 @@ func loadConfig() (config.Config, error) {
 	if err != nil {
 		return config.Config{}, err
 	}
-	return config.Load(worktreeRoot(root), os.Getenv)
+	return configAt(worktreeRoot(root))
+}
+
+// configAt loads the configuration for the worktree rooted at dir. Every
+// command loads config through here, so an invalid file or BOPS_* variable
+// always carries the stable code bad_config (SPEC §4).
+func configAt(dir string) (config.Config, error) {
+	cfg, err := config.Load(dir, os.Getenv)
+	if err != nil {
+		return config.Config{}, &lock.Error{Code: lock.CodeBadConfig, Err: err}
+	}
+	return cfg, nil
 }
 
 // selectForge applies SPEC §7's precedence: --forge when given on the
@@ -473,7 +484,7 @@ func cmdDoctor(ctx context.Context, m *manifest.Manifest, args []string, asJSON 
 	if err != nil {
 		return emit(m, "doctor", asJSON, nil, err, stdout, stderr)
 	}
-	cfg, err := config.Load(worktreeRoot(root), os.Getenv)
+	cfg, err := configAt(worktreeRoot(root))
 	if err != nil {
 		return emit(m, "doctor", asJSON, nil, err, stdout, stderr)
 	}

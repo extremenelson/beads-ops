@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/extremenelson/beads-ops/bops/internal/config"
+	"github.com/extremenelson/beads-ops/bops/internal/lock"
 	"github.com/extremenelson/beads-ops/bops/internal/runstate"
 )
 
@@ -141,6 +144,52 @@ func TestSelectForgeInfersFromTheLockRemote(t *testing.T) {
 	}
 	if len(r.calls) != 1 || r.calls[0] != "git remote get-url upstream" {
 		t.Errorf("calls = %v, want one get-url of upstream", r.calls)
+	}
+}
+
+// A bad config is a failure to run, and every such failure carries a stable
+// code (SPEC §4), whichever of the three config loads it hits: newEnv (next),
+// loadConfig (sweep) or doctor's own.
+func TestBadConfigCarriesItsCode(t *testing.T) {
+	cases := []struct {
+		name, repo, env, user, wantIn string
+	}{
+		{name: "unknown key", repo: `{"stale_minute":60}`, wantIn: `unknown key "stale_minute"`},
+		{name: "out of range", env: "0", wantIn: "BOPS_STALE_MINUTES"},
+		{name: "lock off from the user file", user: `{"lock":{"mode":"none"}}`, wantIn: "lock.mode none is accepted only from .bops.json"},
+	}
+	for _, c := range cases {
+		for _, cmd := range []string{"next", "sweep", "doctor"} {
+			t.Run(c.name+"/"+cmd, func(t *testing.T) {
+				configDir(t, c.repo)
+				if c.env != "" {
+					t.Setenv("BOPS_STALE_MINUTES", c.env)
+				}
+				if c.user != "" {
+					p := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "bops", "config.json")
+					if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(p, []byte(c.user), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				stdout, _ := os.CreateTemp(t.TempDir(), "out")
+				stderr, _ := os.CreateTemp(t.TempDir(), "err")
+				code := run([]string{cmd, "--json"}, stdout, stderr)
+				b, _ := os.ReadFile(stdout.Name())
+				got := map[string]any{}
+				if err := json.Unmarshal(b, &got); err != nil {
+					t.Fatalf("stdout is not JSON: %v: %s", err, b)
+				}
+				if code != exitCantRun || got["ok"] != false || got["code"] != lock.CodeBadConfig {
+					t.Fatalf("exit %d, ok %v, code %v; want exit 1, ok false, code %s", code, got["ok"], got["code"], lock.CodeBadConfig)
+				}
+				if !strings.Contains(fmt.Sprint(got["error"]), c.wantIn) {
+					t.Errorf("error = %v, want it to contain %q", got["error"], c.wantIn)
+				}
+			})
+		}
 	}
 }
 
