@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/extremenelson/beads-ops/bops/internal/bdx"
 )
 
 // The two-replica suite runs the built binary and the real bd against one bare
@@ -66,7 +68,10 @@ func (r *replica) env() []string {
 	if r.path != "" {
 		env = append(env, "PATH="+r.path+string(os.PathListSeparator)+os.Getenv("PATH"))
 	}
-	return env
+	// The suite runs bd directly as well as through bops; both must keep git
+	// maintenance in the foreground, or a detached repack in the Dolt cache
+	// races the next read (bops-3tm).
+	return bdx.GitEnv(env)
 }
 
 func (r *replica) run(name string, args ...string) (stdout, stderr string, err error) {
