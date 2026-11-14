@@ -27,6 +27,8 @@ go test ./...     # unit + golden tests, fake bd, no Dolt needed
 go run ./cmd/bops gen docs | diff - ../docs/COMMANDS.md   # CI fails on any diff
 ```
 
+If you use gstack, `/verify` runs the tests for you: [`.gstack/pregate.json`](.gstack/pregate.json) maps every file under `bops/` to the module's packages and runs them through [`scripts/pregate-test.sh`](scripts/pregate-test.sh). Its guards run the gofmt, vet and `COMMANDS.md` checks, and `scripts/test/run.sh` when `scripts/bd-lint-claim.sh` changes. It never runs the real-`bd` suites below, so `/verify` reports CI's `replicas` job as not covered.
+
 - **Changing a command's arguments or outputs** means editing `bops/commands.json`, then regenerating `docs/COMMANDS.md` with `go run ./cmd/bops gen docs > ../docs/COMMANDS.md`. A changed golden file (`go test ./internal/gen -update`) is a contract change and gets reviewed as one.
 - **Touching the claim lock, `sync` or `claim`** means running the real-`bd` suites too: `BOPS_INTEGRATION=1 go test -count=1 -timeout 40m ./cmd/bops ./internal/intent` with `bd` 1.3.x on `PATH`. CI runs them on every PR that touches `bops/`.
 - **Every shipped bug gets a test that fails without the fix** (SPEC §9).
