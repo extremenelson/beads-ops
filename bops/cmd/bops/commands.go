@@ -496,6 +496,9 @@ func cmdDoctor(ctx context.Context, m *manifest.Manifest, args []string, asJSON 
 		out = l.Doctor(ctx)
 		out.Add(intent.DoltRemoteCheck(ctx, doctorBD, l)) // the ledger must sit beside the lock
 	}
+	if w := staleBinary(ctx, worktreeRoot(root), runningBuild()); w != "" {
+		out.Warnings = append(out.Warnings, w) // a warning: the lock checks still decide the exit
+	}
 	for _, c := range out.Checks {
 		if c.Status == lock.CheckFail {
 			err = &lock.Error{Code: c.Code, Err: fmt.Errorf("%s failed: %s; next: %s", strings.Join(out.Failed, ", "), c.Detail, c.Next)}

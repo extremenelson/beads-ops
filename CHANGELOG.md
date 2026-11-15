@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `bops version` reports the commit the binary was built from: `revision`, `modified` and `revision_time`, from the go command's build info. In bops's own checkout, `bops doctor` warns (exit unchanged) when the binary predates the last commit to `bops/`, with the `go install` to run. A stale binary had swept bops-oy9.4 with the pre-fix code. Additive; contract 1 is unchanged (bops-y8x).
 - `.gstack/pregate.json` and `scripts/pregate-test.sh` let gstack's `/verify` run the `bops` Go tests: any file under `bops/` runs every package (the two-replica suite stays in CI), and guards run gofmt, vet, the `COMMANDS.md` sync and the `bd-lint-claim` stub tests. Docs and `.beads/` changes need no tests (bops-bj0).
 - `bops sweep` removes the `bops:landing` label after it closes a bead, as SPEC §3.1 says. Before, every swept bead kept it, so `bd list --label bops:landing` returned closed beads. A removal that fails is a warning naming the command to rerun; the bead still counts as closed (bops-oy9.4).
 - `bops` runs `bd` with git's automatic maintenance in the foreground (`maintenance.autoDetach=false`, `gc.autoDetach=false`, appended to any `GIT_CONFIG_*` already set). A detached `git repack -d` in Dolt's git remote cache could delete a pack while the next `bd` call read it, failing with `packfile … index unavailable`. Seen as a replicas CI flake; reported upstream as dolthub/dolt#12488 (bops-3tm).

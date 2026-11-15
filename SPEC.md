@@ -235,7 +235,7 @@ Other environment `bops` reads: `BEADS_ACTOR` (actor), `BOPS_MACHINE` (machine n
 ## 11. Versioning and compatibility
 
 - `bops` semver; `contract` integer. Minor releases may add commands/fields; removing or renaming anything bumps `contract`. Contract 1 freezes at the `bops/v0.1.0` tag (§1.9 waiver).
-- Supported `bd`: ≥ 1.3 (`bd update --claim`, `--assignee --status --force` for display repair, `bd heartbeat`, `bd comments <id> --json`); CI pins and tests 1.3.4. `bd reclaim` ignores the claim lock, so it is not run on a ledger `bops` claims on. `bops version` reports the detected `bd` and backend and warns outside the tested range.
+- Supported `bd`: ≥ 1.3 (`bd update --claim`, `--assignee --status --force` for display repair, `bd heartbeat`, `bd comments <id> --json`); CI pins and tests 1.3.4. `bd reclaim` ignores the claim lock, so it is not run on a ledger `bops` claims on. `bops version` reports the detected `bd` and backend and warns outside the tested range. It also reports the commit the binary was built from (`revision`, `modified`, `revision_time`, from the go command's build info; empty for a build outside git). In bops's own source checkout, `doctor` warns, without failing, when that commit predates the last commit to change `bops/`, naming the rebuild command; elsewhere it makes no such check.
 - Supported git remotes: any that accept custom refs under `refs/bops/` with `--force-with-lease`. GitHub is measured. A forge that rejects them gives `code: lock_unsupported`.
 - Upgrade every machine on a ledger before the first claim with a new `bops`: an older binary ignores the lock.
 - JSONL-only (`no-db`) beads: read commands work; write commands refuse (no CAS) unless `--unsafe-no-cas`.
