@@ -1,8 +1,10 @@
 // Package gen renders harness bindings from the manifest.
 //
 // Every generator is a pure function of the manifest so bindings can be
-// golden-tested (SPEC.md §9). v0 ships the docs generator; the others are
-// registered as stubs so `bops gen --list` is already truthful.
+// golden-tested (SPEC.md §9). Only the docs generator is registered, so
+// `bops gen --list` prints `docs` alone. The other bindings SPEC §8 plans
+// (Claude Code, Codex, Hermes, Clojure, MCP) are not registered yet, and
+// `bops gen <one of them>` exits 2 as an unknown target.
 package gen
 
 import (
