@@ -70,7 +70,9 @@ func TestLockOffClaimUsesTheLedgerAlone(t *testing.T) {
 	if !slices.ContainsFunc(b.Comments, func(c string) bool { return strings.HasPrefix(c, "bops:claimed run=A ") }) {
 		t.Errorf("comments = %v", b.Comments)
 	}
-	if bd.count("update x-1 --claim") != 1 || bd.count("dolt remote") != 0 {
+	// The Dolt remote list is read once, only to decide whether there is
+	// anywhere to publish (bops-oy9.2); it is never compared with a lock remote.
+	if bd.count("update x-1 --claim") != 1 || bd.count("dolt remote") != 1 {
 		t.Errorf("calls = %v", bd.calls)
 	}
 	if e, ok := r.store.Entry("x-1"); !ok || !e.Legacy() {
@@ -508,5 +510,58 @@ func TestLockOffReleaseDoneWithoutALandRecordIsRefused(t *testing.T) {
 	}
 	if b := bd.beads["x-1"]; b.Status != "in_progress" || b.Assignee == "" || slices.Contains(b.Labels, "bops:landing") {
 		t.Fatalf("the claim must be untouched: %+v", b)
+	}
+}
+
+// claim follows the other commands under lock.mode none with no Dolt remote:
+// it skips the pull and push and warns that the ledger was not published,
+// instead of passing on bd's "Error 1105: no remote" from the pull
+// (bops-oy9.2).
+func TestLockOffClaimWithNoDoltRemoteSkipsThePull(t *testing.T) {
+	bd := newBD()
+	bd.add("x-1")
+	r := lockOffRig(t, "A", bd)
+	doltWithNoRemote(bd)
+	out, err := intent.Claim(bg, r.env, "x-1", false)
+	if err != nil || out.Outcome != intent.OutcomeClaimed {
+		t.Fatalf("claim: %+v, %v", out, err)
+	}
+	saysUnpublished(t, "claim", out.Warnings)
+	for _, w := range out.Warnings {
+		if strings.Contains(w, "ledger not pulled") || strings.Contains(w, "1105") {
+			t.Errorf("claim passed on bd's pull error: %q", w)
+		}
+	}
+	for _, c := range bd.calls {
+		if c[0] == "dolt" && (c[1] == "pull" || c[1] == "push") {
+			t.Errorf("with no Dolt remote, claim ran bd %v", c)
+		}
+	}
+}
+
+// With a Dolt remote, a lock-off claim still pulls, and a failed pull is the
+// same warning as before.
+func TestLockOffClaimWithADoltRemoteWarnsOnAFailedPull(t *testing.T) {
+	bd := newBD()
+	bd.add("x-1")
+	bd.remotes = `[{"name":"origin","url":"git+https://example.com/ledger.git"}]`
+	r := lockOffRig(t, "A", bd)
+	bd.fail = func(args []string) error {
+		if args[0] == "dolt" && args[1] == "pull" {
+			return errors.New("bd dolt pull: exit status 1: unreachable")
+		}
+		return nil
+	}
+	out, err := intent.Claim(bg, r.env, "x-1", false)
+	if err != nil || out.Outcome != intent.OutcomeClaimed {
+		t.Fatalf("claim: %+v, %v", out, err)
+	}
+	if !slices.ContainsFunc(out.Warnings, func(w string) bool {
+		return strings.Contains(w, "ledger not pulled: bd dolt pull: exit status 1: unreachable")
+	}) {
+		t.Errorf("warnings = %v, want the failed pull", out.Warnings)
+	}
+	if slices.ContainsFunc(out.Warnings, func(w string) bool { return strings.Contains(w, "no Dolt remote") }) {
+		t.Errorf("warnings = %v: a ledger with a remote is published", out.Warnings)
 	}
 }

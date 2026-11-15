@@ -161,7 +161,7 @@ bops doctor --json | jq '[.checks[] | {id, status}]'
 ]
 ```
 
-Every check is skipped, naming `lock.mode`, and `doctor` exits 0. Every other command adds the warning `lock.mode is none: claims are decided by this machine's ledger alone, …`. With no Dolt remote, `release`, `land`, `sweep`, `sync` and `session-start` skip publishing and warn `no Dolt remote: ledger not published` instead of failing.
+Every check is skipped, naming `lock.mode`, and `doctor` exits 0. Every other command adds the warning `lock.mode is none: claims are decided by this machine's ledger alone, …`. With no Dolt remote, `claim`, `release`, `land`, `sweep`, `sync` and `session-start` skip publishing and warn `no Dolt remote: ledger not published` instead of failing.
 
 Only `.bops.json` can set `none`. A user config file or `BOPS_LOCK_MODE=none` is rejected unless the repo file already says `none` ([why](reference/configuration.md#lockmode)).
 
