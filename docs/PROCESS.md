@@ -41,7 +41,7 @@ bd list --status in_progress --json   # what was I (or another agent) in the mid
 bd ready --json                       # current ready front
 ```
 
-On a `bops` ledger, `bops session-start` does the pull and the reports in one call, and is what the Claude Code hook runs as `bops session-start --hook-json`, which wraps the document in the hook envelope Claude Code injects ([`settings.bops.json`](../bindings/claude-code/settings.bops.json)): `mine` (what this worktree holds), `lost_claims`, `stranded_holds`, the `stale` count, `ready_count` and bd's minimal prime. It does not run `bd gate check`. A failed sync still prints the document, with `ok:false`.
+On a `bops` ledger, `bops session-start` does the pull and the reports in one call, and is what the Claude Code hook runs as `bops session-start --hook-json`, which wraps the document in the hook envelope Claude Code injects ([`hooks.json`](../bindings/claude-code/hooks.json)): `mine` (what this worktree holds), `lost_claims`, `stranded_holds`, the `stale` count, `ready_count` and bd's minimal prime. It does not run `bd gate check`. A failed sync still prints the document, with `ok:false`.
 
 Then **report before acting**: "N in progress (ids), M ready. Last note on `<id>`: NEXT = …. Continue with that?" In an unattended run, skip the question, pick the highest-priority `in_progress` item assigned to this actor, else the highest-priority `ready` item, and say which you chose in your first line of output.
 
@@ -342,7 +342,7 @@ bd setup claude              # idempotent; --check to verify, --global for ~/.cl
 
 What the plugin gives you (`plugins/beads/.claude-plugin/plugin.json`): `SessionStart` and `PreCompact` hooks that run `bd prime`, the `beads` skill, 29 `/bd-*` slash commands, and `task-agent`. Upstream deliberately does **not** run `bd gate check` or `bd list --status in_progress` in hooks. Add them.
 
-**`.claude/settings.json` (project):** merge [`bindings/claude-code/settings.json`](../bindings/claude-code/settings.json), which adds sync, `bd gate check` and the `in_progress` report to the upstream hooks. If you use `bops`, merge [`settings.bops.json`](../bindings/claude-code/settings.bops.json) in its place.
+**`.claude/settings.json` (project):** merge [`bindings/claude-code/settings.json`](../bindings/claude-code/settings.json), which adds sync, `bd gate check` and the `in_progress` report to the upstream hooks. If you use `bops`, merge [`hooks.json`](../bindings/claude-code/hooks.json), which `bops gen cc` generates, in its place.
 
 **`CLAUDE.md` addition:** append [`bindings/claude-code/CLAUDE.md.snippet`](../bindings/claude-code/CLAUDE.md.snippet). It carries the process rules, the `bd-lint-claim.sh` claim rule and the `bops` session protocol.
 

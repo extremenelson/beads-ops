@@ -196,7 +196,7 @@ The generator reads `commands.json` and emits:
 
 | Target | Emits | Notes |
 |---|---|---|
-| Claude Code | `skills/bops/SKILL.md` (hand-written preamble + generated reference), `hooks.json` fragment (`SessionStart → bops session-start`, `PreCompact → bops note` prompt, `Stop → bops sync`), optional `/bops-next` command | ≤2k tokens; the model runs CLI commands |
+| Claude Code | `bops gen cc --out <dir>`: `skills/bops/SKILL.md` (hand-written preamble + generated reference), `hooks.json` fragment (`SessionStart → bops session-start --hook-json`), `commands/bops-next.md` | ≤2k tokens; the model runs CLI commands. No `Stop` hook: it fires after every reply, and `bops sync` pushes and takes about 3 s, so the skill runs it before stopping. No `PreCompact` hook: its output never reaches the model, so it cannot prompt a `bops note`; the skill asks for notes at milestones, and `SessionStart` fires again after compaction |
 | Codex | `.codex/hooks.json` fragment + `.agents/skills/bops/SKILL.md` | same prose |
 | Hermes | `tools/bops.json` tool descriptors mapping to CLI invocations | format TBD after Hermes research |
 | Clojure (Kestrel or any) | `bops.clj`: one fn per command shelling out, Malli schemas generated from `output` | in-process option later |

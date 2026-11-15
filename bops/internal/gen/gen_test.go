@@ -55,6 +55,8 @@ func TestDocsArgsAsTheCommandsTakeThem(t *testing.T) {
 	}
 }
 
+// TestGolden pins every file every target writes, at
+// testdata/golden/<target>/<path>.
 func TestGolden(t *testing.T) {
 	m, err := manifest.Parse(bops.ManifestJSON)
 	if err != nil {
@@ -63,23 +65,28 @@ func TestGolden(t *testing.T) {
 	for _, target := range gen.Targets() {
 		t.Run(target, func(t *testing.T) {
 			g, _ := gen.Lookup(target)
-			got, err := g(m)
+			files, err := g(m)
 			if err != nil {
 				t.Fatal(err)
 			}
-			path := filepath.Join("..", "..", "testdata", "golden", target+".golden")
-			if *update {
-				if err := os.WriteFile(path, got, 0o644); err != nil {
-					t.Fatal(err)
+			for _, f := range files {
+				path := filepath.Join("..", "..", "testdata", "golden", target, filepath.FromSlash(f.Path))
+				if *update {
+					if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(path, f.Data, 0o644); err != nil {
+						t.Fatal(err)
+					}
+					continue
 				}
-				return
-			}
-			want, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatalf("%v (run with -update to create)", err)
-			}
-			if !bytes.Equal(got, want) {
-				t.Fatalf("%s: generated output differs from golden; if intended, re-run with -update and review the diff as a contract change", target)
+				want, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatalf("%v (run with -update to create)", err)
+				}
+				if !bytes.Equal(f.Data, want) {
+					t.Fatalf("%s %s: generated output differs from golden; if intended, re-run with -update and review the diff as a contract change", target, f.Path)
+				}
 			}
 		})
 	}

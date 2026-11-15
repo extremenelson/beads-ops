@@ -1,0 +1,121 @@
+package gen_test
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+
+	bops "github.com/extremenelson/beads-ops/bops"
+	"github.com/extremenelson/beads-ops/bops/internal/gen"
+	"github.com/extremenelson/beads-ops/bops/internal/manifest"
+)
+
+func ccFiles(t *testing.T, m *manifest.Manifest) map[string]string {
+	t.Helper()
+	files, err := gen.CC(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]string{}
+	for _, f := range files {
+		out[f.Path] = string(f.Data)
+	}
+	return out
+}
+
+func embedded(t *testing.T) *manifest.Manifest {
+	t.Helper()
+	m, err := manifest.Parse(bops.ManifestJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+// The skill is the hand-written preamble, frontmatter first so Claude Code
+// can load it, then a reference row for each command whose surfaces.cc
+// lists "skill", and nothing else.
+func TestCCSkillReferencesTheSkillCommands(t *testing.T) {
+	m := embedded(t)
+	skill := ccFiles(t, m)["skills/bops/SKILL.md"]
+	if !strings.HasPrefix(skill, "---\nname: bops\ndescription: ") {
+		t.Fatalf("SKILL.md does not open with its frontmatter:\n%.80s", skill)
+	}
+	ref := skill[strings.Index(skill, "## Command reference (contract 1)"):]
+	for _, c := range m.Commands {
+		row := "| `bops " + c.Name
+		want := false
+		for _, s := range c.Surfaces["cc"].([]any) {
+			want = want || s == "skill"
+		}
+		if got := strings.Contains(ref, row+" ") || strings.Contains(ref, row+"`"); got != want {
+			t.Errorf("bops %s: in reference = %v, want %v", c.Name, got, want)
+		}
+	}
+	for _, want := range []string{
+		"| `bops claim <id> [--force] [--resume]` | write |",
+		"| `bops note <id> [--file <path>]` | write |",
+		"| `bops release <id> --reason <reason> [--file <path>\\|-]` | write |",
+		"| `bops land <id> [--forge] --ref <ref> --sha <sha> [--verify]` | write |",
+		"**3** negative verdict on a write",
+	} {
+		if !strings.Contains(ref, want) {
+			t.Errorf("reference lacks %q", want)
+		}
+	}
+}
+
+// SPEC §8 caps the skill at 2k tokens; chars/4 is the usual estimate.
+func TestCCSkillUnderTwoThousandTokens(t *testing.T) {
+	skill := ccFiles(t, embedded(t))["skills/bops/SKILL.md"]
+	if n := len(skill) / 4; n >= 2000 {
+		t.Fatalf("SKILL.md is about %d tokens (%d bytes); the cap is 2000", n, len(skill))
+	}
+}
+
+// The hooks fragment carries the SessionStart hook alone, through
+// --hook-json so Claude Code injects the document.
+func TestCCHooksAreSessionStartOnly(t *testing.T) {
+	var h struct {
+		Hooks map[string][]struct {
+			Matcher string `json:"matcher"`
+			Hooks   []struct{ Type, Command string }
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal([]byte(ccFiles(t, embedded(t))["hooks.json"]), &h); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.Hooks) != 1 || len(h.Hooks["SessionStart"]) != 1 {
+		t.Fatalf("hooks = %+v, want one SessionStart group", h.Hooks)
+	}
+	g := h.Hooks["SessionStart"][0]
+	if g.Matcher != "" || len(g.Hooks) != 1 || g.Hooks[0].Type != "command" || g.Hooks[0].Command != "bops session-start --hook-json || true" {
+		t.Fatalf("SessionStart group = %+v", g)
+	}
+}
+
+func TestCCEmitsBopsNextCommand(t *testing.T) {
+	cmd, ok := ccFiles(t, embedded(t))["commands/bops-next.md"]
+	if !ok || !strings.HasPrefix(cmd, "---\ndescription: ") || !strings.Contains(cmd, "bops next --json") {
+		t.Fatalf("commands/bops-next.md = %q", cmd)
+	}
+}
+
+// A hook the binding cannot honour is a generator error, not a silent drop.
+func TestCCRefusesHooksItCannotGenerate(t *testing.T) {
+	for name, cmd := range map[string]string{
+		"stop event":   `{"name":"sync","intent":"x","kind":"write","output":{},"surfaces":{"cc":["skill","hook:Stop"]}}`,
+		"no hook-json": `{"name":"next","intent":"x","kind":"read","output":{},"surfaces":{"cc":["hook:SessionStart"]}}`,
+		"bad surface":  `{"name":"next","intent":"x","kind":"read","output":{},"surfaces":{"cc":["slash"]}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, err := manifest.Parse([]byte(`{"contract":1,"commands":[` + cmd + `]}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := gen.CC(m); err == nil {
+				t.Fatal("gen cc succeeded")
+			}
+		})
+	}
+}

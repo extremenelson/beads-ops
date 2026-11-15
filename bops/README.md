@@ -54,11 +54,12 @@ go test ./...                            # unit + golden tests with a fake bd; n
 gofmt -l .                               # must print nothing (CI checks it)
 go vet ./...
 go run ./cmd/bops gen docs > ../docs/COMMANDS.md   # after any change to commands.json
+go run ./cmd/bops gen cc --out ../bindings/claude-code && cp ../bindings/claude-code/skills/bops/SKILL.md ../.claude/skills/bops/SKILL.md   # same, and after editing internal/gen/templates
 go test ./internal/gen -update           # regenerate goldens; review the diff as a contract change
 BOPS_INTEGRATION=1 go test -count=1 -timeout 40m ./cmd/bops ./internal/intent   # real bd: live ledger and two-replica race suites
 ```
 
-CI ([`.github/workflows/bops.yml`](../.github/workflows/bops.yml)) runs `gofmt`, `go vet`, `go test`, checks that `docs/COMMANDS.md` matches the manifest, and runs the integration suites against a checksum-verified `bd` 1.3.4. `BOPS_RACE_TRIALS` sets the claim-race trial count.
+CI ([`.github/workflows/bops.yml`](../.github/workflows/bops.yml)) runs `gofmt`, `go vet`, `go test`, checks that `docs/COMMANDS.md` and the Claude Code binding match the manifest, and runs the integration suites against a checksum-verified `bd` 1.3.4. `BOPS_RACE_TRIALS` sets the claim-race trial count.
 
 ## Layout
 

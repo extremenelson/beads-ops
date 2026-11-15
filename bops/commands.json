@@ -32,7 +32,7 @@
         "ledger_revision": "string",
         "warnings": "string[]?"
       },
-      "surfaces": { "cc": ["skill", "hook:SessionStart"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": true } }
+      "surfaces": { "cc": ["skill"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": true } }
     },
     {
       "name": "claim",
@@ -55,7 +55,7 @@
       "wraps": ["git push refs/bops/claims/<id> (lease; a network failure is a warning)", "bd comments add <id> -f <file>", "bd heartbeat <id>"],
       "outcomes": { "noted": 0, "lost": 3, "refused": 3 },
       "output": { "id": "string", "outcome": "string", "comment_id": "string?", "warnings": "string[]", "holder": "object?", "reason": "string?", "saved_to": "string?" },
-      "surfaces": { "cc": ["skill", "hook:PreCompact"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": false } }
+      "surfaces": { "cc": ["skill"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": false } }
     },
     {
       "name": "release",
@@ -111,7 +111,7 @@
       "args": { "older-than": { "type": "duration", "default": "stale_minutes", "doc": "Idle longer than this is stale; defaults to the stale_minutes config (120). Age is from the claim ref's at, which note refreshes; a claim with no ref uses updated_at, heartbeat_at and its newest bops: comment." }, "all-machines": { "type": "bool", "default": true, "doc": "false hides claims and orphans from other machines." } },
       "wraps": ["git fetch --prune refs/bops/claims/* (the last sync's copy if offline, with a warning)", "bd list --status in_progress --limit 0 --json", "bd comments <id> --json"],
       "output": { "stale": [ { "id": "string", "run": "string", "actor": "string", "last_event_at": "string", "age_minutes": "int", "same_machine": "bool", "source": "ref|ledger" } ], "orphans": [ { "id": "string", "run": "string", "actor": "string", "at": "string", "age_minutes": "int", "same_machine": "bool" } ], "warnings": "string[]" },
-      "surfaces": { "cc": ["skill", "hook:SessionStart"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": true } }
+      "surfaces": { "cc": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": true } }
     },
     {
       "name": "lint",
@@ -135,7 +135,7 @@
       "wraps": ["git fetch --prune refs/bops/claims/*", "bd dolt pull", "bd heartbeat <id> (held claims)", "bd update <id> --assignee '' --status open; bd label remove <id> run:<ulid> (this run's claim whose ref is gone and that nobody took)", "bd dolt push"],
       "retry": { "on": "dolt lock", "times": 1, "after_ms": 5000 },
       "output": { "pulled": "bool", "pushed": "bool", "revision": "string", "unpublished": "int", "stranded_holds": "string[]", "lost_claims": "string[]", "warnings": "string[]?" },
-      "surfaces": { "cc": ["skill", "hook:Stop"], "codex": ["skill"], "clj": "fn" }
+      "surfaces": { "cc": ["skill"], "codex": ["skill"], "clj": "fn" }
     },
     {
       "name": "session-start",
@@ -163,7 +163,7 @@
       "args": { "id": { "type": "string" } },
       "wraps": ["bd gate list --json", "bd dep list <id> --json"],
       "output": { "gates": [ { "id": "string", "type": "string", "on": "string", "satisfied": "bool" } ], "blocking_deps": "string[]" },
-      "surfaces": { "cc": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": true } }
+      "surfaces": { "cc": [], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": true } }
     },
     {
       "name": "deps",
@@ -177,7 +177,7 @@
       },
       "wraps": ["bd dep list <id> --json", "bd sql (engine=cte)"],
       "output": { "blocks": "string[]", "blocked_by": "string[]", "critical_path": "string[]?", "depth": "int" },
-      "surfaces": { "cc": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": true } }
+      "surfaces": { "cc": [], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": true } }
     },
     {
       "name": "version",

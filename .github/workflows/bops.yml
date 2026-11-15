@@ -1,7 +1,7 @@
 name: bops
 on:
-  push: { paths: ["bops/**", "SPEC.md", ".github/workflows/bops.yml"] }
-  pull_request: { paths: ["bops/**", "SPEC.md"] }
+  push: { paths: ["bops/**", "SPEC.md", ".github/workflows/bops.yml", "bindings/claude-code/**", ".claude/skills/bops/**", "scripts/check-cc-binding.sh"] }
+  pull_request: { paths: ["bops/**", "SPEC.md", "bindings/claude-code/**", ".claude/skills/bops/**", "scripts/check-cc-binding.sh"] }
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -15,6 +15,8 @@ jobs:
       - run: go test ./...
       - name: docs/COMMANDS.md is in sync with the manifest
         run: go run ./cmd/bops gen docs | diff - ../docs/COMMANDS.md
+      - name: The Claude Code binding is in sync with the manifest
+        run: sh ../scripts/check-cc-binding.sh
   replicas:
     runs-on: ubuntu-latest
     timeout-minutes: 45

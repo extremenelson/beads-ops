@@ -1,9 +1,10 @@
 // Package gen renders harness bindings from the manifest.
 //
-// Every generator is a pure function of the manifest so bindings can be
-// golden-tested (SPEC.md §9). Only the docs generator is registered, so
-// `bops gen --list` prints `docs` alone. The other bindings SPEC §8 plans
-// (Claude Code, Codex, Hermes, Clojure, MCP) are not registered yet, and
+// Every generator is a pure function of the manifest (and, for prose, the
+// templates embedded beside it) so bindings can be golden-tested (SPEC.md
+// §9). Two targets are registered: docs (docs/COMMANDS.md) and cc (the Claude
+// Code skill, hooks fragment and /bops-next command). The other bindings SPEC
+// §8 plans (Codex, Hermes, Clojure, MCP) are not registered yet, and
 // `bops gen <one of them>` exits 2 as an unknown target.
 package gen
 
@@ -17,11 +18,25 @@ import (
 	"github.com/extremenelson/beads-ops/bops/internal/manifest"
 )
 
-// Generator renders one target.
-type Generator func(m *manifest.Manifest) ([]byte, error)
+// File is one generated file, at a slash-separated path relative to the
+// directory the binding is installed into.
+type File struct {
+	Path string
+	Data []byte
+}
+
+// Generator renders one target as one or more files.
+type Generator func(m *manifest.Manifest) ([]File, error)
 
 var registry = map[string]Generator{
-	"docs": Docs,
+	"docs": func(m *manifest.Manifest) ([]File, error) {
+		b, err := Docs(m)
+		if err != nil {
+			return nil, err
+		}
+		return []File{{Path: "COMMANDS.md", Data: b}}, nil
+	},
+	"cc": CC,
 }
 
 // Targets lists registered generator names.
