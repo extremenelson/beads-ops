@@ -44,7 +44,7 @@ git clone https://github.com/extremenelson/beads-ops ../beads-ops
 cp ../beads-ops/docs/PROCESS.md docs/
 cp ../beads-ops/scripts/bd-lint-claim.sh scripts/
 cat ../beads-ops/bindings/claude-code/CLAUDE.md.snippet >> CLAUDE.md
-#    merge ../beads-ops/bindings/claude-code/settings.bops.json into .claude/settings.json
+#    merge ../beads-ops/bindings/claude-code/hooks.json into .claude/settings.json
 
 # 3. the loop
 bops next                                 # ranked, workable candidates

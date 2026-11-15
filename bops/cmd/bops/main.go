@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -129,7 +130,7 @@ func usage(w *os.File, m *manifest.Manifest) {
 	for _, c := range m.Commands {
 		fmt.Fprintf(w, "  %-14s %s\n", c.Name, c.Intent)
 	}
-	fmt.Fprintf(w, "  %-14s %s\n  %-14s %s\n", "manifest", "print the embedded commands.json", "gen <target>", "render a binding ("+strings.Join(gen.Targets(), ", ")+")")
+	fmt.Fprintf(w, "  %-14s %s\n  %-14s %s\n", "manifest", "print the embedded commands.json", "gen <target>", "render a binding with [--out <dir>] ("+strings.Join(gen.Targets(), ", ")+")")
 }
 
 type versionOut struct {
@@ -190,16 +191,47 @@ func cmdGen(m *manifest.Manifest, rest []string, stdout, stderr *os.File) int {
 		fmt.Fprintln(stdout, strings.Join(gen.Targets(), "\n"))
 		return exitVerdict
 	}
-	g, ok := gen.Lookup(rest[0])
+	target, out := rest[0], ""
+	for args := rest[1:]; len(args) > 0; args = args[1:] {
+		switch a := args[0]; {
+		case a == "--out" && len(args) > 1:
+			out, args = args[1], args[1:]
+		case strings.HasPrefix(a, "--out="):
+			out = strings.TrimPrefix(a, "--out=")
+		default:
+			fmt.Fprintln(stderr, "usage: bops gen <target> [--out <dir>]")
+			return exitUsage
+		}
+	}
+	g, ok := gen.Lookup(target)
 	if !ok {
-		fmt.Fprintf(stderr, "bops gen: unknown target %q (have: %s)\n", rest[0], strings.Join(gen.Targets(), ", "))
+		fmt.Fprintf(stderr, "bops gen: unknown target %q (have: %s)\n", target, strings.Join(gen.Targets(), ", "))
 		return exitUsage
 	}
-	b, err := g(m)
+	files, err := g(m)
 	if err != nil {
 		fmt.Fprintln(stderr, "bops gen:", err)
 		return exitCantRun
 	}
-	stdout.Write(b)
+	if out == "" {
+		if len(files) != 1 {
+			fmt.Fprintf(stderr, "bops gen %s: writes %d files; pass --out <dir>\n", target, len(files))
+			return exitUsage
+		}
+		stdout.Write(files[0].Data)
+		return exitVerdict
+	}
+	for _, f := range files {
+		p := filepath.Join(out, filepath.FromSlash(f.Path))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			fmt.Fprintln(stderr, "bops gen:", err)
+			return exitCantRun
+		}
+		if err := os.WriteFile(p, f.Data, 0o644); err != nil {
+			fmt.Fprintln(stderr, "bops gen:", err)
+			return exitCantRun
+		}
+		fmt.Fprintln(stdout, p)
+	}
 	return exitVerdict
 }
