@@ -28,11 +28,11 @@ What should I work on?
 | Arg | Type | Default | Doc |
 |---|---|---|---|
 | `--caps` | string[]? |  | Capabilities this run offers; beads with unmet needs:<cap> are excluded. |
-| `--include-unworkable` | bool | `false` | Also return excluded candidates with why_not. |
+| `--include-unworkable` | bool | `false` | Also return excluded candidates with why_not, and the beads open gates alone keep out of bd ready (W05, blocked_by_gates; not in excluded_count). |
 | `--n` | int | `3` |  |
 | `--pool` | string? |  | Serve only beads labelled pool:<pool>. |
 
-Wraps: `bd ready --json`, `bd show --json`, `bd gate list --json`.
+Wraps: `bd ready --json`, `bd list --status in_progress --json`, `with --include-unworkable: bd gate list --limit 0 --json, bd blocked --json, bd show <id> --json (each bead open gates alone hold back)`.
 
 Output:
 
@@ -261,7 +261,7 @@ Is this bead workable?
 | `<id>` (positional) | string |  |  |
 | `--strict` | bool | `false` |  |
 
-Wraps: `bd show <id> --json`, `bd gate list --json`, `bd dep cycles --json`.
+Wraps: `bd show <id> --json`, `bd gate list <id> --json`, `bd dep cycles --json`.
 
 Output:
 
@@ -372,7 +372,7 @@ What is blocking this bead's path?
 |---|---|---|---|
 | `<id>` (positional) | string |  |  |
 
-Wraps: `bd gate list --json`, `bd dep list <id> --json`.
+Wraps: `bd gate list <id> --all --json (satisfied: the gate is closed)`, `bd dep list <id> --json (blocking_deps: open blocks-type deps that are not gates; parent-child is not one)`.
 
 Output:
 

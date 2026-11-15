@@ -551,6 +551,27 @@ func cmdLint(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 	for _, c := range env.Run.Caps {
 		caps[c] = true
 	}
-	res := intent.Lint(issue, intent.LintEnv{Pool: env.Run.Pool, Caps: caps, Now: time.Now().UTC(), StaleAfter: 0, HoldFor: env.HoldFor, Strict: *strict})
+	gates, err := intent.OpenGatesOf(ctx, env, issue.ID)
+	if err != nil {
+		return emit(m, "lint", asJSON, nil, err, stdout, stderr)
+	}
+	res := intent.Lint(issue, intent.LintEnv{Pool: env.Run.Pool, Caps: caps, Now: time.Now().UTC(), StaleAfter: 0, HoldFor: env.HoldFor, Strict: *strict,
+		OpenGates: map[string][]string{issue.ID: gates}})
 	return emit(m, "lint", asJSON, &res, nil, stdout, stderr)
+}
+
+func cmdGates(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
+	fs := newFlagSet("gates", stderr)
+	fs.Bool("json", false, "")
+	if err := parseAnyOrder(fs, args); err != nil || fs.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: bops gates <id>")
+		return exitUsage
+	}
+	env, store, err := newEnv(runstate.Read)
+	if err != nil {
+		return emit(m, "gates", asJSON, nil, err, stdout, stderr)
+	}
+	defer store.Close()
+	out, err := intent.Gates(ctx, env, fs.Arg(0))
+	return emit(m, "gates", asJSON, out, err, stdout, stderr)
 }

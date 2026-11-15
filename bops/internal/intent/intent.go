@@ -128,6 +128,22 @@ func Next(ctx context.Context, env *Env, o NextOpts) (*NextOut, error) {
 	if listErr != nil { // it only affects the order, so a read still answers
 		out.Warnings = append(out.Warnings, "ordering ignores work in progress: "+listErr.Error())
 	}
+	// bd ready never returns a bead behind an open gate, so W05 can only
+	// explain one that next looks up itself: with --include-unworkable, the
+	// beads open gates alone hold back. They were never in bd ready, so they
+	// do not count in excluded_count.
+	gated := map[string]bool{}
+	if o.IncludeUnworkable {
+		beads, gates, err := gatedBeads(ctx, env)
+		if err != nil {
+			out.Warnings = append(out.Warnings, "gated beads not listed: "+err.Error())
+		}
+		lenv.OpenGates = gates
+		for _, b := range beads {
+			gated[b.ID] = true
+		}
+		ready = append(ready, beads...)
+	}
 	claims := map[string]lock.Ref{}
 	if env.LockOff {
 		out.Warnings = append(out.Warnings, lock.OffWarning)
@@ -173,7 +189,7 @@ func Next(ctx context.Context, env *Env, o NextOpts) (*NextOut, error) {
 			c.WhyNot = append(c.WhyNot, fmt.Sprintf("W14: claimed by %s", r.Actor))
 		}
 		if !c.Workable {
-			if i.IssueType != "epic" {
+			if i.IssueType != "epic" && !gated[i.ID] {
 				out.ExcludedCount++
 			}
 			if !o.IncludeUnworkable {

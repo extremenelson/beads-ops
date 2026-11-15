@@ -17,9 +17,9 @@
         "pool": { "type": "string?", "doc": "Serve only beads labelled pool:<pool>." },
         "caps": { "type": "string[]?", "doc": "Capabilities this run offers; beads with unmet needs:<cap> are excluded." },
         "n": { "type": "int", "default": 3 },
-        "include-unworkable": { "type": "bool", "default": false, "doc": "Also return excluded candidates with why_not." }
+        "include-unworkable": { "type": "bool", "default": false, "doc": "Also return excluded candidates with why_not, and the beads open gates alone keep out of bd ready (W05, blocked_by_gates; not in excluded_count)." }
       },
-      "wraps": ["bd ready --json", "bd show --json", "bd gate list --json"],
+      "wraps": ["bd ready --json", "bd list --status in_progress --json", "with --include-unworkable: bd gate list --limit 0 --json, bd blocked --json, bd show <id> --json (each bead open gates alone hold back)"],
       "output": {
         "candidates": [
           {
@@ -118,7 +118,7 @@
       "intent": "Is this bead workable?",
       "kind": "read",
       "args": { "id": { "type": "string" }, "strict": { "type": "bool", "default": false } },
-      "wraps": ["bd show <id> --json", "bd gate list --json", "bd dep cycles --json"],
+      "wraps": ["bd show <id> --json", "bd gate list <id> --json", "bd dep cycles --json"],
       "output": {
         "id": "string", "workable": "bool",
         "fails": [ { "id": "string", "rule": "string" } ],
@@ -161,9 +161,9 @@
       "intent": "What is blocking this bead's path?",
       "kind": "read",
       "args": { "id": { "type": "string" } },
-      "wraps": ["bd gate list --json", "bd dep list <id> --json"],
+      "wraps": ["bd gate list <id> --all --json (satisfied: the gate is closed)", "bd dep list <id> --json (blocking_deps: open blocks-type deps that are not gates; parent-child is not one)"],
       "output": { "gates": [ { "id": "string", "type": "string", "on": "string", "satisfied": "bool" } ], "blocking_deps": "string[]" },
-      "surfaces": { "cc": [], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": true } }
+      "surfaces": { "cc": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": true } }
     },
     {
       "name": "deps",
