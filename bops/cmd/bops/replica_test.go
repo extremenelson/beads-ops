@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/extremenelson/beads-ops/bops/internal/bdx"
+	"github.com/extremenelson/beads-ops/bops/internal/ledger"
 )
 
 // The two-replica suite runs the built binary and the real bd against one bare
@@ -89,7 +90,9 @@ func (r *replica) must(name string, args ...string) string {
 	if err != nil {
 		r.t.Fatalf("%s %v in %s: %v\n%s\n%s", name, args, r.dir, err, o, e)
 	}
-	return strings.TrimSpace(o)
+	// bd's JSON envelope (BD_JSON_ENVELOPE=1) unwrapped, as bdx.Exec does
+	// for bops, so the suite runs in either mode.
+	return strings.TrimSpace(string(ledger.Unwrap([]byte(o))))
 }
 
 type result struct {

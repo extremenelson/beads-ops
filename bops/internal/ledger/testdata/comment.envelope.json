@@ -1,0 +1,10 @@
+{
+  "data": {
+    "id": "db8d34be-c3cd-5e67-9bf6-4f3795b1b1be",
+    "issue_id": "fx-lsc",
+    "author": "fixture",
+    "text": "first note",
+    "created_at": "2026-11-15T21:44:09Z"
+  },
+  "schema_version": 1
+}

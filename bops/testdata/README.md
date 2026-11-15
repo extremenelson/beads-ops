@@ -15,6 +15,21 @@
   issue_type assignee owner labels notes parent dependencies[] {issue_id
   depends_on_id type} created_at updated_at started_at lease_expires_at heartbeat_at`.
 
+## bd JSON envelope (bd 1.3.4, `BD_JSON_ENVELOPE=1`; bd 2.0's default)
+
+Captured 2026-11-15 from a throwaway `bd init --prefix fx` ledger with invented
+content, raw and enveloped, in [`internal/ledger/testdata/`](../internal/ledger/testdata/).
+
+- Every `--json` output becomes `{"data": <the raw-mode output>, "schema_version": 1}`.
+  The `data` of `bd ready` and `bd show` is byte-for-byte the raw-mode array.
+- Failures: `{"data": {"error": "...", "hint": "..."}, "schema_version": 1}` on
+  stdout, non-zero exit. Raw mode puts `schema_version` beside `error` instead.
+- Raw-mode objects can carry `schema_version` too (`bd comments add --json` does),
+  so an envelope is an object whose **only** keys are `data` and `schema_version`.
+- `ledger.Unwrap` applies that rule. `bdx.Exec` unwraps every bd output, so the
+  rest of bops parses raw-mode shapes in either mode. The real-bd suites pass
+  with `BD_JSON_ENVELOPE=1` set.
+
 ## Verified bd syntaxes (bd 1.3.4)
 
 Run against a throwaway `bd init` ledger by `BOPS_INTEGRATION=1 go test ./internal/intent`.

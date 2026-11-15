@@ -18,6 +18,13 @@ jobs:
       - name: The Claude Code and Codex bindings are in sync with the manifest
         run: sh ../scripts/check-bindings.sh
   replicas:
+    # Raw JSON and bd's envelope (BD_JSON_ENVELOPE=1, bd 2.0's default) in
+    # parallel, so a parse that only works in one mode fails here.
+    name: replicas (bd JSON envelope=${{ matrix.envelope }})
+    strategy:
+      fail-fast: false
+      matrix:
+        envelope: ["0", "1"]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     defaults: { run: { working-directory: bops } }
@@ -41,4 +48,5 @@ jobs:
       - name: Two-replica suite and live ledger tests
         env:
           BOPS_INTEGRATION: "1"
+          BD_JSON_ENVELOPE: ${{ matrix.envelope }}
         run: go test -v -count=1 -timeout 40m ./cmd/bops ./internal/intent
