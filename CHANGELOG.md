@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Under `lock.mode: none` with no Dolt remote, `bops claim` (and `claim --force`) skips its Dolt pull and push and warns `no Dolt remote: ledger not published`, like `release`, `land`, `sweep`, `sync` and `session-start`. Before, it passed on bd's raw `Error 1105: no remote` from the pull. With a remote, a failed pull is still the `ledger not pulled` warning (bops-oy9.2).
 - `bops version` reports the commit the binary was built from: `revision`, `modified` and `revision_time`, from the go command's build info. In bops's own checkout, `bops doctor` warns (exit unchanged) when the binary predates the last commit to `bops/`, with the `go install` to run. A stale binary had swept bops-oy9.4 with the pre-fix code. Additive; contract 1 is unchanged (bops-y8x).
 - `.gstack/pregate.json` and `scripts/pregate-test.sh` let gstack's `/verify` run the `bops` Go tests: any file under `bops/` runs every package (the two-replica suite stays in CI), and guards run gofmt, vet, the `COMMANDS.md` sync and the `bd-lint-claim` stub tests. Docs and `.beads/` changes need no tests (bops-bj0).
 - `bops sweep` removes the `bops:landing` label after it closes a bead, as SPEC §3.1 says. Before, every swept bead kept it, so `bd list --label bops:landing` returned closed beads. A removal that fails is a warning naming the command to rerun; the bead still counts as closed (bops-oy9.4).

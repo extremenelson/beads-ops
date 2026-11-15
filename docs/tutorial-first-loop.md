@@ -114,12 +114,12 @@ bops claim demo-iq1 --json
   "run": "01M7AWMGT9QKRY2YVF4YWA0VKZ",
   "warnings": [
     "lock.mode is none: …",
-    "ledger not pulled: bd dolt pull: exit status 1: Error: fetch from origin/main: Error 1105: no remote"
+    "no Dolt remote: ledger not published"
   ]
 }
 ```
 
-The bead is yours. The actor recorded with the claim is `BEADS_ACTOR` if set, else your git `user.name`; this page's runs used `alice`. `run` is this worktree's identity, a ULID that `bops` keeps in `~/.local/state/bops/`. The "ledger not pulled" warning is expected here: `claim` tries to pull first, and this ledger has no remote to pull from.
+The bead is yours. The actor recorded with the claim is `BEADS_ACTOR` if set, else your git `user.name`; this page's runs used `alice`. `run` is this worktree's identity, a ULID that `bops` keeps in `~/.local/state/bops/`. The "no Dolt remote" warning is expected here: this ledger has no remote, so `claim` skips the pull and push it would otherwise make, and the claim stays on this machine.
 
 Claiming again from the same worktree is harmless:
 

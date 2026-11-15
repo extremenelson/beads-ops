@@ -461,14 +461,15 @@ func Claim(ctx context.Context, env *Env, id string, force bool) (*ClaimOut, err
 //	already held? --> pull (best effort) --> bd show --> bd update --claim --> journal --> labels, comment, push
 //	    |                                       |               |
 //	    held                                 refused          lost (someone else's assignee)
+//
+// With no Dolt remote there is nothing to pull or push: both are skipped
+// with the warning every other command gives (SPEC §3.0).
 func claimLedger(ctx context.Context, env *Env, id string, out *ClaimOut) (*ClaimOut, error) {
 	out.Warnings = append(out.Warnings, lock.OffWarning)
 	if done, err := env.alreadyHeld(ctx, id, out); done || err != nil {
 		return out, err
 	}
-	if _, err := withLockRetry(ctx, env, "dolt", "pull"); err != nil {
-		out.Warnings = append(out.Warnings, "ledger not pulled: "+err.Error())
-	}
+	publish := env.pullUnlessUnpublished(ctx, out)
 	cur, err := env.show(ctx, id)
 	if err != nil {
 		return nil, err
@@ -490,13 +491,28 @@ func claimLedger(ctx context.Context, env *Env, id string, out *ClaimOut) (*Clai
 		env.event("claim", id, "ledger_claim", OutcomeError, "", err)
 		return out.fail(err)
 	}
-	return env.takeLedger(ctx, id, "", out)
+	return env.takeLedger(ctx, id, "", publish, out)
+}
+
+// pullUnlessUnpublished is a lock-off claim's best-effort pull. It reports
+// whether the ledger has a Dolt remote to publish to; when it has none, the
+// pull is skipped and the claim says the ledger was not published.
+func (e *Env) pullUnlessUnpublished(ctx context.Context, out *ClaimOut) bool {
+	if e.unpublished(ctx) {
+		out.Warnings = append(out.Warnings, noDoltRemoteWarning)
+		return false
+	}
+	if _, err := withLockRetry(ctx, e, "dolt", "pull"); err != nil {
+		out.Warnings = append(out.Warnings, "ledger not pulled: "+err.Error())
+	}
+	return true
 }
 
 // takeLedger journals a hold the ledger has just given this run, then writes
 // the rest of the display. With the lock off nothing repairs the display
 // later, so a failure after the claim is a warning, not ledger_pending.
-func (e *Env) takeLedger(ctx context.Context, id, extra string, out *ClaimOut) (*ClaimOut, error) {
+// publish false (no Dolt remote) skips the push.
+func (e *Env) takeLedger(ctx context.Context, id, extra string, publish bool, out *ClaimOut) (*ClaimOut, error) {
 	if err := e.Lock.Journal.Confirm(id, ""); err != nil { // no sha: a hold with no ref
 		if _, undoErr := e.BD.Run(ctx, "update", id, "--assignee", "", "--status", "open"); undoErr != nil {
 			out.Warnings = append(out.Warnings, "the ledger still shows this claim; clear it with `bd update "+id+" --assignee '' --status open`: "+undoErr.Error())
@@ -519,6 +535,9 @@ func (e *Env) takeLedger(ctx context.Context, id, extra string, out *ClaimOut) (
 	}
 	if err != nil {
 		out.Warnings = append(out.Warnings, "ledger display incomplete: "+err.Error())
+	}
+	if !publish {
+		return out, nil
 	}
 	if _, err := withLockRetry(ctx, e, "dolt", "push"); err != nil {
 		out.Warnings = append(out.Warnings, "ledger not pushed: "+err.Error())
@@ -672,11 +691,11 @@ func claimForce(ctx context.Context, env *Env, id string) (*ClaimOut, error) {
 		return out, err
 	}
 	var ref *lock.Ref // with the lock off there is never a ref: the ledger branch below decides
-	if _, err := withLockRetry(ctx, env, "dolt", "pull"); err != nil {
-		if !env.LockOff {
-			return out.fail(&lock.Error{Code: lock.CodeUnreachable, Err: err})
-		}
-		out.Warnings = append(out.Warnings, "ledger not pulled: "+err.Error())
+	publish := true
+	if env.LockOff {
+		publish = env.pullUnlessUnpublished(ctx, out)
+	} else if _, err := withLockRetry(ctx, env, "dolt", "pull"); err != nil {
+		return out.fail(&lock.Error{Code: lock.CodeUnreachable, Err: err})
 	}
 	if !env.LockOff {
 		var err error
@@ -722,7 +741,7 @@ func claimForce(ctx context.Context, env *Env, id string) (*ClaimOut, error) {
 			env.event("claim", id, "ledger_takeover", OutcomeError, "", err)
 			return out.fail(err)
 		}
-		return env.takeLedger(ctx, id, " takeover="+previous, out)
+		return env.takeLedger(ctx, id, " takeover="+previous, publish, out)
 	}
 	res, err := env.Lock.Replace(ctx, id, expected, lock.StateHeld)
 	if err != nil {
