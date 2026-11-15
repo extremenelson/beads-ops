@@ -15,6 +15,8 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/extremenelson/beads-ops/bops/internal/ledger"
 )
 
 // Runner executes one bd invocation and returns stdout.
@@ -43,19 +45,23 @@ func (e Exec) Run(ctx context.Context, args ...string) ([]byte, error) {
 	cmd.Env = GitEnv(os.Environ())
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	// Callers parse raw-mode JSON; with BD_JSON_ENVELOPE=1 (the default in
+	// bd 2.0) the same payload arrives as {data, schema_version}.
+	body := ledger.Unwrap(out.Bytes())
+	if err != nil {
 		msg := strings.TrimSpace(errb.String())
 		// bd reports failures as {"error": ...} on stdout in --json mode.
 		var e struct{ Error, Hint string }
-		if json.Unmarshal(out.Bytes(), &e) == nil && e.Error != "" {
+		if json.Unmarshal(body, &e) == nil && e.Error != "" {
 			msg = e.Error
 			if e.Hint != "" {
 				msg += " (" + e.Hint + ")"
 			}
 		}
-		return out.Bytes(), fmt.Errorf("bd %s: %w: %s", strings.Join(args, " "), err, msg)
+		return body, fmt.Errorf("bd %s: %w: %s", strings.Join(args, " "), err, msg)
 	}
-	return out.Bytes(), nil
+	return body, nil
 }
 
 // foregroundMaintenance keeps git's automatic maintenance from detaching.

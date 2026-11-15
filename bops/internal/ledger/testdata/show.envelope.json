@@ -1,0 +1,38 @@
+{
+  "data": [
+    {
+      "id": "fx-lsc",
+      "title": "Write the parser",
+      "description": "Parse the input format.",
+      "status": "open",
+      "priority": 1,
+      "issue_type": "task",
+      "owner": "fixture@example.invalid",
+      "created_at": "2026-11-15T21:44:07Z",
+      "created_by": "fixture",
+      "updated_at": "2026-11-15T21:44:07Z",
+      "labels": [
+        "area:parser"
+      ],
+      "dependencies": [
+        {
+          "id": "fx-eii",
+          "title": "Wire the parser into the CLI",
+          "status": "open",
+          "priority": 2,
+          "issue_type": "task",
+          "owner": "fixture@example.invalid",
+          "created_at": "2026-11-15T21:44:08Z",
+          "created_by": "fixture",
+          "updated_at": "2026-11-15T21:44:08Z",
+          "dependency_type": "blocks"
+        }
+      ],
+      "dependent_count": 0,
+      "dependency_count": 1,
+      "comment_count": 0,
+      "revision": "-9182982849604981360"
+    }
+  ],
+  "schema_version": 1
+}

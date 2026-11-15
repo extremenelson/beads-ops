@@ -3,6 +3,7 @@
 package ledger
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -160,12 +161,32 @@ func (e *ErrBD) Error() string {
 	return "bd: " + e.Msg
 }
 
-// DecodeIssues parses the output of a list-shaped bd command.
-//
-// Accepted today: a raw JSON array, or an error object. bd 2.0 will wrap
-// output in an envelope (BD_JSON_ENVELOPE=1 opts in early); support lands
-// here once its shape is pinned by a fixture — see testdata/README.md.
+// Unwrap returns the payload of bd's JSON envelope: an object whose only keys
+// are data and schema_version, which bd 1.3.x prints with BD_JSON_ENVELOPE=1
+// and bd 2.0 will print by default. Anything else, raw-mode output included,
+// is returned unchanged. Raw-mode objects that carry schema_version beside
+// their own fields (comments add, errors) are not envelopes.
+func Unwrap(b []byte) []byte {
+	t := bytes.TrimSpace(b)
+	if len(t) == 0 || t[0] != '{' {
+		return b
+	}
+	var env map[string]json.RawMessage
+	if json.Unmarshal(t, &env) != nil || len(env) != 2 {
+		return b
+	}
+	data, hasData := env["data"]
+	_, hasVersion := env["schema_version"]
+	if !hasData || !hasVersion {
+		return b
+	}
+	return data
+}
+
+// DecodeIssues parses the output of a list-shaped bd command: a JSON array
+// of issues, or an error object, in raw or envelope form.
 func DecodeIssues(b []byte) ([]Issue, error) {
+	b = Unwrap(b)
 	t := strings.TrimSpace(string(b))
 	if t == "" {
 		return nil, nil
@@ -175,7 +196,7 @@ func DecodeIssues(b []byte) ([]Issue, error) {
 		if json.Unmarshal(b, &e) == nil && e.Error != "" {
 			return nil, &ErrBD{e.Error, e.Hint}
 		}
-		return nil, errors.New("ledger: unexpected object from bd (envelope mode is not supported yet)")
+		return nil, errors.New("ledger: unexpected object from bd where a list of issues was expected")
 	}
 	var out []Issue
 	if err := json.Unmarshal(b, &out); err != nil {
@@ -185,8 +206,10 @@ func DecodeIssues(b []byte) ([]Issue, error) {
 }
 
 // DecodeIssue parses `bd show <id> --json`, which returns a one-element
-// array on 1.3.x; a bare object is also accepted.
+// array on 1.3.x; a bare object is also accepted, as is the envelope form of
+// either.
 func DecodeIssue(b []byte) (*Issue, error) {
+	b = Unwrap(b)
 	t := strings.TrimSpace(string(b))
 	if strings.HasPrefix(t, "{") {
 		var e bdError
@@ -210,8 +233,9 @@ func DecodeIssue(b []byte) (*Issue, error) {
 }
 
 // DecodeCommentID parses `bd comments add --json`, an object with the new
-// comment's id.
+// comment's id, in raw or envelope form.
 func DecodeCommentID(b []byte) (string, error) {
+	b = Unwrap(b)
 	var c struct {
 		ID string `json:"id"`
 	}

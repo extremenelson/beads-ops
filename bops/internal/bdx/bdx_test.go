@@ -105,3 +105,27 @@ func TestGitEnv(t *testing.T) {
 		})
 	}
 }
+
+// Exec hands callers bd's raw-mode payload when bd prints the JSON envelope
+// (BD_JSON_ENVELOPE=1, bd 2.0's default), and finds the error inside it.
+func TestExecUnwrapsTheJSONEnvelope(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "bd")
+	script := `#!/bin/sh
+if [ "$1" = fail ]; then
+  printf '{"data":{"error":"no issues found","hint":"try bd history"},"schema_version":1}\n'
+  exit 1
+fi
+printf '{"data":[{"text":"a note"}],"schema_version":1}\n'
+`
+	if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Exec{Bin: p}.Run(context.Background(), "comments", "fx-1", "--json")
+	if err != nil || string(out) != `[{"text":"a note"}]` {
+		t.Fatalf("out %q, err %v", out, err)
+	}
+	_, err = Exec{Bin: p}.Run(context.Background(), "fail")
+	if err == nil || !strings.Contains(err.Error(), "no issues found (try bd history)") {
+		t.Fatalf("err = %v", err)
+	}
+}
