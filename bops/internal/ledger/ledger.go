@@ -36,6 +36,17 @@ type Issue struct {
 	LeaseExpiresAt     *time.Time      `json:"lease_expires_at,omitempty"`
 	HeartbeatAt        *time.Time      `json:"heartbeat_at,omitempty"`
 	Metadata           json.RawMessage `json:"metadata,omitempty"`
+
+	// Gate fields (issue_type gate, from `bd gate list --json`): what the
+	// gate waits on. AwaitID is null for human and timer gates; Timeout is
+	// in nanoseconds.
+	AwaitType string `json:"await_type,omitempty"`
+	AwaitID   string `json:"await_id,omitempty"`
+	Timeout   int64  `json:"timeout,omitempty"`
+	// BlockedBy is the open blockers' ids, from `bd blocked --json`.
+	BlockedBy []string `json:"blocked_by,omitempty"`
+	// DependencyType is the edge type, from `bd dep list <id> --json`.
+	DependencyType string `json:"dependency_type,omitempty"`
 }
 
 // Landed is one entry of metadata.bops.landed (SPEC §3.3).

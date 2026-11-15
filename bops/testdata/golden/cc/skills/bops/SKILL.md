@@ -85,4 +85,5 @@ Exit codes: **0** done, or a read's verdict; **1** could not run: remote or ledg
 | `bops lint <id> [--strict]` | read | Is this bead workable? |
 | `bops sync [--no-push]` | write | Pull, heartbeat, push — with the one retry |
 | `bops doctor` | read | Can the claim lock work against its remote (lock.remote, default origin)? |
+| `bops gates <id>` | read | What is blocking this bead's path? |
 | `bops version` | read | Report bops, contract, and detected bd |

@@ -94,6 +94,8 @@ func run(args []string, stdout, stderr *os.File) int {
 		return cmdSessionStart(ctx, m, rest, wantJSON, stdout, stderr)
 	case "doctor":
 		return cmdDoctor(ctx, m, rest, wantJSON, stdout, stderr)
+	case "gates":
+		return cmdGates(ctx, m, rest, wantJSON, stdout, stderr)
 	}
 	if _, ok := m.Lookup(name); ok {
 		fmt.Fprintf(stderr, "bops %s: specified in contract %d but not yet implemented (did NOT run)\n", name, m.Contract)
