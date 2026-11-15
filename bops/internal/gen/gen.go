@@ -2,10 +2,11 @@
 //
 // Every generator is a pure function of the manifest (and, for prose, the
 // templates embedded beside it) so bindings can be golden-tested (SPEC.md
-// §9). Two targets are registered: docs (docs/COMMANDS.md) and cc (the Claude
-// Code skill, hooks fragment and /bops-next command). The other bindings SPEC
-// §8 plans (Codex, Hermes, Clojure, MCP) are not registered yet, and
-// `bops gen <one of them>` exits 2 as an unknown target.
+// §9). Three targets are registered: docs (docs/COMMANDS.md), cc (the Claude
+// Code skill, hooks fragment and /bops-next command) and codex (the same
+// skill and a Codex hooks fragment). The other bindings SPEC §8 plans
+// (Hermes, Clojure, MCP) are not registered yet, and `bops gen <one of them>`
+// exits 2 as an unknown target.
 package gen
 
 import (
@@ -36,7 +37,8 @@ var registry = map[string]Generator{
 		}
 		return []File{{Path: "COMMANDS.md", Data: b}}, nil
 	},
-	"cc": CC,
+	"cc":    CC,
+	"codex": Codex,
 }
 
 // Targets lists registered generator names.

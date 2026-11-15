@@ -22,7 +22,8 @@ Two failures drove the design.
             │
             ▼
   bops CLI  ── commands.json (embedded) ──► bops gen docs ──► docs/COMMANDS.md
-                                          └► bops gen cc ───► bindings/claude-code
+                                          ├► bops gen cc ───► bindings/claude-code
+                                          └► bops gen codex ► bindings/codex
   cmd/bops     the contract: commands, args, outputs, exit codes
             │
             ▼
@@ -38,7 +39,7 @@ Two failures drove the design.
   writes)
 ```
 
-[`bops/commands.json`](../bops/commands.json) is the contract: every command, argument, wrapped call and output field. It is compiled into the binary (`go:embed`), printed by `bops manifest`, and rendered to [docs/COMMANDS.md](COMMANDS.md) by `bops gen docs`. CI fails if the rendered file and the manifest disagree, and a golden test pins the generator's output. Bindings are meant to be generated from the same bytes, so a binding and the binary it calls can't disagree about the contract. Two targets exist: `docs`, and `cc`, which generates the Claude Code skill, hooks fragment and `/bops-next` command in `bindings/claude-code`, checked in CI the same way. The Codex, Hermes, Clojure and MCP generators are planned ([SPEC §8](../SPEC.md#8-harness-bindings-generated)); those bindings are still hand-written.
+[`bops/commands.json`](../bops/commands.json) is the contract: every command, argument, wrapped call and output field. It is compiled into the binary (`go:embed`), printed by `bops manifest`, and rendered to [docs/COMMANDS.md](COMMANDS.md) by `bops gen docs`. CI fails if the rendered file and the manifest disagree, and a golden test pins the generator's output. Bindings are meant to be generated from the same bytes, so a binding and the binary it calls can't disagree about the contract. Three targets exist: `docs`; `cc`, which generates the Claude Code skill, hooks fragment and `/bops-next` command in `bindings/claude-code`; and `codex`, the same skill and a Codex hooks fragment in `bindings/codex`. CI checks both bindings the same way. The Hermes, Clojure and MCP generators are planned ([SPEC §8](../SPEC.md#8-harness-bindings-generated)); those bindings are still hand-written.
 
 Rules live in exactly one place. A binding that needs a fact calls a command that returns it. `next` is the only place ordering lives; `lint` and `next` share the one implementation of the workability rules.
 

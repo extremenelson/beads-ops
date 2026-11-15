@@ -102,7 +102,7 @@
       "never": ["skip a bops:landing bead with no landed record (it is listed under unknown)"],
       "wraps": ["bd dolt pull", "bd list --status in_progress --limit 0 --json", "forge.is_merged(ref)", "git fetch --prune refs/bops/claims/*", "git push (lease): delete the ref", "bd close <id> --reason 'merged via <ref> (<sha>)'", "bd label remove <id> bops:landing (after the close; a failure is a warning)", "bd dolt push"],
       "output": { "dry_run": "bool", "closed": "string[]", "would_close": "string[]", "pending": "string[]", "unknown": "string[]", "warnings": "string[]?" },
-      "surfaces": { "cc": ["skill"], "clj": "fn", "mcp": { "readOnly": false } }
+      "surfaces": { "cc": ["skill"], "codex": ["skill"], "clj": "fn", "mcp": { "readOnly": false } }
     },
     {
       "name": "stale",
@@ -111,7 +111,7 @@
       "args": { "older-than": { "type": "duration", "default": "stale_minutes", "doc": "Idle longer than this is stale; defaults to the stale_minutes config (120). Age is from the claim ref's at, which note refreshes; a claim with no ref uses updated_at, heartbeat_at and its newest bops: comment." }, "all-machines": { "type": "bool", "default": true, "doc": "false hides claims and orphans from other machines." } },
       "wraps": ["git fetch --prune refs/bops/claims/* (the last sync's copy if offline, with a warning)", "bd list --status in_progress --limit 0 --json", "bd comments <id> --json"],
       "output": { "stale": [ { "id": "string", "run": "string", "actor": "string", "last_event_at": "string", "age_minutes": "int", "same_machine": "bool", "source": "ref|ledger" } ], "orphans": [ { "id": "string", "run": "string", "actor": "string", "at": "string", "age_minutes": "int", "same_machine": "bool" } ], "warnings": "string[]" },
-      "surfaces": { "cc": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": true } }
+      "surfaces": { "cc": ["skill"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": true } }
     },
     {
       "name": "lint",
