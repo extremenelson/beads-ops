@@ -22,7 +22,7 @@
     "scripts/pregate-test.sh": [
       "bops/internal/manifest/manifest_test.go"
     ],
-    "scripts/check-cc-binding.sh": [
+    "scripts/check-bindings.sh": [
       "bops/internal/gen/gen_test.go"
     ],
     ".agents/**": [],
@@ -57,15 +57,17 @@
       "fix": "cd bops && go run ./cmd/bops gen docs > ../docs/COMMANDS.md, and go test ./internal/gen -update if the golden changed (a contract review)"
     },
     {
-      "id": "cc-binding-sync",
+      "id": "bindings-sync",
       "when": [
         "bops/**",
         "bindings/claude-code/**",
+        "bindings/codex/**",
         ".claude/skills/bops/**",
-        "scripts/check-cc-binding.sh"
+        ".agents/skills/bops/**",
+        "scripts/check-bindings.sh"
       ],
-      "command": "sh scripts/check-cc-binding.sh",
-      "fix": "cd bops && go run ./cmd/bops gen cc --out ../bindings/claude-code && cp ../bindings/claude-code/skills/bops/SKILL.md ../.claude/skills/bops/SKILL.md, and go test ./internal/gen -update if the golden changed (a contract review)"
+      "command": "sh scripts/check-bindings.sh",
+      "fix": "run the fix commands at the top of scripts/check-bindings.sh, and go test ./internal/gen -update if the golden changed (a contract review)"
     },
     {
       "id": "bd-lint-claim-stub-tests",
