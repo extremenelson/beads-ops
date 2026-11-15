@@ -31,6 +31,7 @@ If you use gstack, `/verify` runs the tests for you: [`.gstack/pregate.json`](.g
 
 - **Changing a command's arguments or outputs** means editing `bops/commands.json`, then regenerating `docs/COMMANDS.md` with `go run ./cmd/bops gen docs > ../docs/COMMANDS.md`. A changed golden file (`go test ./internal/gen -update`) is a contract change and gets reviewed as one.
 - **Touching the claim lock, `sync` or `claim`** means running the real-`bd` suites too: `BOPS_INTEGRATION=1 go test -count=1 -timeout 40m ./cmd/bops ./internal/intent` with `bd` 1.3.x on `PATH`. CI runs them on every PR that touches `bops/`.
+- **After your PR merges, rebuild the `bops` you run** with `go install ./cmd/bops` from `bops/` on main, before the sweep or any other command. Nothing rebuilds it for you. `bops version` prints the commit it was built from, and `bops doctor` warns when that predates the last change to `bops/`.
 - **Every shipped bug gets a test that fails without the fix** (SPEC §9).
 - **Standard library only.** A new module dependency must be justified here, in this section, in the same PR (SPEC §11a). There are none today.
 - Package boundaries are deliberate: only `internal/bdx` runs `bd`, only `internal/lock` knows refnames, only `internal/forge` knows what a PR is, only `internal/ledger` knows `bd`'s JSON field names. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) explains why.

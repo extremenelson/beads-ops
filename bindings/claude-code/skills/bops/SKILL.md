@@ -52,7 +52,7 @@ Use `bops release <id> --reason <reason>`, with your explanation in a `bops note
 
 ## Closing
 
-Do not close beads yourself. `bops sweep` previews which landed beads have merged PRs, and `bops sweep --dry-run=false` closes them. A person or a scheduled job runs that.
+Do not close beads yourself. `bops sweep` previews which landed beads have merged PRs, and `bops sweep --dry-run=false` closes them. A person or a scheduled job runs that. In the beads-ops repo itself, after a PR that changes `bops/` merges, rebuild first with `(cd bops && go install ./cmd/bops)`: an older binary closes beads with the old code. `bops doctor` warns when the installed one predates the checkout.
 
 ## When something goes wrong
 

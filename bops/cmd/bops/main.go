@@ -139,7 +139,12 @@ type versionOut struct {
 	Bops     string `json:"bops"`
 	Bd       string `json:"bd"`
 	Backend  string `json:"backend"`
-	Warning  string `json:"warning,omitempty"`
+	// Revision, Modified and RevisionTime name the commit this binary was built
+	// from (and its commit time), when the go command recorded one (bops-y8x).
+	Revision     string `json:"revision"`
+	Modified     bool   `json:"modified"`
+	RevisionTime string `json:"revision_time"`
+	Warning      string `json:"warning,omitempty"`
 }
 
 // resolveVersion prefers a version stamped by ldflags, then the module
@@ -153,7 +158,8 @@ func resolveVersion(stamped string, info *debug.BuildInfo) string {
 
 func cmdVersion(ctx context.Context, m *manifest.Manifest, asJSON bool, stdout, stderr *os.File) int {
 	info, _ := debug.ReadBuildInfo()
-	out := versionOut{Contract: m.Contract, Command: "version", OK: true, Bops: resolveVersion(version, info)}
+	b := vcsOf(info)
+	out := versionOut{Contract: m.Contract, Command: "version", OK: true, Bops: resolveVersion(version, info), Revision: b.Revision, Modified: b.Modified, RevisionTime: b.Time}
 	v, err := bdx.DetectVersion(ctx, bdx.Exec{})
 	switch {
 	case errors.Is(err, bdx.ErrNotFound):
@@ -171,7 +177,7 @@ func cmdVersion(ctx context.Context, m *manifest.Manifest, asJSON bool, stdout, 
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(out)
 	} else {
-		fmt.Fprintf(stdout, "bops=%s\ncontract=%d\nbd=%s\nbackend=%s\n", out.Bops, out.Contract, out.Bd, out.Backend)
+		fmt.Fprintf(stdout, "bops=%s\ncontract=%d\nbd=%s\nbackend=%s\nrevision=%s\nmodified=%t\nrevision_time=%s\n", out.Bops, out.Contract, out.Bd, out.Backend, out.Revision, out.Modified, out.RevisionTime)
 		if out.Warning != "" {
 			fmt.Fprintln(stderr, "warning:", out.Warning)
 		}
