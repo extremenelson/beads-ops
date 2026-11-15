@@ -1,0 +1,66 @@
+{
+  "$schema": "https://github.com/garrytan/gstack/docs/pregate.md#pregate-v1",
+  "runner": "scripts/pregate-test.sh {files}",
+  "timeout_s": 900,
+  "local": [
+    "bops.yml/test"
+  ],
+  "dependencies": {
+    "bops/**": [
+      "bops/cmd/bops/commands_test.go",
+      "bops/internal/bdx/bdx_test.go",
+      "bops/internal/config/config_test.go",
+      "bops/internal/forge/forge_test.go",
+      "bops/internal/gen/gen_test.go",
+      "bops/internal/intent/intent_test.go",
+      "bops/internal/lock/lock_test.go",
+      "bops/internal/manifest/manifest_test.go",
+      "bops/internal/runstate/runstate_test.go"
+    ],
+    "scripts/bd-lint-claim.sh": [],
+    "scripts/test/**": [],
+    "scripts/pregate-test.sh": [
+      "bops/internal/manifest/manifest_test.go"
+    ],
+    ".agents/**": [],
+    ".beads/**": [],
+    ".claude/**": [],
+    ".codex/**": [],
+    ".github/**": [],
+    ".gstack/**": [],
+    "bindings/**": [],
+    "scripts/plan/**": [],
+    "scripts/systemd/**": [],
+    "vendor/**": []
+  },
+  "guards": [
+    {
+      "id": "go-fmt-vet",
+      "when": [
+        "bops/**/*.go",
+        "bops/go.mod",
+        "bops/go.sum"
+      ],
+      "command": "cd bops && test -z \"$(gofmt -l .)\" && go vet ./...",
+      "fix": "cd bops && gofmt -w . && go vet ./..."
+    },
+    {
+      "id": "commands-md-sync",
+      "when": [
+        "bops/**",
+        "docs/COMMANDS.md"
+      ],
+      "command": "cd bops && go run ./cmd/bops gen docs | diff - ../docs/COMMANDS.md",
+      "fix": "cd bops && go run ./cmd/bops gen docs > ../docs/COMMANDS.md, and go test ./internal/gen -update if the golden changed (a contract review)"
+    },
+    {
+      "id": "bd-lint-claim-stub-tests",
+      "when": [
+        "scripts/bd-lint-claim.sh",
+        "scripts/test/**"
+      ],
+      "command": "bash scripts/test/run.sh",
+      "fix": "fix scripts/bd-lint-claim.sh or the stub in scripts/test/bd-stub until bash scripts/test/run.sh passes"
+    }
+  ]
+}

@@ -12,3 +12,6 @@
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+
+# gstack run records (the policy, .gstack/pregate.json, is tracked)
+.gstack/tmp/
