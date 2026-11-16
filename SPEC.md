@@ -133,7 +133,6 @@ The manifest is [`bops/commands.json`](bops/commands.json). It is embedded in th
 - Exit codes: **0** done, or a read's verdict; **1** could not run (remote or ledger unreachable, precondition unverifiable, `bd` error); **2** usage; **3** a write's negative verdict (`lost`, `refused`), with `ok:false`, so `bops claim x && work` cannot proceed. Diagnostics on stderr only.
 - Every JSON result carries `{"contract":1,"command":"<name>","ok":<bool>, ...}`. A failure that could not run also carries a stable `code` (below) and an `error` with credentials scrubbed.
 - Budgets: `claim`, `release`, `note` and `session-start` have 60 s, `sync` 2 min, `sweep` 5 min, every other command 30 s. Each git call has its own 20 s limit and runs without a terminal prompt.
-- `deps` is specified but not yet implemented; it prints so on stderr and exits 1 without running.
 
 **Ownership outcomes** (`claim`, `release`, `note`, `land`):
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -574,4 +575,23 @@ func cmdGates(ctx context.Context, m *manifest.Manifest, args []string, asJSON b
 	defer store.Close()
 	out, err := intent.Gates(ctx, env, fs.Arg(0))
 	return emit(m, "gates", asJSON, out, err, stdout, stderr)
+}
+
+func cmdDeps(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
+	fs := newFlagSet("deps", stderr)
+	transitive := fs.Bool("transitive", false, "the whole closure, not only direct edges")
+	path := fs.Bool("path", false, "add the longest chain of open beads ending at the bead")
+	engine := fs.String("engine", "bd", "bd (cte and graph are reserved)")
+	fs.Bool("json", false, "")
+	if err := parseAnyOrder(fs, args); err != nil || fs.NArg() != 1 || !slices.Contains([]string{"bd", "cte", "graph"}, *engine) {
+		fmt.Fprintln(stderr, "usage: bops deps <id> [--transitive] [--path] [--engine bd|cte|graph]")
+		return exitUsage
+	}
+	env, store, err := newEnv(runstate.Read)
+	if err != nil {
+		return emit(m, "deps", asJSON, nil, err, stdout, stderr)
+	}
+	defer store.Close()
+	out, err := intent.Deps(ctx, env, fs.Arg(0), intent.DepsOpts{Transitive: *transitive, Path: *path, Engine: *engine})
+	return emit(m, "deps", asJSON, out, err, stdout, stderr)
 }

@@ -175,9 +175,9 @@
         "path": { "type": "bool", "default": false },
         "engine": { "type": "enum", "values": ["bd", "cte", "graph"], "default": "bd" }
       },
-      "wraps": ["bd dep list <id> --json", "bd sql (engine=cte)"],
+      "wraps": ["bd list --all --include-gates --limit 0 --json (engine=bd: one call; the graph is the beads not closed, joined by blocks, conditional-blocks and waits-for edges; parent-child is not one; a blocker the list hides counts as open)", "depth and critical_path: the longest chain of open beads ending at <id>, by Kahn's algorithm in Go; a cycle among the beads <id> waits on exits 1 naming it", "engine=cte and engine=graph: reserved, exit 1 as not implemented"],
       "output": { "blocks": "string[]", "blocked_by": "string[]", "critical_path": "string[]?", "depth": "int" },
-      "surfaces": { "cc": [], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": true } }
+      "surfaces": { "cc": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": true } }
     },
     {
       "name": "version",
