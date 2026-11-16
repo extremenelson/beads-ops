@@ -401,7 +401,7 @@ Blockers, dependents, longest path
 | `--path` | bool | `false` |  |
 | `--transitive` | bool | `false` |  |
 
-Wraps: `bd dep list <id> --json`, `bd sql (engine=cte)`.
+Wraps: `bd list --all --include-gates --limit 0 --json (engine=bd: one call; the graph is the beads not closed, joined by blocks, conditional-blocks and waits-for edges; parent-child is not one; a blocker the list hides counts as open)`, `depth and critical_path: the longest chain of open beads ending at <id>, by Kahn's algorithm in Go; a cycle among the beads <id> waits on exits 1 naming it`, `engine=cte and engine=graph: reserved, exit 1 as not implemented`.
 
 Output:
 

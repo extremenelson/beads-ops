@@ -10,6 +10,7 @@
       "bops/cmd/bops/commands_test.go",
       "bops/internal/bdx/bdx_test.go",
       "bops/internal/config/config_test.go",
+      "bops/internal/depgraph/depgraph_test.go",
       "bops/internal/forge/forge_test.go",
       "bops/internal/gen/gen_test.go",
       "bops/internal/intent/intent_test.go",

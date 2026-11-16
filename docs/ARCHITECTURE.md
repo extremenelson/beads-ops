@@ -27,7 +27,7 @@ Two failures drove the design.
   cmd/bops     the contract: commands, args, outputs, exit codes
             │
             ▼
-  internal/intent      next, claim, note, land, release, sweep, stale, sync, lint, gates, session-start, doctor
+  internal/intent      next, claim, note, land, release, sweep, stale, sync, lint, gates, deps, session-start, doctor
      │         │              │                 │
      ▼         ▼              ▼                 ▼
   internal/  internal/     internal/          internal/
