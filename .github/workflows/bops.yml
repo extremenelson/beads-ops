@@ -54,6 +54,11 @@ jobs:
           bd version
       - name: Wait for the dolt sql-server
         run: for i in $(seq 60); do nc -z 127.0.0.1 3306 && exit 0; sleep 1; done; exit 1
+      # Dolt's background statistics job recomputes after the test's bulk
+      # load, which may be what slowed the first cte query past bd sql's 10s
+      # read timeout on a 2-CPU runner (bops-oy9.6). Stop it.
+      - name: Stop the dolt sql-server's statistics job
+        run: docker exec ${{ job.services.dolt.id }} dolt sql -q "call dolt_stats_stop()"
       - name: Two-replica suite and live ledger tests
         env:
           BOPS_INTEGRATION: "1"

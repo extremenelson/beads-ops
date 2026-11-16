@@ -136,6 +136,14 @@ func TestLiveDepsCTEMatchesBD(t *testing.T) {
 	for i := 7; i < len(ids); i += 97 {
 		sample = append(sample, ids[i])
 	}
+	// One warm-up call before the parity checks: on CI runners the first
+	// query after the bulk load outlasted bd sql's 10s read timeout where
+	// later ones took 2s. Log how long it took; fail only if the parity
+	// calls below do.
+	start := time.Now()
+	_, err := intent.Deps(ctx, env, chain[len(chain)-1], intent.DepsOpts{Engine: "cte"}) // warm-up
+	t.Logf("warm-up cte call: %s, err %v", time.Since(start).Round(time.Millisecond), err)
+
 	var slowest time.Duration
 	for _, id := range sample {
 		for _, o := range []intent.DepsOpts{{}, {Transitive: true, Path: true}} {
