@@ -1,7 +1,7 @@
 name: bops
 on:
-  push: { paths: ["bops/**", "SPEC.md", ".github/workflows/bops.yml", "bindings/claude-code/**", "bindings/codex/**", "bindings/clojure/**", ".claude/skills/bops/**", ".agents/skills/bops/**", "scripts/check-bindings.sh"] }
-  pull_request: { paths: ["bops/**", "SPEC.md", "bindings/claude-code/**", "bindings/codex/**", "bindings/clojure/**", ".claude/skills/bops/**", ".agents/skills/bops/**", "scripts/check-bindings.sh"] }
+  push: { paths: ["bops/**", "SPEC.md", ".github/workflows/bops.yml", "bindings/claude-code/**", "bindings/codex/**", "bindings/clojure/**", "bindings/mcp/**", ".claude/skills/bops/**", ".agents/skills/bops/**", "scripts/check-bindings.sh"] }
+  pull_request: { paths: ["bops/**", "SPEC.md", "bindings/claude-code/**", "bindings/codex/**", "bindings/clojure/**", "bindings/mcp/**", ".claude/skills/bops/**", ".agents/skills/bops/**", "scripts/check-bindings.sh"] }
 jobs:
   test:
     runs-on: ubuntu-latest

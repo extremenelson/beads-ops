@@ -2,11 +2,12 @@
 //
 // Every generator is a pure function of the manifest (and, for prose, the
 // templates embedded beside it) so bindings can be golden-tested (SPEC.md
-// §9). Four targets are registered: docs (docs/COMMANDS.md), cc (the Claude
+// §9). Five targets are registered: docs (docs/COMMANDS.md), cc (the Claude
 // Code skill, hooks fragment and /bops-next command), codex (the same skill
-// and a Codex hooks fragment) and clj (a Clojure namespace with Malli
-// schemas). The other bindings SPEC §8 plans (Hermes, MCP) are not
-// registered yet, and `bops gen <one of them>` exits 2 as an unknown target.
+// and a Codex hooks fragment), clj (a Clojure namespace with Malli schemas)
+// and mcp (the tools/list result `bops serve-mcp` serves; `bops gen mcp
+// --enable-writes` adds the write tools). Hermes, which SPEC §8 also plans,
+// is not registered yet, and `bops gen hermes` exits 2 as an unknown target.
 package gen
 
 import (
@@ -40,6 +41,7 @@ var registry = map[string]Generator{
 	"cc":    CC,
 	"clj":   Clj,
 	"codex": Codex,
+	"mcp":   func(m *manifest.Manifest) ([]File, error) { return MCP(m, false) },
 }
 
 // Targets lists registered generator names.

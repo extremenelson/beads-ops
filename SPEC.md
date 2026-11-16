@@ -199,7 +199,7 @@ The generator reads `commands.json` and emits:
 | Codex | `bops gen codex --out <dir>`: `skills/bops/SKILL.md` (for `.agents/skills/bops/`) + `hooks.json` fragment to merge into `.codex/hooks.json` (`SessionStart → bops session-start --hook-json`, matcher `startup\|resume\|clear`) | same prose and hook policy as Claude Code; the hook shape follows upstream bd's Codex hooks, unverified against a live Codex run |
 | Hermes | `tools/bops.json` tool descriptors mapping to CLI invocations | format TBD after Hermes research |
 | Clojure (Kestrel or any) | `bops gen clj --out <dir>`: `bops.clj` (namespace `bops`: one fn per command whose `surfaces.clj` is `fn`, shelling out to `bops <command> --json` and returning `{:exit :doc :err}`; a Malli schema per output, the envelope merged with the command's `output`) + `bb.edn` | exit 3 is returned, not thrown; a bad call (missing required option, unknown option) throws before `bops` runs; in-process option later |
-| MCP | `mcp/tools.json`: one tool per command; `kind: write` tools omitted unless `--enable-writes`; results paginated at 20 kB | respects CC's 25k-token result cap |
+| MCP | `bops serve-mcp` on stdio serving `bindings/mcp/tools.json` (`bops gen mcp`): one tool per command with an `mcp` surface; `kind: write` tools omitted unless `--enable-writes`; results paginated at 20 kB with a cursor | respects CC's 25k-token result cap |
 | Docs | `docs/COMMANDS.md` | |
 
 Bindings carry `contract=<n>` and refuse to run against a mismatched `bops version`.
