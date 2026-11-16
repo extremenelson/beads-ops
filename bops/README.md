@@ -34,7 +34,7 @@ New to `bops`? Start with the [tutorial](../docs/tutorial-first-loop.md). Every 
 | `manifest` | Print the embedded `commands.json` | read |
 | `gen <target>` | Render a binding from the manifest (`docs` today) | read |
 
-`bops deps --engine cte` and `--engine graph` are in the manifest but not implemented. They exit 1 with `did NOT run`, so a binding never mistakes "unimplemented" for "nothing to do".
+`bops deps --engine graph` is in the manifest but not implemented. It exits 1 with `did NOT run`, so a binding never mistakes "unimplemented" for "nothing to do". `--engine cte` needs bd in server mode (`bd init --server`); on an embedded ledger it exits 1 saying so.
 
 Output is JSON when stdout is not a terminal or with `--json`, and `key=value` lines on a terminal. Exit codes:
 

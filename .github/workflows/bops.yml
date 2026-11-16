@@ -30,6 +30,13 @@ jobs:
     defaults: { run: { working-directory: bops } }
     env:
       BD_VERSION: 1.3.4
+    # A dolt sql-server for the server-mode ledger that deps --engine cte
+    # needs (bd sql does not run on an embedded ledger).
+    services:
+      dolt:
+        image: dolthub/dolt-sql-server:2.7.3
+        env: { DOLT_ROOT_HOST: "%" }
+        ports: ["3306:3306"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -45,8 +52,11 @@ jobs:
           tar xzf "$tarball" bd
           sudo install bd /usr/local/bin/bd
           bd version
+      - name: Wait for the dolt sql-server
+        run: for i in $(seq 60); do nc -z 127.0.0.1 3306 && exit 0; sleep 1; done; exit 1
       - name: Two-replica suite and live ledger tests
         env:
           BOPS_INTEGRATION: "1"
+          BOPS_DOLT_SERVER: 127.0.0.1:3306
           BD_JSON_ENVELOPE: ${{ matrix.envelope }}
         run: go test -v -count=1 -timeout 40m ./cmd/bops ./internal/intent

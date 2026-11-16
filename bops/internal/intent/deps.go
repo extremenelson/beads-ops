@@ -12,7 +12,7 @@ import (
 type DepsOpts struct {
 	Transitive bool
 	Path       bool
-	Engine     string // bd; cte and graph are reserved
+	Engine     string // bd, cte (bd in server mode); graph is reserved
 }
 
 // DepsOut is the result of `bops deps <id>`.
@@ -33,11 +33,15 @@ var waitEdges = map[string]bool{"blocks": true, "conditional-blocks": true, "wai
 // that chain. The graph is every bead that is not closed, from one
 // `bd list --all --include-gates --limit 0 --json` (bd hides gates from list
 // otherwise), so a closed blocker no longer counts. A cycle among the beads it
-// waits on is an error naming the cycle.
+// waits on is an error naming the cycle. engine=cte gives the same answer
+// from a recursive query through bd sql, on a ledger in server mode
+// (deps_cte.go).
 func Deps(ctx context.Context, env *Env, id string, o DepsOpts) (*DepsOut, error) {
 	switch o.Engine {
 	case "", "bd":
-	case "cte", "graph":
+	case "cte":
+		return depsCTE(ctx, env, id, o)
+	case "graph":
 		return nil, fmt.Errorf("deps: engine=%s is reserved in contract 1 but not yet implemented; use engine=bd", o.Engine)
 	default:
 		return nil, fmt.Errorf("deps: unknown engine %q", o.Engine)
