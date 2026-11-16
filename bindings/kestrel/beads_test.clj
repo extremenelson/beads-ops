@@ -1,9 +1,11 @@
 ;; Smoke test for beads.clj: the namespace loads, and parse-claim maps the
 ;; `bops claim --json` shapes (bops/commands.json `claim`, SPEC §4) to results.
-;; Needs no bd or bops. Run from the repo root:
-;;   bb -Sdeps '{:deps {metosin/malli {:mvn/version "0.16.1"}}}' bindings/kestrel/beads_test.clj
+;; Needs no bd or bops. bops calls go through the generated namespace bops
+;; (bindings/clojure/bops.clj), stubbed at bops/run. Run from the repo root:
+;;   bb --config bindings/kestrel/bb.edn bindings/kestrel/beads_test.clj
 (require '[clojure.test :refer [deftest is run-tests]]
          '[babashka.process :as p]
+         '[bops]
          '[cheshire.core :as json])
 
 (load-file "bindings/kestrel/beads.clj")
@@ -49,12 +51,12 @@
 
 (deftest claim-throws-when-bops-cannot-run
   (with-redefs [b/lint (fn [_ _] {:workable true})
-                b/bops (fn [_ & _] {:exit 1 :err "" :doc {:ok false :code "no_origin" :error "no remote" :outcome "error"}})]
+                bops/run (fn [_ & _] {:exit 1 :err "" :doc {:ok false :code "no_origin" :error "no remote" :outcome "error"}})]
     (let [e (try (b/claim! {} "bd-a1") nil (catch clojure.lang.ExceptionInfo e e))]
       (is (some? e))
       (is (= "no_origin" (:code (ex-data e))))))
   (with-redefs [b/lint (fn [_ _] {:workable true})
-                b/bops (fn [_ & _] {:exit 3 :err "" :doc {:ok false :outcome "lost" :holder {:actor "x"}}})]
+                bops/run (fn [_ & _] {:exit 3 :err "" :doc {:ok false :outcome "lost" :holder {:actor "x"}}})]
     (is (= :lost (:outcome (b/claim! {} "bd-a1"))))))
 
 ;; --- release / land / sync parsers ---------------------------------------
@@ -131,18 +133,18 @@
 (deftest block-and-gate
   (doseq [[f reason] [[b/block! "blocked"] [b/gate-human! "human"]]]
     (let [calls (atom [])]
-      (with-redefs [b/bops (stub-bops calls {"release" released})
+      (with-redefs [bops/run (stub-bops calls {"release" released})
                     b/bd   (fn [& _] {})]
         (is (= :released (:outcome (f {} "bd-a1" "why"))))
         (is (= ["release" "bd-a1" "--reason" reason] (take 4 (first @calls))))
         (is (= 1 (count @calls)))))
     (let [bd-calls (atom [])]
-      (with-redefs [b/bops (stub-bops (atom []) {"release" lost})
+      (with-redefs [bops/run (stub-bops (atom []) {"release" lost})
                     b/bd   (fn [& args] (swap! bd-calls conj (vec args)) {})]
         (is (= :lost (:outcome (f {} "bd-a1" "why"))))
         (is (empty? @bd-calls) "a displaced holder writes nothing")))
     (let [bd-calls (atom [])]
-      (with-redefs [b/bops (stub-bops (atom []) {"release" cant-run})
+      (with-redefs [bops/run (stub-bops (atom []) {"release" cant-run})
                     b/bd   (fn [& args] (swap! bd-calls conj (vec args)) {})]
         (let [e (thrown #(f {} "bd-a1" "why"))]
           (is (= "bops release could not run" (ex-message e)))
@@ -152,20 +154,20 @@
 ;; block!'s BLOCKER text rides in the release itself: one write, no raw bd.
 (deftest block-sends-its-blocker-through-release
   (let [calls (atom []) bd-calls (atom [])]
-    (with-redefs [b/bops (fn [cfg & args] (swap! calls conj [(:in cfg) (vec args)]) released)
+    (with-redefs [bops/run (fn [cfg & args] (swap! calls conj [(:in cfg) (vec args)]) released)
                   b/bd   (fn [& args] (swap! bd-calls conj (vec args)) {})]
       (is (= :released (:outcome (b/block! {:actor "k"} "bd-a1" "waiting on key"))))
       (is (= [["BLOCKER: waiting on key" ["release" "bd-a1" "--reason" "blocked" "--file" "-"]]] @calls)
           "the text goes on stdin, asked for with --file -")
       (is (empty? @bd-calls) "no raw bd note write")))
   (let [bd-calls (atom [])]
-    (with-redefs [b/bops (fn [_ & _] lost)
+    (with-redefs [bops/run (fn [_ & _] lost)
                   b/bd   (fn [& args] (swap! bd-calls conj (vec args)) {})]
       (is (= :lost (:outcome (b/block! {} "bd-a1" "why"))))
       (is (empty? @bd-calls))))
   (doseq [blank [nil "" "   \n"]]
     (let [calls (atom [])]
-      (with-redefs [b/bops (fn [_ & args] (swap! calls conj (vec args)) released)
+      (with-redefs [bops/run (fn [_ & args] (swap! calls conj (vec args)) released)
                     b/bd   (fn [& _] (throw (ex-info "bd called" {})))]
         (is (= "block! needs a reason" (ex-message (thrown #(b/block! {} "bd-a1" blank)))))
         (is (empty? @calls) "a blank reason is refused before bops runs")))))
@@ -173,9 +175,9 @@
 (deftest bops-passes-in-as-stdin
   (let [seen (atom nil)]
     (with-redefs [p/sh (fn [opts & cmd] (reset! seen [opts cmd]) {:exit 0 :out "{}" :err ""})]
-      (b/bops {:in "BLOCKER: x"} "release" "bd-a1")
+      (bops/run {:in "BLOCKER: x"} "release" "bd-a1")
       (is (= "BLOCKER: x" (:in (first @seen))))
-      (b/bops {} "release" "bd-a1")
+      (bops/run {} "release" "bd-a1")
       (is (not (contains? (first @seen) :in)) "no :in, no stdin"))))
 
 ;; babashka.process/sh takes the program and its args as separate strings: a
@@ -183,7 +185,7 @@
 (deftest sh-gets-the-command-as-strings
   (let [seen (atom [])]
     (with-redefs [p/sh (fn [_ & cmd] (swap! seen conj (vec cmd)) {:exit 0 :out "{}" :err ""})]
-      (b/bops {:bops-path "/x/bops"} "release" "bd-a1")
+      (bops/run {:bops-path "/x/bops"} "release" "bd-a1")
       (b/bd "show" "bd-a1")
       (b/lint {:actor "k" :machine-label "m"} "bd-a1")
       (is (= [["/x/bops" "release" "bd-a1" "--json"]
@@ -193,14 +195,14 @@
 
 (deftest gate-human-writes-the-gate-and-no-label
   (let [bd-calls (atom [])]
-    (with-redefs [b/bops (stub-bops (atom []) {"release" released})
+    (with-redefs [bops/run (stub-bops (atom []) {"release" released})
                   b/bd   (fn [& args] (swap! bd-calls conj (vec args)) {})]
       (b/gate-human! {} "bd-a1" "why")
       (is (= [["gate" "create" "--type" "human" "--blocks" "bd-a1" "--reason" "why"]] @bd-calls)
           "bops release --reason human writes needs-human; no second label write"))))
 
 (deftest session-start-skips-both-needs-human-spellings
-  (with-redefs [b/bops (stub-bops (atom []) {"sync" {:exit 0 :err "" :doc {:ok true :pulled true :pushed true}}})
+  (with-redefs [bops/run (stub-bops (atom []) {"sync" {:exit 0 :err "" :doc {:ok true :pulled true :pushed true}}})
                 b/bd   (fn [& args]
                          (case (vec args)
                            ["list" "--status" "in_progress"] []
@@ -213,7 +215,7 @@
 
 (deftest close-lands-then-releases-done
   (let [calls (atom [])]
-    (with-redefs [b/bops (stub-bops calls {"land" landed "release" released})
+    (with-redefs [bops/run (stub-bops calls {"land" landed "release" released})
                   b/bd   (fn [& _] (throw (ex-info "close! must not call raw bd" {})))]
       (let [r (b/close! {} task pr)]
         (is (= :released (:outcome r)))
@@ -221,25 +223,31 @@
       (is (= [["land" "bd-a1" "--ref" (:ref pr) "--sha" (:sha pr)]
               ["release" "bd-a1" "--reason" "done"]] @calls))))
   (let [calls (atom [])]
-    (with-redefs [b/bops (stub-bops calls {"land" lost})]
+    (with-redefs [bops/run (stub-bops calls {"land" lost})]
       (is (= :lost (:outcome (b/close! {} task pr))))
       (is (= 1 (count @calls)) "no release after a lost landing")))
-  (with-redefs [b/bops (stub-bops (atom []) {"land" landed "release" lost})]
+  (with-redefs [bops/run (stub-bops (atom []) {"land" landed "release" lost})]
     (is (= :lost (:outcome (b/close! {} task pr)))))
-  (with-redefs [b/bops (stub-bops (atom []) {"land" cant-run})]
+  (with-redefs [bops/run (stub-bops (atom []) {"land" cant-run})]
     (is (= "bops land could not run" (ex-message (thrown #(b/close! {} task pr))))))
-  (with-redefs [b/bops (stub-bops (atom []) {"land" landed "release" cant-run})]
+  (with-redefs [bops/run (stub-bops (atom []) {"land" landed "release" cant-run})]
     (let [e (thrown #(b/close! {} task pr))]
       (is (= "bops release could not run" (ex-message e)))
       (is (= "unreachable" (:code (ex-data e))))))
   (let [calls (atom [])]
-    (with-redefs [b/bops (stub-bops calls {"land" landed "release" released})]
+    (with-redefs [bops/run (stub-bops calls {"land" landed "release" released})]
       (is (= "agents do not close epics" (ex-message (thrown #(b/close! {} {:id "bd-e" :issue_type "epic"} pr)))))
       (is (some? (thrown #(b/close! {} task {:ref "u"}))) "close! needs a sha")
       (is (empty? @calls)))))
 
+(deftest close-passes-verify
+  (let [calls (atom [])]
+    (with-redefs [bops/run (stub-bops calls {"land" landed "release" released})]
+      (b/close! {} task (assoc pr :verify true))
+      (is (= ["land" "bd-a1" "--ref" (:ref pr) "--sha" (:sha pr) "--verify"] (first @calls))))))
+
 (deftest sync-never-throws
-  (with-redefs [b/bops (stub-bops (atom []) {"sync" cant-run})]
+  (with-redefs [bops/run (stub-bops (atom []) {"sync" cant-run})]
     (is (= [false true "unreachable"] ((juxt :synced :offline :code) (b/sync! {}))))))
 
 (let [{:keys [fail error]} (run-tests)]

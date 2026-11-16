@@ -1,7 +1,7 @@
 name: bops
 on:
-  push: { paths: ["bops/**", "SPEC.md", ".github/workflows/bops.yml", "bindings/claude-code/**", "bindings/codex/**", ".claude/skills/bops/**", ".agents/skills/bops/**", "scripts/check-bindings.sh"] }
-  pull_request: { paths: ["bops/**", "SPEC.md", "bindings/claude-code/**", "bindings/codex/**", ".claude/skills/bops/**", ".agents/skills/bops/**", "scripts/check-bindings.sh"] }
+  push: { paths: ["bops/**", "SPEC.md", ".github/workflows/bops.yml", "bindings/claude-code/**", "bindings/codex/**", "bindings/clojure/**", ".claude/skills/bops/**", ".agents/skills/bops/**", "scripts/check-bindings.sh"] }
+  pull_request: { paths: ["bops/**", "SPEC.md", "bindings/claude-code/**", "bindings/codex/**", "bindings/clojure/**", ".claude/skills/bops/**", ".agents/skills/bops/**", "scripts/check-bindings.sh"] }
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -15,7 +15,7 @@ jobs:
       - run: go test ./...
       - name: docs/COMMANDS.md is in sync with the manifest
         run: go run ./cmd/bops gen docs | diff - ../docs/COMMANDS.md
-      - name: The Claude Code and Codex bindings are in sync with the manifest
+      - name: The Claude Code, Codex and Clojure bindings are in sync with the manifest
         run: sh ../scripts/check-bindings.sh
   replicas:
     # Raw JSON and bd's envelope (BD_JSON_ENVELOPE=1, bd 2.0's default) in

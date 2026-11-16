@@ -1,8 +1,10 @@
 (ns kestrel.skills.beads
   "bd CLI as Kestrel's durable task memory. Policy per docs/PROCESS.md.
-   DRAFT — not yet run against a live bd or bops. See README.md for what to
-   verify."
+   Every bops call goes through the generated namespace bops
+   (bindings/clojure/bops.clj, from `bops gen clj`); this file is Kestrel's
+   policy on top of it. Not yet run against a live bd; see README.md."
   (:require [babashka.process :as p]
+            [bops]
             [cheshire.core :as json]
             [clojure.string :as str]
             [malli.core :as m]))
@@ -42,22 +44,6 @@
                       (merge {:args args :exit exit :err err}
                              (try (json/parse-string err true) (catch Exception _ nil))))))
     (json/parse-string out true)))
-
-(defn bops
-  "Run bops with --json. Never throws on exit status: returns
-   {:exit n :doc parsed-json-or-nil :err stderr}, because exit 3 is a verdict
-   (lost, refused), not a failure. `cfg` supplies :bops-path (default \"bops\")
-   and :actor, passed as BEADS_ACTOR so the claim ref and the ledger assignee
-   match what `session-start` filters on. `:in`, when set, is written to bops's
-   stdin (pair it with `--file -`: bops reads stdin only when asked)."
-  [{:keys [bops-path actor in] :or {bops-path "bops"}} & args]
-  (let [opts (cond-> {:continue true}
-               actor (assoc :extra-env {"BEADS_ACTOR" actor})
-               in    (assoc :in in))
-        {:keys [exit out err]} (apply p/sh opts bops-path (concat args ["--json"]))]
-    {:exit exit
-     :err  err
-     :doc  (try (json/parse-string out true) (catch Exception _ nil))}))
 
 (defn- one [x] (if (sequential? x) (first x) x))
 
@@ -114,7 +100,7 @@
    {:synced false :offline true :code ..} when bops could not run."
   ([] (sync! {}))
   ([cfg]
-   (let [{:keys [exit doc err]} (bops cfg "sync")]
+   (let [{:keys [exit doc err]} (bops/sync cfg)]
      (assoc (parse-sync exit doc) :err err))))
 
 (def ^:private legacy-needs-human
@@ -212,12 +198,12 @@
 (defn parse-land    [exit doc] (parse-outcome "land" exit doc))
 
 (defn- owned!
-  "Run an ownership command and parse it. Throws ex-info \"bops <command>
-   could not run\" (the parse map plus :id and :err as data) on :error;
-   otherwise returns the parse map, :lost and :refused included."
-  [cfg command id & args]
-  (let [{:keys [exit doc err]} (apply bops cfg command id args)
-        result (parse-outcome command exit doc)]
+  "Parse the result of an ownership command (a generated bops fn's
+   {:exit :doc :err}). Throws ex-info \"bops <command> could not run\" (the
+   parse map plus :id and :err as data) on :error; otherwise returns the
+   parse map, :lost and :refused included."
+  [command id {:keys [exit doc err]}]
+  (let [result (parse-outcome command exit doc)]
     (when (= :error (:outcome result))
       (throw (ex-info (str "bops " command " could not run")
                       (assoc result :id id :err err))))
@@ -237,7 +223,7 @@
   (let [{:keys [workable fails] :as r} (lint cfg id)]
     (when-not workable
       (throw (ex-info "bead not workable" {:id id :fails fails :lint r})))
-    (owned! cfg "claim" id)))
+    (owned! "claim" id (bops/claim cfg id))))
 
 (defn handoff! [id handoff]
   (m/assert Handoff handoff)
@@ -264,19 +250,18 @@
   [cfg id reason]
   (when (str/blank? reason)
     (throw (ex-info "block! needs a reason" {:id id})))
-  (owned! (assoc cfg :in (str "BLOCKER: " reason))
-          "release" id "--reason" "blocked" "--file" "-"))
+  (owned! "release" id (bops/release cfg id {:reason "blocked" :text (str "BLOCKER: " reason)})))
 
 (defn gate-human!
   "`bops release <id> --reason human`: deletes the claim ref, drops this run's
    hold, clears the assignee, reopens the bead and labels it needs-human.
    Returns the `parse-release` map. Only on :released does it then, with raw
-   bd, create the human gate (`bd gate create --type human`; bops has no gate
-   command in contract 1). :lost and :refused write nothing.
+   bd, create the human gate (`bd gate create --type human`; `bops gates`
+   only reads gates). :lost and :refused write nothing.
    Throws ex-info \"bops release could not run\" on exit 1 or 2, and bd's
    ex-info if the gate write fails after the release."
   [cfg id reason]
-  (let [result (owned! cfg "release" id "--reason" "human")]
+  (let [result (owned! "release" id (bops/release cfg id {:reason "human"}))]
     (when (= :released (:outcome result))
       (bd "gate" "create" "--type" "human" "--blocks" id "--reason" reason))
     result))
@@ -303,10 +288,9 @@
     (throw (ex-info "agents do not close epics" {:id id})))
   (when-not (and (seq ref) (seq sha))
     (throw (ex-info "close! needs :ref (PR/MR URL) and :sha" {:id id})))
-  (let [land (apply owned! cfg "land" id "--ref" ref "--sha" sha
-                    (when verify ["--verify"]))]
+  (let [land (owned! "land" id (bops/land cfg id (cond-> {:ref ref :sha sha} verify (assoc :verify true))))]
     (if (= :landed (:outcome land))
-      (assoc (owned! cfg "release" id "--reason" "done") :land land)
+      (assoc (owned! "release" id (bops/release cfg id {:reason "done"})) :land land)
       land)))
 
 (comment

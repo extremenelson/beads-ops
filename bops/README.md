@@ -56,6 +56,7 @@ go vet ./...
 go run ./cmd/bops gen docs > ../docs/COMMANDS.md   # after any change to commands.json
 go run ./cmd/bops gen cc --out ../bindings/claude-code && cp ../bindings/claude-code/skills/bops/SKILL.md ../.claude/skills/bops/SKILL.md   # same, and after editing internal/gen/templates
 go run ./cmd/bops gen codex --out ../bindings/codex && cp ../bindings/codex/skills/bops/SKILL.md ../.agents/skills/bops/SKILL.md
+go run ./cmd/bops gen clj --out ../bindings/clojure
 go test ./internal/gen -update           # regenerate goldens; review the diff as a contract change
 BOPS_INTEGRATION=1 go test -count=1 -timeout 40m ./cmd/bops ./internal/intent   # real bd: live ledger and two-replica race suites
 ```
