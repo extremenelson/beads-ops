@@ -34,9 +34,16 @@ func TestLiveDepsCTEOnEmbeddedLedger(t *testing.T) {
 
 // serverLedger makes a throwaway ledger on the dolt sql-server at
 // BOPS_DOLT_SERVER (host:port, user root, no password), in a database of its
-// own, and imports issues into it. It skips without BOPS_INTEGRATION=1 and
-// BOPS_DOLT_SERVER.
-func serverLedger(t *testing.T, issues []map[string]any) *intent.Env {
+// own, holding the beads ids, each waiting on others along edges. It skips
+// without BOPS_INTEGRATION=1 and BOPS_DOLT_SERVER.
+//
+// bd import creates the beads without dependencies, and the edges go in by
+// bd sql, in batches. Importing the edges makes bd recompute is_blocked per
+// chunk, which outlasted bd's 10s read timeout ("invalid connection") on
+// every CI runner; and bd refuses an edge that closes a cycle, which a
+// ledger only gets when replicas that each added an edge merge. Both
+// engines read the same dependencies rows.
+func serverLedger(t *testing.T, ids []string, edges []depgraphtest.Edge) *intent.Env {
 	t.Helper()
 	if os.Getenv("BOPS_INTEGRATION") != "1" {
 		t.Skip("set BOPS_INTEGRATION=1 to run against a real bd")
@@ -73,70 +80,55 @@ func serverLedger(t *testing.T, issues []map[string]any) *intent.Env {
 	}
 	sh(nil, "bd", "init", "--quiet", "--prefix", prefix, "--server", "--external",
 		"--server-host", host, "--server-port", port, "--server-user", "root", "--sandbox")
+
 	var jsonl bytes.Buffer
 	enc := json.NewEncoder(&jsonl)
-	for _, i := range issues {
-		if err := enc.Encode(i); err != nil {
+	for _, id := range ids {
+		if err := enc.Encode(map[string]any{"id": id, "title": id, "status": "open", "priority": 2, "issue_type": "task"}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// A chunk of a large import can outlast bd's 10s read timeout on the
-	// server ("invalid connection"); bd commits whole chunks and says a rerun
-	// resumes, so rerun it.
-	for try := 1; ; try++ {
-		cmd := exec.Command("bd", "import", "-")
-		cmd.Stdin = bytes.NewReader(jsonl.Bytes())
-		out, err := cmd.CombinedOutput()
-		if err == nil {
-			break
-		}
-		if try == 3 || !strings.Contains(string(out), "re-run the import") {
-			t.Fatalf("bd import: %v\n%s", err, out)
-		}
-		t.Logf("bd import, try %d: %v; rerunning", try, err)
-	}
-	return newEnv(bdx.Exec{})
-}
+	sh(jsonl.Bytes(), "bd", "import", "-")
 
-func issue(id string, blockers ...string) map[string]any {
-	deps := []map[string]string{}
-	seen := map[string]bool{}
-	for _, b := range blockers {
-		if !seen[b] {
-			seen[b] = true
-			deps = append(deps, map[string]string{"issue_id": id, "depends_on_id": b, "type": "blocks"})
+	seen := map[depgraphtest.Edge]bool{}
+	var rows []string
+	flush := func() {
+		if len(rows) == 0 {
+			return
+		}
+		q := "insert into dependencies (id, issue_id, type, created_by, depends_on_issue_id) values " + strings.Join(rows, ", ")
+		if out, err := (bdx.Exec{}).Run(context.Background(), "sql", q); err != nil {
+			t.Fatalf("writing edges: %v\n%s", err, out)
+		}
+		rows = rows[:0]
+	}
+	for _, e := range edges {
+		if seen[e] {
+			continue
+		}
+		seen[e] = true
+		rows = append(rows, fmt.Sprintf("(uuid(), '%s', 'blocks', 'it', '%s')", e.Blocked, e.Blocker))
+		if len(rows) == 500 { // well under Linux's 128 KiB limit on one argument
+			flush()
 		}
 	}
-	return map[string]any{"id": id, "title": id, "status": "open", "priority": 2, "issue_type": "task", "dependencies": deps}
+	flush()
+	return newEnv(bdx.Exec{})
 }
 
 // engine=cte answers as engine=bd does on the 1k-node fixture, read straight
 // from the ledger, and names the same cycle.
 func TestLiveDepsCTEMatchesBD(t *testing.T) {
 	ids, edges, chain := depgraphtest.Thousand("ct-b")
-	blockers := map[string][]string{}
-	for _, e := range edges {
-		blockers[e.Blocked] = append(blockers[e.Blocked], e.Blocker)
-	}
-	var issues []map[string]any
-	for _, id := range ids {
-		issues = append(issues, issue(id, blockers[id]...))
-	}
 	// A cycle beside the DAG, and a bead that waits on it.
-	issues = append(issues, issue("ct-c1", "ct-c2"), issue("ct-c2", "ct-c3"), issue("ct-c3", "ct-c1"), issue("ct-c4", "ct-c2"))
-	env := serverLedger(t, issues)
+	ids = append(ids, "ct-c1", "ct-c2", "ct-c3", "ct-c4")
+	edges = append(edges,
+		depgraphtest.Edge{Blocked: "ct-c1", Blocker: "ct-c2"},
+		depgraphtest.Edge{Blocked: "ct-c2", Blocker: "ct-c3"},
+		depgraphtest.Edge{Blocked: "ct-c3", Blocker: "ct-c1"},
+		depgraphtest.Edge{Blocked: "ct-c4", Blocker: "ct-c2"})
+	env := serverLedger(t, ids, edges)
 	ctx := context.Background()
-	// bd refuses an edge that closes a cycle, on import as on dep add, and
-	// which edge of the three it skips depends on its import order. A ledger
-	// gets a cycle when replicas that each added an edge merge; write the
-	// missing edge as that merge would leave it.
-	for _, e := range [][2]string{{"ct-c1", "ct-c2"}, {"ct-c2", "ct-c3"}, {"ct-c3", "ct-c1"}} {
-		q := fmt.Sprintf("insert into dependencies (id, issue_id, type, created_by, depends_on_issue_id) select uuid(), '%[1]s', 'blocks', 'it', '%[2]s' from dual"+
-			" where not exists (select 1 from dependencies where issue_id = '%[1]s' and depends_on_issue_id = '%[2]s')", e[0], e[1])
-		if out, err := (bdx.Exec{}).Run(ctx, "sql", q); err != nil {
-			t.Fatalf("closing the cycle: %v\n%s", err, out)
-		}
-	}
 
 	// The planted chain's end, its start, a middle bead, and a spread of
 	// others: every combination of --transitive and --path.
