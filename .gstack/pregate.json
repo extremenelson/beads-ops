@@ -17,6 +17,7 @@
       "bops/internal/ledger/ledger_test.go",
       "bops/internal/lock/lock_test.go",
       "bops/internal/manifest/manifest_test.go",
+      "bops/internal/mcp/server_test.go",
       "bops/internal/runstate/runstate_test.go"
     ],
     "scripts/bd-lint-claim.sh": [],
@@ -65,6 +66,7 @@
         "bindings/claude-code/**",
         "bindings/codex/**",
         "bindings/clojure/**",
+        "bindings/mcp/**",
         ".claude/skills/bops/**",
         ".agents/skills/bops/**",
         "scripts/check-bindings.sh"

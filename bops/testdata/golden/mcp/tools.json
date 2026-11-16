@@ -1,0 +1,206 @@
+{
+  "tools": [
+    {
+      "name": "next",
+      "title": "bops next",
+      "description": "What should I work on?. Runs `bops next --json` and returns its JSON document; exit 3 (a negative verdict, ok:false) is a result, not an error.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "caps": {
+            "description": "Capabilities this run offers; beads with unmet needs:<cap> are excluded.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cursor": {
+            "description": "Only to continue a paginated result: the cursor the previous page gave. Other arguments are then ignored.",
+            "type": "string"
+          },
+          "include-unworkable": {
+            "default": false,
+            "description": "Also return excluded candidates with why_not, and the beads open gates alone keep out of bd ready (W05, blocked_by_gates; not in excluded_count).",
+            "type": "boolean"
+          },
+          "n": {
+            "default": 3,
+            "type": "integer"
+          },
+          "pool": {
+            "description": "Serve only beads labelled pool:<pool>.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "stale",
+      "title": "bops stale",
+      "description": "Claims nobody is working. Runs `bops stale --json` and returns its JSON document; exit 3 (a negative verdict, ok:false) is a result, not an error.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "all-machines": {
+            "default": true,
+            "description": "false hides claims and orphans from other machines.",
+            "type": "boolean"
+          },
+          "cursor": {
+            "description": "Only to continue a paginated result: the cursor the previous page gave. Other arguments are then ignored.",
+            "type": "string"
+          },
+          "older-than": {
+            "default": "stale_minutes",
+            "description": "Idle longer than this is stale; defaults to the stale_minutes config (120). Age is from the claim ref's at, which note refreshes; a claim with no ref uses updated_at, heartbeat_at and its newest bops: comment.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "lint",
+      "title": "bops lint",
+      "description": "Is this bead workable?. Runs `bops lint --json` and returns its JSON document; exit 3 (a negative verdict, ok:false) is a result, not an error.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "Only to continue a paginated result: the cursor the previous page gave. Other arguments are then ignored.",
+            "type": "string"
+          },
+          "id": {
+            "description": "The bead id.",
+            "type": "string"
+          },
+          "strict": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "doctor",
+      "title": "bops doctor",
+      "description": "Can the claim lock work against its remote (lock.remote, default origin)?. Runs `bops doctor --json` and returns its JSON document; exit 3 (a negative verdict, ok:false) is a result, not an error.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "Only to continue a paginated result: the cursor the previous page gave. Other arguments are then ignored.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": false
+      }
+    },
+    {
+      "name": "gates",
+      "title": "bops gates",
+      "description": "What is blocking this bead's path?. Runs `bops gates --json` and returns its JSON document; exit 3 (a negative verdict, ok:false) is a result, not an error.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "Only to continue a paginated result: the cursor the previous page gave. Other arguments are then ignored.",
+            "type": "string"
+          },
+          "id": {
+            "description": "The bead id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "deps",
+      "title": "bops deps",
+      "description": "Blockers, dependents, longest path. Runs `bops deps --json` and returns its JSON document; exit 3 (a negative verdict, ok:false) is a result, not an error.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "Only to continue a paginated result: the cursor the previous page gave. Other arguments are then ignored.",
+            "type": "string"
+          },
+          "engine": {
+            "default": "bd",
+            "enum": [
+              "bd",
+              "cte",
+              "graph"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "description": "The bead id.",
+            "type": "string"
+          },
+          "path": {
+            "default": false,
+            "type": "boolean"
+          },
+          "transitive": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "version",
+      "title": "bops version",
+      "description": "Report bops, contract, and detected bd. Runs `bops version --json` and returns its JSON document; exit 3 (a negative verdict, ok:false) is a result, not an error.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "Only to continue a paginated result: the cursor the previous page gave. Other arguments are then ignored.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true
+      }
+    }
+  ]
+}
