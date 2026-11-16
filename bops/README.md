@@ -11,6 +11,18 @@ cd bops && go install ./cmd/bops
 bops version
 ```
 
+Without Go, download a binary from the [releases page](https://github.com/extremenelson/beads-ops/releases). Each `bops/vX.Y.Z` release has `bops_vX.Y.Z_<os>_<arch>.tar.gz` (`.zip` on Windows) for linux, darwin and windows on amd64 and arm64, and android/arm64 for Termux, plus `checksums.txt`:
+
+```bash
+v=v0.1.0 t=linux_amd64      # or linux_arm64, darwin_arm64, android_arm64, ...
+base=https://github.com/extremenelson/beads-ops/releases/download/bops/$v
+curl -fsSLO "$base/bops_${v}_$t.tar.gz" && curl -fsSLO "$base/checksums.txt"
+grep " bops_${v}_$t.tar.gz\$" checksums.txt | sha256sum -c -    # macOS: shasum -a 256 -c -
+tar xzf "bops_${v}_$t.tar.gz" && install "bops_${v}_$t/bops" ~/.local/bin/   # Termux: $PREFIX/bin/
+```
+
+Release binaries start at v0.2.0; v0.1.0 is `go install` only.
+
 Needs `bd` ≥ 1.3 on `PATH` at run time (CI tests 1.3.4) and `git`. `sweep` and `land --verify` also use `gh` or `glab` when the forge is GitHub or GitLab.
 
 New to `bops`? Start with the [tutorial](../docs/tutorial-first-loop.md). Every command, flag and output field is in the generated [command reference](../docs/COMMANDS.md); config keys are in the [configuration reference](../docs/reference/configuration.md).

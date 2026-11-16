@@ -35,6 +35,7 @@ If you use gstack, `/verify` runs the tests for you: [`.gstack/pregate.json`](.g
 - **After your PR merges, rebuild the `bops` you run** with `go install ./cmd/bops` from `bops/` on main, before the sweep or any other command. Nothing rebuilds it for you. `bops version` prints the commit it was built from, and `bops doctor` warns when that predates the last change to `bops/`.
 - **Every shipped bug gets a test that fails without the fix** (SPEC §9).
 - **Standard library only.** A new module dependency must be justified here, in this section, in the same PR (SPEC §11a). There are none today.
+- **Releasing.** Rename `## Unreleased` in `CHANGELOG.md` to `## bops X.Y.Z (contract N) — <date>` on main, then push the tag `bops/vX.Y.Z` (the module is under `bops/`, so the tag carries that prefix). `.github/workflows/bops-release.yml` runs `scripts/release-build.sh` for linux, darwin and windows on amd64 and arm64 and android/arm64, checks that `bops version` prints the tag, and publishes the archives and `checksums.txt` as a GitHub release with that CHANGELOG section as its notes. CI runs the same script on every PR. Run it yourself with `sh scripts/release-build.sh v0.0.0-dev` (writes `dist/`).
 - Package boundaries are deliberate: only `internal/bdx` runs `bd`, only `internal/lock` knows refnames, only `internal/forge` knows what a PR is, only `internal/ledger` knows `bd`'s JSON field names. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) explains why.
 
 ## Things that won't be merged

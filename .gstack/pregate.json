@@ -21,6 +21,9 @@
       "bops/internal/runstate/runstate_test.go"
     ],
     "scripts/bd-lint-claim.sh": [],
+    "scripts/release-build.sh": [
+      "bops/cmd/bops/release_build_test.go"
+    ],
     "scripts/test/**": [],
     "scripts/pregate-test.sh": [
       "bops/internal/manifest/manifest_test.go"
