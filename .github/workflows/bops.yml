@@ -57,6 +57,13 @@ jobs:
       - name: Two-replica suite and live ledger tests
         env:
           BOPS_INTEGRATION: "1"
+          BD_JSON_ENVELOPE: ${{ matrix.envelope }}
+        run: go test -v -count=1 -timeout 40m -skip TestLiveDepsCTEMatchesBD ./cmd/bops ./internal/intent
+      # On its own, so the replica suites do not compete with the server for
+      # the runner's CPUs: bd sql has a 10s read timeout.
+      - name: deps --engine cte against the dolt sql-server
+        env:
+          BOPS_INTEGRATION: "1"
           BOPS_DOLT_SERVER: 127.0.0.1:3306
           BD_JSON_ENVELOPE: ${{ matrix.envelope }}
-        run: go test -v -count=1 -timeout 40m ./cmd/bops ./internal/intent
+        run: go test -v -count=1 -timeout 10m -run TestLiveDepsCTEMatchesBD ./internal/intent

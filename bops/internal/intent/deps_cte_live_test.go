@@ -136,6 +136,7 @@ func TestLiveDepsCTEMatchesBD(t *testing.T) {
 	for i := 7; i < len(ids); i += 97 {
 		sample = append(sample, ids[i])
 	}
+	var slowest time.Duration
 	for _, id := range sample {
 		for _, o := range []intent.DepsOpts{{}, {Transitive: true, Path: true}} {
 			o.Engine = "bd"
@@ -144,7 +145,9 @@ func TestLiveDepsCTEMatchesBD(t *testing.T) {
 				t.Fatalf("%s engine=bd: %v", id, err)
 			}
 			o.Engine = "cte"
+			start := time.Now()
 			got, err := intent.Deps(ctx, env, id, o)
+			slowest = max(slowest, time.Since(start))
 			if err != nil {
 				t.Fatalf("%s engine=cte: %v", id, err)
 			}
@@ -166,5 +169,5 @@ func TestLiveDepsCTEMatchesBD(t *testing.T) {
 			t.Errorf("%s: engine=bd %v, engine=cte %v", id, e1, e2)
 		}
 	}
-	t.Logf("engine=cte matched engine=bd on %d beads", len(sample))
+	t.Logf("engine=cte matched engine=bd on %d beads; slowest cte call %s (bd sql's read timeout is 10s)", len(sample), slowest.Round(time.Millisecond))
 }

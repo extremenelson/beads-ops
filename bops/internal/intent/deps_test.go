@@ -134,21 +134,21 @@ func (r *sqlRunner) Run(_ context.Context, args ...string) ([]byte, error) {
 }
 
 // The rows the server returns for x-5 in depsLedger: unsorted, counts as
-// numbers. A tight edge's blocker ends a chain one shorter than the bead
-// waiting on it.
+// numbers. dist is the longest chain ending at each bead x-5 waits on, and
+// x-5 itself; edge rows are the wait edges among them. x-4 has two blockers
+// of chain length 1 or less: x-3 (1) and x-2 (0), and only x-3 is one
+// shorter than x-4.
 const cteX5 = `[
  {"kind":"status","a":"open","b":"","n":0},
- {"kind":"size","a":"","b":"","n":7},
- {"kind":"longest","a":"","b":"","n":3},
- {"kind":"depth","a":"","b":"","n":3},
+ {"kind":"dist","a":"x-5","b":"","n":3},{"kind":"dist","a":"x-4","b":"","n":2},{"kind":"dist","a":"x-3","b":"","n":1},
+ {"kind":"dist","a":"x-2","b":"","n":0},{"kind":"dist","a":"x-1","b":"","n":0},{"kind":"dist","a":"g-1","b":"","n":0},
+ {"kind":"dist","a":"w-hidden","b":"","n":0},
  {"kind":"blocked_by","a":"x-4","b":"","n":0},
  {"kind":"blocked_by","a":"w-hidden","b":"","n":0},
  {"kind":"blocked_by","a":"g-1","b":"","n":0},
- {"kind":"up","a":"x-4","b":"","n":0},{"kind":"up","a":"x-3","b":"","n":0},{"kind":"up","a":"x-2","b":"","n":0},
- {"kind":"up","a":"x-1","b":"","n":0},{"kind":"up","a":"g-1","b":"","n":0},{"kind":"up","a":"w-hidden","b":"","n":0},
- {"kind":"tight","a":"x-5","b":"x-4","n":0},
- {"kind":"tight","a":"x-4","b":"x-3","n":0},
- {"kind":"tight","a":"x-3","b":"x-1","n":0}
+ {"kind":"edge","a":"x-5","b":"x-4","n":0},{"kind":"edge","a":"x-5","b":"g-1","n":0},{"kind":"edge","a":"x-5","b":"w-hidden","n":0},
+ {"kind":"edge","a":"x-4","b":"x-3","n":0},{"kind":"edge","a":"x-4","b":"x-2","n":0},
+ {"kind":"edge","a":"x-3","b":"x-1","n":0}
 ]`
 
 func TestDepsCTEReadsTheRows(t *testing.T) {
@@ -167,7 +167,7 @@ func TestDepsCTEReadsTheRows(t *testing.T) {
 		t.Errorf("blocks = %#v, want empty, not null", out.Blocks)
 	}
 	q := r.queries[0]
-	for _, want := range []string{"with recursive", "'x-5'", "'tight'", "'up'", "'down'"} {
+	for _, want := range []string{"with recursive", "'x-5'", "'edge'", "'dist'", "'down'"} {
 		if !strings.Contains(q, want) {
 			t.Errorf("query lacks %s:\n%s", want, q)
 		}
@@ -178,7 +178,7 @@ func TestDepsCTEReadsTheRows(t *testing.T) {
 	if got := strings.Join(out.BlockedBy, ","); got != "g-1,w-hidden,x-4" || out.CriticalPath != nil || out.Depth != 3 {
 		t.Errorf("direct: %+v", out)
 	}
-	if strings.Contains(r.queries[0], "'tight'") || strings.Contains(r.queries[0], "'down'") {
+	if strings.Contains(r.queries[0], "'edge'") || strings.Contains(r.queries[0], "'down'") {
 		t.Errorf("direct query asks for the closure or the path:\n%s", r.queries[0])
 	}
 }
@@ -209,16 +209,34 @@ func TestDepsCTERefusesWhatIsNotAnID(t *testing.T) {
 	}
 }
 
-// A chain as long as the closure has beads means a cycle; the second query's
-// edges name it as engine=bd does.
+// A chain as long as the closure has beads means a cycle. With --path the
+// edges came with the first query; without it a second query fetches them.
+// Either way the error names the cycle as engine=bd does.
 func TestDepsCTECycle(t *testing.T) {
-	r := &sqlRunner{outs: []string{
-		`[{"kind":"status","a":"open","b":"","n":0},{"kind":"size","a":"","b":"","n":3},{"kind":"longest","a":"","b":"","n":3}]`,
-		`[{"kind":"edge","a":"c-1","b":"c-2","n":0},{"kind":"edge","a":"c-2","b":"c-3","n":0},{"kind":"edge","a":"c-3","b":"c-1","n":0}]`,
-	}}
-	_, err := intent.Deps(context.Background(), newEnv(r), "c-2", intent.DepsOpts{Engine: "cte"})
-	var ce *depgraph.CycleError
-	if !errors.As(err, &ce) || !strings.Contains(err.Error(), "c-1 -> c-2 -> c-3 -> c-1") || len(r.queries) != 2 {
-		t.Fatalf("err = %v, queries %d", err, len(r.queries))
+	dist := `[{"kind":"status","a":"open","b":"","n":0},{"kind":"dist","a":"c-1","b":"","n":3},{"kind":"dist","a":"c-2","b":"","n":3},{"kind":"dist","a":"c-3","b":"","n":3}`
+	edges := `{"kind":"edge","a":"c-1","b":"c-2","n":0},{"kind":"edge","a":"c-2","b":"c-3","n":0},{"kind":"edge","a":"c-3","b":"c-1","n":0}]`
+	for _, c := range []struct {
+		path    bool
+		outs    []string
+		queries int
+	}{
+		{false, []string{dist + "]", "[" + edges}, 2},
+		{true, []string{dist + "," + edges}, 1},
+	} {
+		r := &sqlRunner{outs: c.outs}
+		_, err := intent.Deps(context.Background(), newEnv(r), "c-2", intent.DepsOpts{Engine: "cte", Path: c.path})
+		var ce *depgraph.CycleError
+		if !errors.As(err, &ce) || !strings.Contains(err.Error(), "c-1 -> c-2 -> c-3 -> c-1") || len(r.queries) != c.queries {
+			t.Errorf("path=%v: err = %v, queries %d", c.path, err, len(r.queries))
+		}
+	}
+}
+
+// bd closes the connection when a query outlasts its 10s read timeout; the
+// error says so and points at engine=bd.
+func TestDepsCTETimeout(t *testing.T) {
+	r := &sqlRunner{err: errors.New("bd sql --json ...: exit status 1: query error: invalid connection")}
+	if _, err := intent.Deps(context.Background(), newEnv(r), "x-1", intent.DepsOpts{Engine: "cte"}); err == nil || !strings.Contains(err.Error(), "outlasted bd's read timeout") {
+		t.Errorf("err = %v", err)
 	}
 }
