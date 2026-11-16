@@ -581,7 +581,7 @@ func cmdDeps(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 	fs := newFlagSet("deps", stderr)
 	transitive := fs.Bool("transitive", false, "the whole closure, not only direct edges")
 	path := fs.Bool("path", false, "add the longest chain of open beads ending at the bead")
-	engine := fs.String("engine", "bd", "bd (cte and graph are reserved)")
+	engine := fs.String("engine", "bd", "bd, or cte (needs bd in server mode); graph is reserved")
 	fs.Bool("json", false, "")
 	if err := parseAnyOrder(fs, args); err != nil || fs.NArg() != 1 || !slices.Contains([]string{"bd", "cte", "graph"}, *engine) {
 		fmt.Fprintln(stderr, "usage: bops deps <id> [--transitive] [--path] [--engine bd|cte|graph]")
