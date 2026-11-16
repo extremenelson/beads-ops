@@ -64,6 +64,7 @@
         "bops/**",
         "bindings/claude-code/**",
         "bindings/codex/**",
+        "bindings/clojure/**",
         ".claude/skills/bops/**",
         ".agents/skills/bops/**",
         "scripts/check-bindings.sh"
