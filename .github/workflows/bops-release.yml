@@ -1,0 +1,32 @@
+name: bops release
+# Pushing a tag bops/vX.Y.Z builds the archives with scripts/release-build.sh
+# and publishes them, with checksums.txt, as a GitHub release of that tag.
+# The notes are the CHANGELOG section headed "## bops X.Y.Z" (bops-ss6.14).
+on:
+  push:
+    tags: ["bops/v*"]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: bops/go.mod }
+      - name: Build the archives
+        run: |
+          version="${GITHUB_REF_NAME#bops/}"
+          echo "VERSION=$version" >>"$GITHUB_ENV"
+          sh scripts/release-build.sh "$version" dist
+      - name: The linux/amd64 binary reports the tag
+        run: |
+          tar -C "$RUNNER_TEMP" -xzf "dist/bops_${VERSION}_linux_amd64.tar.gz"
+          got=$("$RUNNER_TEMP/bops_${VERSION}_linux_amd64/bops" version --json | jq -r .bops)
+          test "$got" = "$VERSION" || { echo "bops version printed $got, want $VERSION"; exit 1; }
+      - name: Publish the release
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          awk -v h="## bops ${VERSION#v} " 'index($0, h) == 1 {on = 1; next} on && /^## / {exit} on' CHANGELOG.md >"$RUNNER_TEMP/notes.md"
+          test -s "$RUNNER_TEMP/notes.md" || echo "See CHANGELOG.md." >"$RUNNER_TEMP/notes.md"
+          gh release create "$GITHUB_REF_NAME" dist/* --title "bops $VERSION" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag
