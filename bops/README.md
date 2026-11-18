@@ -23,7 +23,7 @@ tar xzf "bops_${v}_$t.tar.gz" && install "bops_${v}_$t/bops" ~/.local/bin/   # T
 
 Release binaries start at v0.2.0; v0.1.0 is `go install` only (`@v0.1.0`).
 
-**Termux:** the `android_arm64` build installs and `bops version` runs, but commands that read the ledger (`next`, `claim`, `doctor` and the rest) don't work natively yet. That's a `bd` limit, not a `bops` one. bd 1.3.4's `android_arm64` build has no cgo, so it can't open an embedded ledger (`bd bootstrap` fails with `embeddeddolt: requires CGO`), and its `linux_arm64` build needs glibc, which Termux doesn't have. Until bd ships an Android build with cgo, run both inside `proot-distro` (Debian, say) with their `linux_arm64` builds. That route is untested (bops-ced).
+**Termux:** the `android_arm64` build installs and runs natively, and `bops doctor` passes, fetching from and pushing to the remote. Commands that open the ledger (`next`, `claim`, `note`, `sync` and the rest) don't work natively yet. That's a `bd` limit, not a `bops` one. bd 1.3.4's `android_arm64` build has no cgo, so it can't open an embedded ledger (`bd bootstrap` fails with `embeddeddolt: requires CGO`), and its `linux_arm64` build needs glibc, which Termux doesn't have. Until bd ships an Android build with cgo, run both inside `proot-distro` (Debian, say) with their `linux_arm64` builds. That route is untested (bops-ced).
 
 Needs `bd` ≥ 1.3 on `PATH` at run time (CI tests 1.3.4) and `git`. `sweep` and `land --verify` also use `gh` or `glab` when the forge is GitHub or GitLab.
 
