@@ -247,6 +247,7 @@ type flakyGit struct {
 	lock.Exec
 	offline    bool
 	beforePush func()
+	afterSeen  func() // runs once, after the first read of refs/bops/seen
 }
 
 func (g *flakyGit) Run(ctx context.Context, c lock.Cmd) (lock.Output, error) {
@@ -258,7 +259,13 @@ func (g *flakyGit) Run(ctx context.Context, c lock.Cmd) (lock.Output, error) {
 	if g.offline && (c.Args[0] == "push" || c.Args[0] == "ls-remote" || c.Args[0] == "fetch") {
 		return lock.Output{Stderr: "fatal: unable to access remote"}, errors.New("exit status 128")
 	}
-	return g.Exec.Run(ctx, c)
+	out, err := g.Exec.Run(ctx, c)
+	if c.Args[0] == "for-each-ref" && g.afterSeen != nil && strings.Contains(strings.Join(c.Args, " "), "refs/bops/seen") {
+		hook := g.afterSeen
+		g.afterSeen = nil
+		hook()
+	}
+	return out, err
 }
 
 type rig struct {
@@ -2007,5 +2014,571 @@ func TestReleaseDoneWithMalformedLandRecordFails(t *testing.T) {
 	}
 	if ref, err := a.env.Lock.Read(bg, "x-1"); err != nil || ref == nil || ref.State != lock.StateHeld {
 		t.Fatalf("the ref must be untouched: %+v, %v", ref, err)
+	}
+}
+
+// ------------------------------------------- concurrent sessions (bops-yph)
+
+// writeEntry puts a journal entry straight into dir's state, as another bops
+// process would have left it.
+func writeEntry(t *testing.T, dir, run, id string, e runstate.Entry) {
+	t.Helper()
+	w, err := runstate.Open(dir, runstate.Write)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	w.Run().ID = run
+	if w.Run().Held == nil {
+		w.Run().Held = runstate.Held{}
+	}
+	w.Run().Held[id] = e
+	if err := w.Save(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A second session in the same worktree, such as one opened in the main
+// checkout while /bead-loop claims from it, shares the run and the clone's
+// state file. Its sync read the holds when it started; if the holder moved its
+// ref since (a note, a land, a release), the sync must not read the old entry
+// against the new ref as a lost claim and drop the holder's hold (bops-yph).
+func TestSyncInAnotherSessionKeepsAHoldReplacedSinceItsSnapshot(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	session := rigAt(t, a.dir, "A", bd) // its snapshot holds the claim's first sha
+
+	if out, err := intent.Note(bg, a.env, "x-1", "work\n\nNEXT: more"); err != nil || out.Outcome != intent.OutcomeNoted {
+		t.Fatalf("note: %+v, %v", out, err)
+	}
+	moved := liveSHA(t, a, "x-1")
+
+	out, err := intent.Sync(bg, session.env, true)
+	if err != nil || len(out.LostClaims) != 0 {
+		t.Fatalf("a claim its holder just moved is not lost: %+v, %v", out, err)
+	}
+	if e, ok := openStore(t, a.dir, "A").Entry("x-1"); !ok || e.SHA != moved {
+		t.Fatalf("the holder's journal entry must survive: %+v, %v", e, ok)
+	}
+	if out, err := intent.Note(bg, a.env, "x-1", "more\n\nNEXT: land"); err != nil || out.Outcome != intent.OutcomeNoted {
+		t.Fatalf("the holder must still hold it: %+v, %v", out, err)
+	}
+}
+
+// The session's snapshot holds a stale intent; before its sync reaches the
+// hold, the holder confirms a write the remote has not shown this sync. The
+// sync leaves it rather than settle the newer entry against the older ref.
+func TestSyncDoesNotDropAWriteConfirmedAfterItsSnapshot(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	old := liveSHA(t, a, "x-1")
+	writeEntry(t, a.dir, "A", "x-1", runstate.Entry{Phase: runstate.PhaseHeld, SHA: old,
+		Intended: "2222222222222222222222222222222222222222"})
+	session := rigAt(t, a.dir, "A", bd)
+	confirmed := runstate.Entry{Phase: runstate.PhaseHeld, SHA: "3333333333333333333333333333333333333333"}
+	writeEntry(t, a.dir, "A", "x-1", confirmed)
+
+	out, err := intent.Sync(bg, session.env, true)
+	if err != nil || len(out.LostClaims) != 0 {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if e, ok := openStore(t, a.dir, "A").Entry("x-1"); !ok || e != confirmed {
+		t.Fatalf("the holder's confirmed entry must stand: %+v, %v", e, ok)
+	}
+}
+
+// While another bops process sharing the clone works on a bead, every other
+// one leaves it alone: claim (plain, --force, --resume), note, land and
+// release answer ref_contention (a note's text is kept at saved_to), sweep
+// lists it as unknown, and sync defers the hold. The ref, the journal entry
+// and the ledger do not change (bops-yph).
+func TestCommandsLeaveABeadAnotherProcessIsWorkingOn(t *testing.T) {
+	setup := func(t *testing.T) (*rig, *fakeBD, string, runstate.Entry) {
+		remote, bd := bareRemote(t), newBD()
+		bd.add("x-1")
+		a := client(t, remote, "A", bd)
+		mustClaim(t, a, "x-1")
+		other := openStore(t, a.dir, "A") // another process: its own lock owner
+		unlock, err := other.LockBead("x-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(unlock)
+		e, _ := openStore(t, a.dir, "A").Entry("x-1")
+		return rigAt(t, a.dir, "A", bd), bd, liveSHA(t, a, "x-1"), e
+	}
+	untouched := func(t *testing.T, r *rig, sha string, want runstate.Entry) {
+		t.Helper()
+		if liveSHA(t, r, "x-1") != sha {
+			t.Error("the ref must stay")
+		}
+		if e, ok := openStore(t, r.dir, "A").Entry("x-1"); !ok || e != want {
+			t.Errorf("entry = %+v, %v", e, ok)
+		}
+	}
+	t.Run("claim", func(t *testing.T) {
+		r, _, sha, want := setup(t)
+		if _, err := intent.Claim(bg, r.env, "x-1", false); lock.CodeOf(err) != lock.CodeContention {
+			t.Fatalf("want ref_contention, got %v", err)
+		}
+		untouched(t, r, sha, want)
+	})
+	t.Run("claim --force", func(t *testing.T) {
+		r, _, sha, want := setup(t)
+		out, err := intent.Claim(bg, r.env, "x-1", true)
+		if lock.CodeOf(err) != lock.CodeContention || out == nil || out.Retry == "" {
+			t.Fatalf("want ref_contention with retry advice, got %+v, %v", out, err)
+		}
+		untouched(t, r, sha, want)
+	})
+	t.Run("claim --resume", func(t *testing.T) {
+		r, _, sha, want := setup(t)
+		if _, err := intent.ClaimResume(bg, r.env, "x-1"); lock.CodeOf(err) != lock.CodeContention {
+			t.Fatalf("want ref_contention, got %v", err)
+		}
+		untouched(t, r, sha, want)
+	})
+	t.Run("note", func(t *testing.T) {
+		r, bd, sha, want := setup(t)
+		bd.calls = nil
+		out, err := intent.Note(bg, r.env, "x-1", "work\n\nNEXT: more")
+		if lock.CodeOf(err) != lock.CodeContention || out == nil || out.SavedTo == "" {
+			t.Fatalf("want ref_contention with the text saved, got %+v, %v", out, err)
+		}
+		if saved, _ := os.ReadFile(out.SavedTo); !strings.Contains(string(saved), "NEXT: more") {
+			t.Errorf("saved text = %q", saved)
+		}
+		if bd.count("comments") != 0 || bd.count("heartbeat") != 0 {
+			t.Errorf("a busy note must write nothing: %v", bd.calls)
+		}
+		untouched(t, r, sha, want)
+	})
+	t.Run("land", func(t *testing.T) {
+		r, _, sha, want := setup(t)
+		if _, err := intent.Land(bg, r.env, "x-1", intent.LandOpts{Ref: prRef, SHA: prSHA}); lock.CodeOf(err) != lock.CodeContention {
+			t.Fatalf("want ref_contention, got %v", err)
+		}
+		untouched(t, r, sha, want)
+	})
+	t.Run("release", func(t *testing.T) {
+		r, _, sha, want := setup(t)
+		if _, err := intent.Release(bg, r.env, "x-1", "scope"); lock.CodeOf(err) != lock.CodeContention {
+			t.Fatalf("want ref_contention, got %v", err)
+		}
+		untouched(t, r, sha, want)
+	})
+	t.Run("sync", func(t *testing.T) {
+		r, bd, sha, want := setup(t)
+		bd.calls = nil
+		out, err := intent.Sync(bg, r.env, true)
+		if err != nil || len(out.LostClaims) != 0 || bd.count("heartbeat") != 0 || strings.Join(out.Deferred, ",") != "x-1" {
+			t.Fatalf("%+v, %v, %v", out, err, bd.calls)
+		}
+		untouched(t, r, sha, want)
+	})
+}
+
+// sweep lists a landed bead another process is working on as unknown and
+// leaves its ref and its ledger row alone (bops-yph).
+func TestSweepLeavesABeadAnotherProcessIsWorkingOn(t *testing.T) {
+	a, bd := landed(t)
+	sha := liveSHA(t, a, "x-1")
+	unlock, err := openStore(t, a.dir, "A").LockBead("x-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	out, err := intent.Sweep(bg, rigAt(t, a.dir, "A", bd).env, mergedForge{}, false)
+	if err != nil || strings.Join(out.Unknown, ",") != "x-1" || len(out.Closed) != 0 {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if liveSHA(t, a, "x-1") != sha || bd.beads["x-1"].Status == "closed" {
+		t.Error("a bead another process is working on must survive sweep")
+	}
+}
+
+// sweep reads the refs before it takes a bead's lock. Another session in the
+// same run that resumes the bead in that window moves its ref; sweep must see
+// that under the lock and leave the bead, not delete it or drop the
+// resumer's hold (bops-yph).
+func TestSweepLeavesABeadResumedAfterItReadTheRefs(t *testing.T) {
+	a, bd := landed(t)
+	session := rigAt(t, a.dir, "A", bd)
+	session.git.afterSeen = func() {
+		if out, err := intent.ClaimResume(bg, a.env, "x-1"); err != nil || out.Outcome != intent.OutcomeClaimed {
+			t.Fatalf("resume: %+v, %v", out, err)
+		}
+		bd.beads["x-1"].Labels = []string{"bops:landing"} // a stale replica's view
+	}
+	out, err := intent.Sweep(bg, session.env, mergedForge{}, false)
+	if err != nil || strings.Join(out.Pending, ",") != "x-1" || len(out.Closed) != 0 {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	sha := liveSHA(t, a, "x-1")
+	if sha == "" || bd.beads["x-1"].Status == "closed" {
+		t.Fatal("the resumed claim must survive sweep")
+	}
+	if e, ok := openStore(t, a.dir, "A").Entry("x-1"); !ok || e.SHA != sha || e.DeletePending {
+		t.Fatalf("the resumer's hold must stand: %+v, %v", e, ok)
+	}
+}
+
+// A writer pushed its intent after this sync fetched the refs, then died
+// before confirming it, which freed its bead lock. Settling the intent
+// against the ref fetched earlier would clear it and keep the old sha while
+// the remote names the new one; sync reads the live ref instead (bops-yph).
+func TestSyncReadsTheLiveRefForAWriteInFlight(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	old := liveSHA(t, a, "x-1")
+	if out, err := intent.Note(bg, a.env, "x-1", "work\n\nNEXT: more"); err != nil || out.Outcome != intent.OutcomeNoted {
+		t.Fatalf("note: %+v, %v", out, err)
+	}
+	moved := liveSHA(t, a, "x-1")
+	// Rewind to the moment before that note's push landed.
+	git(t, a.dir, "push", "-q", "-f", "origin", old+":refs/bops/claims/x-1")
+	writeEntry(t, a.dir, "A", "x-1", runstate.Entry{Phase: runstate.PhaseHeld, SHA: old, Intended: moved})
+	session := rigAt(t, a.dir, "A", bd)
+	session.git.afterSeen = func() { git(t, a.dir, "push", "-q", "-f", "origin", moved+":refs/bops/claims/x-1") }
+
+	out, err := intent.Sync(bg, session.env, true)
+	if err != nil || len(out.LostClaims) != 0 {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if e, ok := openStore(t, a.dir, "A").Entry("x-1"); !ok || e.SHA != moved || e.Intended != "" {
+		t.Fatalf("the write that landed must be adopted: %+v, %v", e, ok)
+	}
+}
+
+// sweep reads the ledger before it takes a bead's lock. A bead another
+// session resumed and gave back in that window has no hold and no ref left,
+// but it is no longer a landing: sweep must not close it (bops-yph).
+func TestSweepLeavesABeadResumedAndReleasedAfterItReadTheLedger(t *testing.T) {
+	a, bd := landed(t)
+	session := rigAt(t, a.dir, "A", bd)
+	session.git.afterSeen = func() {
+		if out, err := intent.ClaimResume(bg, a.env, "x-1"); err != nil || out.Outcome != intent.OutcomeClaimed {
+			t.Fatalf("resume: %+v, %v", out, err)
+		}
+		if out, err := intent.Release(bg, a.env, "x-1", "scope"); err != nil || out.Outcome != intent.OutcomeReleased {
+			t.Fatalf("release: %+v, %v", out, err)
+		}
+	}
+	out, err := intent.Sweep(bg, session.env, mergedForge{}, false)
+	if err != nil || len(out.Closed) != 0 || strings.Join(out.Pending, ",") != "x-1" {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if bd.beads["x-1"].Status == "closed" {
+		t.Fatal("a bead given back must stay open")
+	}
+}
+
+// lockStore is the real store with LockBead answering err, as a file system
+// with no locks, or a broken one, would.
+type lockStore struct {
+	*runstate.Store
+	err error
+}
+
+func (s lockStore) LockBead(string) (func(), error) { return nil, s.err }
+
+// Where file locks are missing, commands run as before and say so once.
+func TestCommandsRunUnlockedWhereFileLocksAreMissing(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	bd.add("x-2")
+	a := client(t, remote, "A", bd)
+	a.env.Store = lockStore{a.store, runstate.ErrBeadLockUnsupported}
+	for _, id := range []string{"x-1", "x-2"} {
+		out := mustClaim(t, a, id)
+		if strings.Count(strings.Join(out.Warnings, "\n"), "bead lock unavailable") != 1 {
+			t.Fatalf("%s: want the warning once: %q", id, out.Warnings)
+		}
+	}
+	out, err := intent.Sync(bg, a.env, true)
+	if err != nil || len(out.Deferred) != 0 || len(out.LostClaims) != 0 {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if strings.Count(strings.Join(out.Warnings, "\n"), "bead lock unavailable") != 1 {
+		t.Errorf("want the warning once for two holds: %q", out.Warnings)
+	}
+}
+
+// Any other failure to take the lock is reported, never read as a lost or
+// finished claim: sync warns and keeps the hold, sweep returns the error.
+func TestALockFailureIsReportedNotActedOn(t *testing.T) {
+	a, bd := landed(t)
+	broken := errors.New("state directory unreadable")
+	r := rigAt(t, a.dir, "A", bd)
+	r.env.Store = lockStore{r.store, broken}
+	out, err := intent.Sweep(bg, r.env, mergedForge{}, false)
+	if !errors.Is(err, broken) || strings.Join(out.Unknown, ",") != "x-1" || len(out.Closed) != 0 {
+		t.Fatalf("sweep: %+v, %v", out, err)
+	}
+
+	remote, bd2 := bareRemote(t), newBD()
+	bd2.add("x-2")
+	b := client(t, remote, "B", bd2)
+	mustClaim(t, b, "x-2")
+	b.env.Store = lockStore{b.store, broken}
+	bd2.calls = nil
+	s, err := intent.Sync(bg, b.env, true)
+	if err != nil || len(s.LostClaims) != 0 || bd2.count("heartbeat") != 0 || !strings.Contains(strings.Join(s.Warnings, "\n"), "x-2: state directory unreadable") {
+		t.Fatalf("sync: %+v, %v", s, err)
+	}
+	if _, ok := openStore(t, b.dir, "B").Entry("x-2"); !ok {
+		t.Fatal("the hold must stay")
+	}
+}
+
+// A command waits a little for a bead another process is working on.
+func TestACommandWaitsForABusyBead(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	unlock, err := openStore(t, a.dir, "A").LockBead("x-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.env.BeadWait = time.Minute
+	a.env.Sleep = func(time.Duration) { unlock() } // the other process finishes
+	mustClaim(t, a, "x-1")
+}
+
+// session-start passes on the holds its sync left for later.
+func TestSessionStartReportsDeferredHolds(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	unlock, err := openStore(t, a.dir, "A").LockBead("x-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	out, err := intent.SessionStart(bg, rigAt(t, a.dir, "A", bd).env)
+	if err != nil || strings.Join(out.Deferred, ",") != "x-1" {
+		t.Fatalf("%+v, %v", out, err)
+	}
+}
+
+// A landing whose hold has a write in flight is not swept.
+func TestSweepLeavesABeadWithAnIntentInFlight(t *testing.T) {
+	a, bd := landed(t)
+	sha := liveSHA(t, a, "x-1")
+	writeEntry(t, a.dir, "A", "x-1", runstate.Entry{Phase: runstate.PhaseHeld, SHA: sha, Intended: "2222222222222222222222222222222222222222"})
+	out, err := intent.Sweep(bg, rigAt(t, a.dir, "A", bd).env, mergedForge{}, false)
+	if err != nil || strings.Join(out.Pending, ",") != "x-1" || liveSHA(t, a, "x-1") != sha || bd.beads["x-1"].Status == "closed" {
+		t.Fatalf("%+v, %v", out, err)
+	}
+}
+
+// A hold its holder released after sync read the holds is left alone.
+func TestSyncLeavesAHoldReleasedAfterItsSnapshot(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	session := rigAt(t, a.dir, "A", bd)
+	if out, err := intent.Release(bg, a.env, "x-1", "scope"); err != nil || out.Outcome != intent.OutcomeReleased {
+		t.Fatal(out, err)
+	}
+	status := bd.beads["x-1"].Status
+	out, err := intent.Sync(bg, session.env, true)
+	if err != nil || len(out.LostClaims) != 0 || strings.Join(out.Deferred, ",") != "x-1" || bd.beads["x-1"].Status != status {
+		t.Fatalf("%+v, %v", out, err)
+	}
+}
+
+// A hold whose release never finished deleting its ref is a release in
+// progress, not a claim: every command finishes the delete first, as sync
+// would. claim then claims afresh; land, release and note find the bead no
+// longer held, and none takes it back (bops-yph).
+func TestCommandsFinishAReleaseWhoseDeleteNeverFinished(t *testing.T) {
+	setup := func(t *testing.T) (*rig, *fakeBD) {
+		remote, bd := bareRemote(t), newBD()
+		bd.add("x-1")
+		a := client(t, remote, "A", bd)
+		mustClaim(t, a, "x-1")
+		e, _ := openStore(t, a.dir, "A").Entry("x-1")
+		e.DeletePending = true
+		writeEntry(t, a.dir, "A", "x-1", e)
+		// The release had already given the bead back on the ledger.
+		bd.beads["x-1"].Status, bd.beads["x-1"].Assignee, bd.beads["x-1"].Labels = "open", "", nil
+		return rigAt(t, a.dir, "A", bd), bd
+	}
+	gone := func(t *testing.T, r *rig) {
+		t.Helper()
+		if liveSHA(t, r, "x-1") != "" {
+			t.Error("the release's delete must be finished")
+		}
+		if _, ok := openStore(t, r.dir, "A").Entry("x-1"); ok {
+			t.Error("the hold must be gone")
+		}
+	}
+	t.Run("claim", func(t *testing.T) {
+		r, _ := setup(t)
+		out := mustClaim(t, r, "x-1")
+		if e, ok := openStore(t, r.dir, "A").Entry("x-1"); !ok || e.DeletePending || e.SHA != liveSHA(t, r, "x-1") || out.Outcome != intent.OutcomeClaimed {
+			t.Fatalf("want a fresh claim: %+v, %+v", out, e)
+		}
+	})
+	t.Run("land", func(t *testing.T) {
+		r, _ := setup(t)
+		out, err := intent.Land(bg, r.env, "x-1", intent.LandOpts{Ref: prRef, SHA: prSHA})
+		if err != nil || out.Outcome != intent.OutcomeRefused {
+			t.Fatalf("%+v, %v", out, err)
+		}
+		gone(t, r)
+	})
+	t.Run("release done", func(t *testing.T) {
+		r, bd := setup(t)
+		markLanded(bd.beads["x-1"])
+		out, err := intent.ReleaseWithText(bg, r.env, "x-1", "done", "shipped")
+		if err != nil || out.Outcome != intent.OutcomeRefused || out.SavedTo == "" {
+			t.Fatalf("%+v, %v", out, err)
+		}
+		gone(t, r)
+	})
+	t.Run("note", func(t *testing.T) {
+		r, _ := setup(t)
+		out, err := intent.Note(bg, r.env, "x-1", "work\n\nNEXT: more")
+		if err != nil || out.Outcome != intent.OutcomeRefused || out.SavedTo == "" {
+			t.Fatalf("%+v, %v", out, err)
+		}
+		gone(t, r)
+	})
+}
+
+// A release that could not run keeps its text.
+func TestReleaseKeepsItsTextWhenItCannotRun(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	unlock, err := openStore(t, a.dir, "A").LockBead("x-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	out, err := intent.ReleaseWithText(bg, a.env, "x-1", "blocked", "waiting on the API key")
+	if lock.CodeOf(err) != lock.CodeContention || out.SavedTo == "" {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if b, _ := os.ReadFile(out.SavedTo); string(b) != "waiting on the API key" {
+		t.Errorf("saved = %q", b)
+	}
+}
+
+// inFlight leaves x-1 claimed by a with a note's write in flight: the journal
+// intends `moved` while the remote is back at the claim's first sha.
+func inFlight(t *testing.T) (a *rig, bd *fakeBD, old, moved string) {
+	t.Helper()
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a = client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	old = liveSHA(t, a, "x-1")
+	if out, err := intent.Note(bg, a.env, "x-1", "work\n\nNEXT: more"); err != nil || out.Outcome != intent.OutcomeNoted {
+		t.Fatalf("note: %+v, %v", out, err)
+	}
+	moved = liveSHA(t, a, "x-1")
+	git(t, a.dir, "push", "-q", "-f", "origin", old+":refs/bops/claims/x-1")
+	writeEntry(t, a.dir, "A", "x-1", runstate.Entry{Phase: runstate.PhaseHeld, SHA: old, Intended: moved})
+	return a, bd, old, moved
+}
+
+// A write in flight is settled only against a ref sync could read: when it
+// cannot, the hold is kept as it is and the next sync tries again.
+func TestSyncKeepsAWriteInFlightWhenTheLiveReadFails(t *testing.T) {
+	a, bd, old, moved := inFlight(t)
+	session := rigAt(t, a.dir, "A", bd)
+	session.git.afterSeen = func() { session.git.offline = true }
+	bd.calls = nil
+	out, err := intent.Sync(bg, session.env, true)
+	if err != nil || len(out.LostClaims) != 0 || bd.count("heartbeat") != 0 || !strings.Contains(strings.Join(out.Warnings, "\n"), "x-1:") {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if e, _ := openStore(t, a.dir, "A").Entry("x-1"); e.SHA != old || e.Intended != moved {
+		t.Fatalf("the hold must be kept as it was: %+v", e)
+	}
+}
+
+// A claim deleted after sync fetched is lost, read from the live ref.
+func TestSyncFindsAWriteInFlightWhoseRefWasDeleted(t *testing.T) {
+	a, bd, _, _ := inFlight(t)
+	session := rigAt(t, a.dir, "A", bd)
+	session.git.afterSeen = func() { git(t, a.dir, "push", "-q", "origin", ":refs/bops/claims/x-1") }
+	out, err := intent.Sync(bg, session.env, true)
+	if err != nil || strings.Join(out.LostClaims, ",") != "x-1" {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if _, ok := openStore(t, a.dir, "A").Entry("x-1"); ok {
+		t.Fatal("a lost claim's hold must go")
+	}
+}
+
+// A release --reason done that pushed its landing and died before dropping
+// its hold leaves a landing, not a claim: sync drops the hold rather than
+// display the bead as held.
+func TestSyncDropsAHoldWhoseWriteInFlightWasALanding(t *testing.T) {
+	a, bd := landed(t)
+	landing := git(t, a.dir, "ls-remote", "origin", "refs/bops/claims/x-1")[:40]
+	if out, err := intent.ClaimResume(bg, a.env, "x-1"); err != nil || out.Outcome != intent.OutcomeClaimed {
+		t.Fatal(out, err)
+	}
+	resumed := liveSHA(t, a, "x-1")
+	git(t, a.dir, "push", "-q", "-f", "origin", resumed+":refs/bops/claims/x-1")
+	writeEntry(t, a.dir, "A", "x-1", runstate.Entry{Phase: runstate.PhaseHeld, SHA: resumed, Intended: landing})
+	session := rigAt(t, a.dir, "A", bd)
+	session.git.afterSeen = func() { git(t, a.dir, "push", "-q", "-f", "origin", landing+":refs/bops/claims/x-1") }
+	out, err := intent.Sync(bg, session.env, true)
+	if err != nil || len(out.LostClaims) != 0 {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if _, ok := openStore(t, a.dir, "A").Entry("x-1"); ok {
+		t.Fatal("a landing is not a hold")
+	}
+	if liveSHA(t, a, "x-1") != landing {
+		t.Fatal("the landing must stay for sweep")
+	}
+}
+
+// A command's wait for a busy bead ends: it answers ref_contention.
+func TestACommandStopsWaitingForABeadThatStaysBusy(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	unlock, err := openStore(t, a.dir, "A").LockBead("x-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	polls := 0
+	a.env.BeadWait = 50 * time.Millisecond
+	a.env.Sleep = func(time.Duration) { polls++; time.Sleep(time.Millisecond) }
+	start := time.Now()
+	if _, err := intent.Claim(bg, a.env, "x-1", false); lock.CodeOf(err) != lock.CodeContention || polls == 0 {
+		t.Fatalf("want ref_contention after polling, got %v after %d polls", err, polls)
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Fatal("the wait did not end")
+	}
+}
+
+// A release that is refused keeps its text too.
+func TestAReleaseThatIsRefusedKeepsItsText(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	out, err := intent.ReleaseWithText(bg, a.env, "x-1", "blocked", "waiting on the API key")
+	if err != nil || out.Outcome != intent.OutcomeRefused || out.SavedTo == "" {
+		t.Fatalf("%+v, %v", out, err)
 	}
 }

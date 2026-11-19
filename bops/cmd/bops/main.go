@@ -119,7 +119,7 @@ func budget(name string) time.Duration {
 		return 5 * time.Minute
 	case "sync":
 		return 2 * time.Minute
-	case "claim", "release", "note", "session-start", "doctor":
+	case "claim", "release", "note", "land", "session-start", "doctor":
 		return time.Minute
 	}
 	return 30 * time.Second

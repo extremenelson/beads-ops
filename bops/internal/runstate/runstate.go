@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -77,7 +78,11 @@ func (h *Held) UnmarshalJSON(b []byte) error {
 
 // stateVersion is written to state.json. A newer file is refused rather than
 // rewritten by a binary that would drop what it does not understand.
-const stateVersion = 2
+//
+// Version 3 adds no field: it marks a clone whose bops processes serialize
+// each bead (LockBead), so an older bops, which does not, refuses the file
+// and asks to be upgraded rather than race the newer ones (bops-yph).
+const stateVersion = 3
 
 // Mode says whether a Store may be saved.
 type Mode int
@@ -239,8 +244,19 @@ func (s *Store) write() error {
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, filepath.Join(s.dir, "state.json"))
+	// On Windows a rename onto a file another process has open for reading
+	// fails until it closes it, which takes milliseconds; retry briefly.
+	var err2 error
+	for try := 0; try < renameTries; try++ {
+		if err2 = os.Rename(tmp, filepath.Join(s.dir, "state.json")); err2 == nil || runtime.GOOS != "windows" {
+			return err2
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return err2
 }
+
+const renameTries = 10
 
 // lock takes the clone's write lock. A lock left by a crashed process is
 // broken after lockStale. Two waiters that both break the same stale lock
@@ -313,6 +329,11 @@ func (s *Store) update(fn func()) error {
 	return s.write()
 }
 
+// Refresh re-reads the state file, keeping the run this Store hands out.
+// A command calls it once it holds a bead's lock (LockBead), so what it then
+// reads of that bead is current and stays so until it lets go.
+func (s *Store) Refresh() error { return s.refresh() }
+
 // refresh re-reads the file while keeping s.run the same pointer, because
 // callers hold it. Pool, caps and actor are per-process overrides and stay.
 func (s *Store) refresh() error {
@@ -378,7 +399,9 @@ func (s *Store) Confirm(id, sha string) error {
 	return s.update(func() {
 		r := s.holder(id)
 		e := r.Held[id]
-		e.SHA, e.Intended, e.Phase = sha, "", PhaseHeld
+		// A confirmed write supersedes a delete that never finished: the ref
+		// is this claim now, and sync must not go on to delete it.
+		e.SHA, e.Intended, e.Phase, e.DeletePending = sha, "", PhaseHeld, false
 		r.put(id, e)
 	})
 }
@@ -427,6 +450,49 @@ func (s *Store) SetLedgerPending(id string, pending bool) error {
 // Drop forgets id for every run in this clone.
 func (s *Store) Drop(id string) error {
 	return s.update(func() { s.DropHold(id) })
+}
+
+// Matches reports whether run's journal, as this Store last read the file,
+// has expect for id. It reads and writes nothing: the caller has just taken
+// the bead's lock and re-read the file (Refresh), so what it holds for that
+// bead is current and stays so.
+func (s *Store) Matches(run, id string, expect Entry) bool {
+	for _, r := range s.st.Runs {
+		if r.ID == run {
+			cur, ok := r.Held[id]
+			return ok && cur == expect
+		}
+	}
+	return false
+}
+
+// ErrBeadBusy is LockBead's answer when another process holds the bead.
+var ErrBeadBusy = errors.New("another bops process on this machine is working on this bead")
+
+// ErrBeadLockUnsupported is LockBead's answer when the state directory's file
+// system has no file locks (some network and FUSE mounts).
+var ErrBeadLockUnsupported = errors.New("the state directory's file system does not support file locks")
+
+// LockBead takes this clone's lock on bead id for as long as the caller works
+// on it, network calls included, so two bops processes sharing the clone
+// (two worktrees, or two sessions in one checkout, which share its run) never
+// write one bead's claim at once (bops-yph). It never waits: a held lock is
+// ErrBeadBusy. The operating system releases it when the process exits, so a
+// crash leaves nothing to clean up. Call the returned function to release it.
+//
+// The file is named by a digest of the id, so every name is short and plain:
+// no id is a device name on Windows (nul, con), too long for the file
+// system, or shares a file with another that differs only in case.
+func (s *Store) LockBead(id string) (func(), error) {
+	if id == "" {
+		return nil, errors.New("an empty bead id cannot name a lock file")
+	}
+	dir := filepath.Join(s.dir, "beads")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256([]byte(id))
+	return lockFile(filepath.Join(dir, hex.EncodeToString(sum[:16])+".lock"))
 }
 
 // Event is one line of events.jsonl, the local record of what bops did (D21).

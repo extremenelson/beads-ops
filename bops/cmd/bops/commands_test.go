@@ -611,3 +611,13 @@ esac
 		t.Fatalf("exit %d: lint = %v", code, got)
 	}
 }
+
+// A command's wait for a busy bead leaves room for its own work in every
+// budget (bops-yph).
+func TestBeadWaitFitsEveryBudget(t *testing.T) {
+	for _, name := range []string{"claim", "note", "land", "release"} {
+		if budget(name) < 2*beadWait {
+			t.Errorf("%s: budget %v leaves no room after a %v wait", name, budget(name), beadWait)
+		}
+	}
+}

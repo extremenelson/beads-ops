@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -37,6 +38,10 @@ type Env struct {
 	LockOff bool
 	Now     func() time.Time
 	Sleep   func(time.Duration) // injectable for the sync retry
+	// BeadWait is how long a command waits for a bead another bops process on
+	// this machine is working on before it answers ref_contention. sync and
+	// sweep never wait; they leave such a bead for their next run (bops-yph).
+	BeadWait time.Duration
 	// StaleAfter is how long a claim may go without a heartbeat/update
 	// before `next` treats it as stale and `claim --force` may take it
 	// (config stale_minutes). Default 2h.
@@ -54,7 +59,93 @@ type HoldStore interface {
 	Holds() []runstate.Hold
 	SetLedgerPending(id string, pending bool) error
 	Log(ev runstate.Event)
+	// LockBead, Refresh and Matches serialize work on one bead among the
+	// bops processes sharing this clone (bops-yph).
+	LockBead(id string) (func(), error)
+	Refresh() error
+	Matches(run, id string, expect runstate.Entry) bool
 }
+
+// holdBead takes this clone's lock on id for the rest of a command and
+// re-reads the state file, so what the command then reads of the bead is
+// current and no other bops process on this machine changes it until the
+// returned function runs. Every worktree of a clone, and every session in one
+// checkout, shares the state file; a session in the main checkout shares the
+// /bead-loop orchestrator's run (bops-yph). A held lock is ref_contention.
+// Where the state directory's file system has no file locks, the command runs
+// unserialized, as bops did before, and warns once.
+func (e *Env) holdBead(ctx context.Context, id string, warnings *[]string) (func(), error) {
+	return e.lockBead(ctx, id, warnings, e.BeadWait)
+}
+
+// beadPoll is how often a waiting command tries a busy bead's lock again.
+const beadPoll = 200 * time.Millisecond
+
+func (e *Env) lockBead(ctx context.Context, id string, warnings *[]string, wait time.Duration) (func(), error) {
+	if e.Store == nil {
+		return func() {}, nil
+	}
+	unlock, err := e.Store.LockBead(id)
+	for deadline := time.Now().Add(wait); errors.Is(err, runstate.ErrBeadBusy) && time.Now().Before(deadline) && ctx.Err() == nil; {
+		e.sleepFor(beadPoll)
+		unlock, err = e.Store.LockBead(id)
+	}
+	if errors.Is(err, runstate.ErrBeadBusy) {
+		return nil, lock.BusyError(id)
+	}
+	if errors.Is(err, runstate.ErrBeadLockUnsupported) {
+		if !slices.Contains(*warnings, noBeadLockWarning) {
+			*warnings = append(*warnings, noBeadLockWarning)
+		}
+		unlock, err = func() {}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := e.Store.Refresh(); err != nil {
+		unlock()
+		return nil, err
+	}
+	return unlock, nil
+}
+
+// finishRelease finishes a release of id whose ref delete never completed,
+// as sync would, before a command acts on the bead: such a hold was given
+// away, and treating it as held would take the bead back (bops-yph). It
+// reports whether it removed the hold. The caller holds the bead's lock.
+func (e *Env) finishRelease(ctx context.Context, id string) (bool, error) {
+	if e.LockOff || e.Lock == nil {
+		return false, nil
+	}
+	h, ok := e.Lock.Journal.Entry(id)
+	if !ok || !h.DeletePending {
+		return false, nil
+	}
+	if _, err := e.Lock.Delete(ctx, id, h.SHA); err != nil {
+		return false, err
+	}
+	e.event("release", id, "ref_delete", "finished", h.SHA, nil)
+	return true, nil
+}
+
+func (e *Env) sleepFor(d time.Duration) {
+	if e.Sleep != nil {
+		e.Sleep(d)
+		return
+	}
+	time.Sleep(d)
+}
+
+// holds is every hold of this clone, as the state file read last has them.
+func (e *Env) holds() []runstate.Hold {
+	if e.Store == nil {
+		return nil
+	}
+	return e.Store.Holds()
+}
+
+// noBeadLockWarning is holdBead's warning where file locks are missing.
+const noBeadLockWarning = "bead lock unavailable: the bops state directory's file system has no file locks, so two bops processes on this machine could work on one bead at once"
 
 func (e *Env) now() time.Time {
 	if e.Now != nil {
@@ -282,6 +373,16 @@ func Note(ctx context.Context, env *Env, id, text string) (*NoteOut, error) {
 		return nil, err
 	}
 	out := &NoteOut{ID: id, Warnings: []string{}}
+	// While another process works on the bead, this run cannot tell whether
+	// it still holds it, so the note waits; its text is kept at saved_to.
+	unlock, err := env.holdBead(ctx, id, &out.Warnings)
+	if err != nil {
+		return out.refuse(OutcomeError, err.Error(), nil, text), err
+	}
+	defer unlock()
+	if _, err := env.finishRelease(ctx, id); err != nil {
+		return out.refuse(OutcomeError, err.Error(), nil, text), err
+	}
 	if _, held := env.Run.Held[id]; !held {
 		return out.refuse(OutcomeRefused, id+" is not held by this run", nil, text), nil
 	}
@@ -315,18 +416,25 @@ func Note(ctx context.Context, env *Env, id, text string) (*NoteOut, error) {
 // it describes is not lost with the claim.
 func (o *NoteOut) refuse(outcome, why string, holder *Holder, text string) *NoteOut {
 	o.Outcome, o.Reason, o.Holder = outcome, why, holder
-	f, err := os.CreateTemp("", "bops-note-*") // created mode 0600
+	o.SavedTo = saveText("note", text, &o.Warnings)
+	return o
+}
+
+// saveText writes the text of a command that did not run to a private temp
+// file and returns its path, so text from stdin is not lost; a failure is a
+// warning and an empty path.
+func saveText(what, text string, warnings *[]string) string {
+	f, err := os.CreateTemp("", "bops-"+what+"-*") // created mode 0600
 	if err != nil {
-		o.Warnings = append(o.Warnings, "note text could not be saved: "+err.Error())
-		return o
+		*warnings = append(*warnings, what+" text could not be saved: "+err.Error())
+		return ""
 	}
 	defer f.Close()
 	if _, err := f.WriteString(text); err != nil {
-		o.Warnings = append(o.Warnings, "note text could not be saved: "+err.Error())
-		return o
+		*warnings = append(*warnings, what+" text could not be saved: "+err.Error())
+		return ""
 	}
-	o.SavedTo = f.Name()
-	return o
+	return f.Name()
 }
 
 // refreshClaim replaces this run's ref so its age shows activity (D27). A
@@ -441,12 +549,20 @@ func Land(ctx context.Context, env *Env, id string, o LandOpts) (*LandOut, error
 	if err := lock.ValidateID(id); err != nil {
 		return nil, err
 	}
-	if _, held := env.Run.Held[id]; !held {
-		return &LandOut{ID: id, Outcome: OutcomeRefused, Reason: id + " is not held by this run"}, nil
+	warnings := []string{}
+	unlock, err := env.holdBead(ctx, id, &warnings)
+	if err != nil {
+		return &LandOut{ID: id, Outcome: OutcomeError}, err
 	}
-	var warnings []string
+	defer unlock()
+	if _, err := env.finishRelease(ctx, id); err != nil {
+		return &LandOut{ID: id, Outcome: OutcomeError, Warnings: warnings}, err
+	}
+	if _, held := env.Run.Held[id]; !held {
+		return &LandOut{ID: id, Outcome: OutcomeRefused, Reason: id + " is not held by this run", Warnings: warnings}, nil
+	}
 	if env.LockOff {
-		warnings = []string{lock.OffWarning}
+		warnings = append(warnings, lock.OffWarning)
 	} else {
 		_, owned, err := env.checkHold(ctx, id)
 		if err != nil {
@@ -458,7 +574,7 @@ func Land(ctx context.Context, env *Env, id string, o LandOpts) (*LandOut, error
 				return nil, err
 			}
 			env.event("land", id, "ref_check", OutcomeLost, "", nil)
-			return &LandOut{ID: id, Outcome: OutcomeLost, Holder: holder, Reason: id + " is no longer held by this run"}, nil
+			return &LandOut{ID: id, Outcome: OutcomeLost, Holder: holder, Reason: id + " is no longer held by this run", Warnings: warnings}, nil
 		}
 	}
 	cur, err := env.show(ctx, id)
@@ -629,6 +745,22 @@ func Sweep(ctx context.Context, env *Env, f forge.Forge, dryRun bool) (*SweepOut
 	return out, errors.Join(failures...)
 }
 
+// stillLanding re-reads c's bead and reports whether it is still the landing
+// sweep found: in progress, with the same last landed record, and labelled
+// bops:landing unless its landing ref was found.
+func (e *Env) stillLanding(ctx context.Context, c sweepCandidate, refFound bool) (bool, error) {
+	cur, err := e.show(ctx, c.issue.ID)
+	if err != nil {
+		return false, err
+	}
+	landed, err := cur.Landed()
+	if err != nil {
+		return false, err
+	}
+	return cur.Status == "in_progress" && len(landed) > 0 && landed[len(landed)-1] == c.last &&
+		(refFound || cur.HasLabel("bops:landing")), nil
+}
+
 func (e *Env) sweepOne(ctx context.Context, c sweepCandidate, refs map[string]lock.Ref, dryRun bool, out *SweepOut) error {
 	id := c.issue.ID
 	ref, found := refs[id]
@@ -642,6 +774,40 @@ func (e *Env) sweepOne(ctx context.Context, c sweepCandidate, refs map[string]lo
 	}
 	if dryRun {
 		out.WouldClose = append(out.WouldClose, id)
+		return nil
+	}
+	unlock, err := e.lockBead(ctx, id, &out.Warnings, 0) // a busy bead waits for the next sweep
+	if err != nil {
+		out.Unknown = append(out.Unknown, id)
+		if lock.CodeOf(err) == lock.CodeContention {
+			out.Warnings = append(out.Warnings, id+": "+err.Error())
+			return nil
+		}
+		return err
+	}
+	defer unlock()
+	// The refs were read before this lock was taken. A bead another session
+	// of this clone resumed or re-claimed since holds it at another ref: its
+	// hold stands, and sweep leaves it (bops-yph).
+	want := ""
+	if found {
+		want = ref.SHA
+	}
+	for _, h := range e.holds() {
+		if h.ID == id && (h.Entry.SHA != want || h.Entry.Intended != "") {
+			out.Pending = append(out.Pending, id)
+			e.event("sweep", id, "hold_changed", eventDeferred, want, nil)
+			return nil
+		}
+	}
+	// The ledger was read before the lock too: a bead resumed and given back
+	// since is no longer this landing, though it has no hold or ref left.
+	if still, err := e.stillLanding(ctx, c, found); err != nil {
+		out.Unknown = append(out.Unknown, id)
+		return err
+	} else if !still {
+		out.Pending = append(out.Pending, id)
+		e.event("sweep", id, "ledger_changed", eventDeferred, want, nil)
 		return nil
 	}
 	if found {
@@ -679,11 +845,7 @@ func (e *Env) sweepOne(ctx context.Context, c sweepCandidate, refs map[string]lo
 func withLockRetry(ctx context.Context, env *Env, args ...string) ([]byte, error) {
 	b, err := env.BD.Run(ctx, args...)
 	if err != nil && isLockError(err) {
-		sleep := env.Sleep
-		if sleep == nil {
-			sleep = time.Sleep
-		}
-		sleep(5 * time.Second)
+		env.sleepFor(5 * time.Second)
 		return env.BD.Run(ctx, args...)
 	}
 	return b, err

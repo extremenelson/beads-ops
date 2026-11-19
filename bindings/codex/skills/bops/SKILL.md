@@ -62,6 +62,7 @@ Do not close beads yourself. `bops sweep` previews which landed beads have merge
 - **`sync` lists `lost_claims`:** those beads were taken over. Stop work on them.
 - **`unreachable` or `git_auth`:** `bops` could not reach `origin`. Follow `retry`, or run the credential command in `error`.
 - **`could not save run state` or `state lock`:** another `bops` process is busy. Wait and retry once.
+- **`ref_contention`:** another `bops` process here has the bead for a moment. Rerun the command after a few seconds, at most 3 times. A refused note's text is at `saved_to`.
 - **`ledger_pending: true`:** you still own the bead. Run `bops sync`, and report it if that does not clear it.
 - **A reviewer asks for changes after `release --reason done`:** run `bops claim --resume <id>` from a worktree, then continue from step 4. Only the actor who landed it can.
 - **`bops sync` lists `stranded_holds`:** those beads were held by a removed worktree. If the work is abandoned, run `bops release <id> --reason abandoned` from any worktree of this clone.
