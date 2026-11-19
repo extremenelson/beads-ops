@@ -194,8 +194,12 @@ func newEnv(mode runstate.Mode) (*intent.Env, *runstate.Store, error) {
 		run.Caps = cfg.Caps
 	}
 	l := &lock.Lock{Git: lock.Exec{Dir: root}, Journal: store, Run: run.ID, Actor: run.Actor, Remote: cfg.LockRemote}
-	return &intent.Env{BD: bdx.Exec{}, Run: run, Store: store, Lock: l, LockOff: cfg.LockOff(), StaleAfter: cfg.StaleAfter(), HoldFor: cfg.HoldFor(), BlockingLabels: cfg.BlockingLabels}, store, nil
+	return &intent.Env{BD: bdx.Exec{}, Run: run, Store: store, Lock: l, LockOff: cfg.LockOff(), StaleAfter: cfg.StaleAfter(), HoldFor: cfg.HoldFor(), BlockingLabels: cfg.BlockingLabels, BeadWait: beadWait}, store, nil
 }
+
+// beadWait is how long a command waits for a bead another bops process on
+// this machine is working on. It is well inside every command's budget.
+const beadWait = 10 * time.Second
 
 func cmdNext(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
 	fs := newFlagSet("next", stderr)

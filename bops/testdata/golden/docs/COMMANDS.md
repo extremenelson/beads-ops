@@ -67,7 +67,7 @@ Take this bead for this run
 | `<id>` (positional) | string |  |  |
 | `--resume` | bool | `false` | Take back a landing bead for PR rework. Only the ref's actor can. |
 
-Preconditions: assignee is empty OR --force; status in (open, ready); no run: label; no label listed in blocking_labels (config; --force skips it, and a bead this run already holds answers held); the lock remote (lock.remote, default origin) matches the Dolt remote (lock.mode ref).
+Preconditions: assignee is empty OR --force; status in (open, ready); no run: label; no label listed in blocking_labels (config; --force skips it, and a bead this run already holds answers held); the lock remote (lock.remote, default origin) matches the Dolt remote (lock.mode ref); no other bops process on this machine is working on the bead (waits up to 10 seconds, then ref_contention).
 
 Wraps: `git push refs/bops/claims/<id> (create-only)`, `bd dolt pull`, `bd update <id> --claim`, `bd label add <id> run:<ulid>`, `bd comments add <id>`, `bd dolt push`.
 
@@ -101,7 +101,7 @@ Record where I am, keep the claim
 | `<id>` (positional) | string |  |  |
 | `--file <path>` | stdin\|file |  | Never on the command line. |
 
-Preconditions: this run holds the bead and its ref still matches.
+Preconditions: this run holds the bead and its ref still matches; no other bops process on this machine is working on the bead (waits up to 10 seconds, then ref_contention).
 
 Wraps: `git push refs/bops/claims/<id> (lease; a network failure is a warning)`, `bd comments add <id> -f <file>`, `bd heartbeat <id>`.
 
@@ -129,7 +129,7 @@ Give the claim back
 | `--reason` | enum: done \| blocked \| scope \| abandoned \| human |  |  |
 | `--file <path>` \| `--file -` | stdin\|file? |  | Optional. Read only when asked: --file <path>, or --file - for stdin. Never on the command line. Recorded below the event line of the release's bops:released comment; a lost or refused release writes none of it. |
 
-Preconditions: this run holds the bead and its ref still matches; done: the bead has a landed record (bops land first); else refused, before the ref or the ledger changes.
+Preconditions: this run holds the bead and its ref still matches; done: the bead has a landed record (bops land first); else refused, before the ref or the ledger changes; no other bops process on this machine is working on the bead (waits up to 10 seconds, then ref_contention).
 
 Effects by reason: `abandoned` → +bops:hold; `blocked` → status→blocked; `done` → none; await land/sweep; `human` → +needs-human; `scope` → +bops:hold.
 
@@ -146,6 +146,7 @@ Output:
   "ref_pending": "bool?",
   "holder": "object?",
   "detail": "string?",
+  "saved_to": "string?",
   "warnings": "string[]?"
 }
 ```
@@ -162,7 +163,7 @@ Record that work reached its destination
 | `--sha` | string |  |  |
 | `--verify` | bool | `false` |  |
 
-Preconditions: this run holds the bead and its ref still matches.
+Preconditions: this run holds the bead and its ref still matches; no other bops process on this machine is working on the bead (waits up to 10 seconds, then ref_contention).
 
 Never: merge, push a branch, close.
 
@@ -195,9 +196,9 @@ Close landed beads whose refs are merged
 | `--dry-run` | bool | `true` |  |
 | `--forge` | enum: auto \| github \| gitlab \| none | `auto` |  |
 
-Never: skip a bops:landing bead with no landed record (it is listed under unknown).
+Never: skip a bops:landing bead with no landed record (it is listed under unknown), wait for a bead another bops process on this machine is working on (it is listed under unknown), close a bead that changed since sweep read it: re-held, resumed or given back (it is listed under pending).
 
-Wraps: `bd dolt pull`, `bd list --status in_progress --limit 0 --json`, `forge.is_merged(ref)`, `git fetch --prune refs/bops/claims/*`, `git push (lease): delete the ref`, `bd close <id> --reason 'merged via <ref> (<sha>)'`, `bd label remove <id> bops:landing (after the close; a failure is a warning)`, `bd dolt push`.
+Wraps: `bd dolt pull`, `bd list --status in_progress --limit 0 --json`, `forge.is_merged(ref)`, `git fetch --prune refs/bops/claims/*`, `bd show <id> --json (under the bead lock)`, `git push (lease): delete the ref`, `bd close <id> --reason 'merged via <ref> (<sha>)'`, `bd label remove <id> bops:landing (after the close; a failure is a warning)`, `bd dolt push`.
 
 Output:
 
@@ -307,6 +308,7 @@ Output:
   "unpublished": "int",
   "stranded_holds": "string[]",
   "lost_claims": "string[]",
+  "deferred": "string[]",
   "warnings": "string[]?"
 }
 ```
@@ -328,6 +330,7 @@ Output:
   "mine": "string[]",
   "lost_claims": "string[]",
   "stranded_holds": "string[]",
+  "deferred": "string[]",
   "stale": "int",
   "ready_count": "int",
   "synced": "bool",

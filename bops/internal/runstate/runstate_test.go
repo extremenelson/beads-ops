@@ -1,6 +1,7 @@
 package runstate
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -234,7 +235,7 @@ func TestLegacyHeldListStillLoads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), `"version": 2`) {
+	if !strings.Contains(string(b), `"version": 3`) {
 		t.Errorf("not migrated:\n%s", b)
 	}
 	if got := open(t, root, Read).Run().HeldIDs(); len(got) != 2 {
@@ -404,4 +405,167 @@ func TestOutsideGitUsesTheDirectory(t *testing.T) {
 	if got := open(t, dir, Read).Run().ID; got != id {
 		t.Errorf("run = %s, want %s", got, id)
 	}
+}
+
+// A bead's lock is held by one open at a time, and released when its holder
+// lets go (bops-yph).
+func TestLockBeadIsExclusive(t *testing.T) {
+	root, _ := repo(t)
+	a, b := open(t, root, Read), open(t, root, Read)
+	unlock, err := a.LockBead("x-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.LockBead("x-1"); !errors.Is(err, ErrBeadBusy) {
+		t.Fatalf("a held bead is busy, got %v", err)
+	}
+	other, err := b.LockBead("x-2")
+	if err != nil {
+		t.Fatalf("another bead is free: %v", err)
+	}
+	other()
+	unlock()
+	again, err := b.LockBead("x-1")
+	if err != nil {
+		t.Fatalf("a released bead is free: %v", err)
+	}
+	again()
+	if _, err := a.LockBead(""); err == nil {
+		t.Error("an empty id must not name a lock file")
+	}
+	// Every id names a plain file inside beads/: no path, no device name, and
+	// ids differing only in case are separate locks on a case-insensitive disk.
+	for _, id := range []string{"..", "a/b", `a\b`, "nul", "con", "X-1", "x-1"} {
+		release, err := a.LockBead(id)
+		if err != nil {
+			t.Fatalf("%q: %v", id, err)
+		}
+		defer release()
+	}
+	entries, err := os.ReadDir(filepath.Join(a.dir, "beads"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 8 { // x-1 and x-2 above, and six more ids here
+		t.Errorf("want one lock file per id, got %d", len(entries))
+	}
+	for _, e := range entries {
+		if name := strings.TrimSuffix(e.Name(), ".lock"); len(name) != 32 || strings.ContainsAny(name, "./\\") {
+			t.Errorf("lock file %q is not a 32-hex-digit name", e.Name())
+		}
+	}
+}
+
+// The operating system releases a bead's lock when its holder dies, so a
+// crashed bops leaves nothing to clean up.
+func TestLockBeadIsReleasedWhenItsHolderDies(t *testing.T) {
+	if os.Getenv("BOPS_TEST_HOLD_BEAD") != "" {
+		s, err := Open(os.Getenv("BOPS_TEST_HOLD_BEAD"), Read)
+		if err != nil {
+			os.Exit(2)
+		}
+		if _, err := s.LockBead("x-1"); err != nil {
+			os.Exit(3)
+		}
+		time.Sleep(time.Minute)
+		os.Exit(0)
+	}
+	root, _ := repo(t)
+	child := exec.Command(os.Args[0], "-test.run=^TestLockBeadIsReleasedWhenItsHolderDies$")
+	child.Env = append(os.Environ(), "BOPS_TEST_HOLD_BEAD="+root)
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = child.Process.Kill(); _ = child.Wait() })
+	s := open(t, root, Read)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		unlock, err := s.LockBead("x-1")
+		if errors.Is(err, ErrBeadBusy) {
+			break // the child holds it
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		unlock()
+		if time.Now().After(deadline) {
+			t.Fatal("the child never took the lock")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	_ = child.Process.Kill()
+	_ = child.Wait()
+	unlock, err := s.LockBead("x-1")
+	if err != nil {
+		t.Fatalf("a dead holder's lock is free: %v", err)
+	}
+	unlock()
+}
+
+// Matches reads one run's entry as the file holds it now, and writes nothing.
+func TestMatchesReadsOneRunWithoutWriting(t *testing.T) {
+	root, stateHome := repo(t)
+	s := open(t, root, Read)
+	if err := s.Confirm("x-1", "aaa"); err != nil {
+		t.Fatal(err)
+	}
+	w := open(t, worktree(t, root, "wt-matches"), Write) // another run holding it differently
+	w.Run().Held = Held{"x-1": {SHA: "zzz", Phase: PhaseHeld}}
+	if err := w.Save(); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	files := stateFiles(t, stateHome)
+	before, err := os.Stat(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if err := s.Refresh(); err != nil { // the caller re-reads under the bead lock
+		t.Fatal(err)
+	}
+	held := Entry{SHA: "aaa", Phase: PhaseHeld}
+	if !s.Matches(s.Run().ID, "x-1", held) {
+		t.Fatal("its own run's entry matches whatever another run holds")
+	}
+	if s.Matches(s.Run().ID, "x-1", Entry{SHA: "bbb", Phase: PhaseHeld}) {
+		t.Fatal("a different entry does not match")
+	}
+	after, err := os.Stat(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Error("Matches rewrote the state file")
+	}
+}
+
+// A write confirmed over a delete that never finished is the claim now:
+// sync must not go on to delete it.
+func TestConfirmClearsADeleteThatNeverFinished(t *testing.T) {
+	root, _ := repo(t)
+	s := open(t, root, Read)
+	if err := s.Confirm("x-1", "aaa"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.IntendDelete("x-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Confirm("x-1", "bbb"); err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := s.Entry("x-1"); e.DeletePending || e.SHA != "bbb" {
+		t.Fatalf("entry = %+v", e)
+	}
+}
+
+// Every id the claim contract accepts names a lock file, the longest too.
+func TestLockBeadTakesTheLongestValidID(t *testing.T) {
+	root, _ := repo(t)
+	s := open(t, root, Read)
+	release, err := s.LockBead(strings.Repeat("a", 128))
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
 }

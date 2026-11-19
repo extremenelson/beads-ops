@@ -258,6 +258,12 @@ func (l *Lock) Delete(ctx context.Context, id, expected string) (*Result, error)
 	return res, nil
 }
 
+// BusyError is what a command reports when another bops process on this
+// machine is working on the same bead: ref_contention, to retry when it ends.
+func BusyError(id string) error {
+	return &Error{Code: CodeContention, Err: fmt.Errorf("another bops process on this machine is working on %s; retry when it finishes", id)}
+}
+
 // Reconcile settles a journal entry against the ref's current value, so a
 // write whose reply never came cannot look like a lost claim.
 type Reconcile string

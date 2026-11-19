@@ -35,7 +35,8 @@ func sweepFixture() (*bdx.Fake, *fakeForge) {
 	}, ",") + "]"
 	responses := map[string][]byte{
 		"dolt pull": []byte(``),
-		"list --status in_progress --limit 0 --json":                                     []byte(list),
+		"list --status in_progress --limit 0 --json": []byte(list),
+		"show x-merged --json":                       []byte(landedBead("x-merged", `["bops:landing"]`, refMerged)), // the re-read under the bead lock
 		"close x-merged --reason merged via https://github.com/o/r/pull/1 (" + sha + ")": []byte(``),
 		"dolt push": []byte(``),
 	}
@@ -163,7 +164,9 @@ func TestSweepContinuesPastACloseFailure(t *testing.T) {
 	list := "[" + landedBead("x-a", `["bops:landing"]`, refMerged) + "," + landedBead("x-b", `["bops:landing"]`, refMerged) + "]"
 	b := &bdx.Fake{Responses: map[string][]byte{
 		"dolt pull": []byte(``),
-		"list --status in_progress --limit 0 --json":                                []byte(list),
+		"list --status in_progress --limit 0 --json": []byte(list),
+		"show x-a --json": []byte(landedBead("x-a", `["bops:landing"]`, refMerged)), // the re-reads under the bead lock
+		"show x-b --json": []byte(landedBead("x-b", `["bops:landing"]`, refMerged)),
 		"close x-b --reason merged via https://github.com/o/r/pull/1 (" + sha + ")": []byte(``),
 		"dolt push": []byte(``),
 	}}

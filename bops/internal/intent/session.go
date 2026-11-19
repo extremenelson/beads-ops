@@ -20,6 +20,7 @@ type SessionStartOut struct {
 	// LostClaims and StrandedHolds come from the sync (see SyncOut).
 	LostClaims    []string `json:"lost_claims"`
 	StrandedHolds []string `json:"stranded_holds"`
+	Deferred      []string `json:"deferred"`    // holds the sync left for the next one
 	Stale         int      `json:"stale"`       // idle claims and orphans, all machines
 	ReadyCount    int      `json:"ready_count"` // workable candidates for this run
 	Synced        bool     `json:"synced"`
@@ -39,7 +40,7 @@ var primeArgs = []string{"prime", "--mcp", "--max-memory-chars", "600"}
 // step is a warning and the rest still runs, so a hook always gets a
 // document; a failed sync makes the result ok:false.
 func SessionStart(ctx context.Context, env *Env) (*SessionStartOut, error) {
-	out := &SessionStartOut{Mine: []string{}, LostClaims: []string{}, StrandedHolds: []string{}, Warnings: []string{}}
+	out := &SessionStartOut{Mine: []string{}, LostClaims: []string{}, StrandedHolds: []string{}, Deferred: []string{}, Warnings: []string{}}
 	warn := func(what string, err error) {
 		out.Warnings = append(out.Warnings, what+": "+firstLine(err.Error()))
 	}
@@ -55,7 +56,7 @@ func SessionStart(ctx context.Context, env *Env) (*SessionStartOut, error) {
 		}
 	} else {
 		out.Synced = true
-		out.LostClaims, out.StrandedHolds = s.LostClaims, s.StrandedHolds
+		out.LostClaims, out.StrandedHolds, out.Deferred = s.LostClaims, s.StrandedHolds, s.Deferred
 		for _, w := range s.Warnings {
 			if w != lock.OffWarning {
 				out.Warnings = append(out.Warnings, w)

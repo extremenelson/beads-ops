@@ -29,10 +29,15 @@ const (
 	OutcomeError       = "error"
 )
 
+// eventDeferred is an events.jsonl outcome only: sync or sweep left a bead
+// for the process working on it, or for a later run to read again (bops-yph).
+const eventDeferred = "deferred"
+
 const maxPushTries = 5
 
 const (
 	retryAdvice       = "retry after 30 seconds, at most 3 times, then stop and report it"
+	contentionAdvice  = "another process is updating this bead; retry in a few seconds, at most 3 times, then stop and report it"
 	sideEffectsAdvice = "no ledger writes were made; if the ref was written, the local journal records it and the next claim or sync settles it"
 )
 
@@ -249,14 +254,10 @@ func (e *Env) ledgerHolder(cur *ledger.Issue) *Holder {
 // pushLedger publishes local Dolt commits. Every bead shares one Dolt ref, so
 // ordinary work on other beads rejects a push until it pulls first.
 func (e *Env) pushLedger(ctx context.Context) error {
-	sleep := e.Sleep
-	if sleep == nil {
-		sleep = time.Sleep
-	}
 	var err error
 	for try := 0; try < maxPushTries; try++ {
 		if try > 0 {
-			sleep(time.Duration(try) * 500 * time.Millisecond)
+			e.sleepFor(time.Duration(try) * 500 * time.Millisecond)
 			if _, pullErr := withLockRetry(ctx, e, "dolt", "pull"); pullErr != nil {
 				err = pullErr
 				continue
@@ -380,8 +381,11 @@ func (o *ClaimOut) Negative() bool { return o != nil && negative(o.Outcome) }
 
 func (o *ClaimOut) fail(err error) (*ClaimOut, error) {
 	o.Outcome = OutcomeError
-	if c := lock.CodeOf(err); c == lock.CodeUnreachable || c == lock.CodeAuth {
+	switch lock.CodeOf(err) {
+	case lock.CodeUnreachable, lock.CodeAuth:
 		o.Outcome, o.Retry, o.SideEffects = OutcomeUnreachable, retryAdvice, sideEffectsAdvice
+	case lock.CodeContention:
+		o.Retry = contentionAdvice
 	}
 	return o, err
 }
@@ -389,19 +393,34 @@ func (o *ClaimOut) fail(err error) (*ClaimOut, error) {
 // Claim takes a bead for this run. Creating the ref decides who owns it, and
 // the ledger only catches up afterward:
 //
-//	already held? --> bd show --> create ref --> pull --> ledger writes --> push
-//	    |               |            |            |            |
-//	    held         refused      lost, no     refused,     claimed,
-//	                              ledger       ref deleted  ledger_pending
-//	                              write
+//	bead lock --> already held? --> bd show --> create ref --> pull --> ledger writes --> push
+//	    |             |               |            |            |            |
+//	ref_contention   held         refused      lost, no     refused,     claimed,
+//	                                           ledger       ref deleted  ledger_pending
+//	                                           write
+//
+// Every path, --force included, starts by taking the bead's lock (bops-yph).
 func Claim(ctx context.Context, env *Env, id string, force bool) (*ClaimOut, error) {
-	if force {
-		return claimForce(ctx, env, id)
-	}
 	if err := lock.ValidateID(id); err != nil {
 		return nil, err
 	}
 	out := &ClaimOut{ID: id, Run: env.Run.ID, Warnings: []string{}}
+	unlock, err := env.holdBead(ctx, id, &out.Warnings)
+	if err != nil {
+		return out.fail(err)
+	}
+	defer unlock()
+	if _, err := env.finishRelease(ctx, id); err != nil {
+		return out.fail(err)
+	}
+	if force {
+		forced, err := claimForce(ctx, env, id)
+		if forced == nil {
+			return out.fail(err)
+		}
+		forced.Warnings = append(out.Warnings, forced.Warnings...)
+		return forced, err
+	}
 	if env.LockOff {
 		return claimLedger(ctx, env, id, out)
 	}
@@ -771,6 +790,14 @@ func ClaimResume(ctx context.Context, env *Env, id string) (*ClaimOut, error) {
 		return nil, err
 	}
 	out := &ClaimOut{ID: id, Run: env.Run.ID, Warnings: []string{}}
+	unlock, err := env.holdBead(ctx, id, &out.Warnings)
+	if err != nil {
+		return out.fail(err)
+	}
+	defer unlock()
+	if _, err := env.finishRelease(ctx, id); err != nil {
+		return out.fail(err)
+	}
 	if env.LockOff {
 		// SPEC decides a resume by the ref's state and actor; with no ref
 		// that rule is not defined yet, so this refuses rather than guess.
@@ -856,6 +883,7 @@ type ReleaseOut struct {
 	RefPending    bool     `json:"ref_pending,omitempty"`
 	Holder        *Holder  `json:"holder,omitempty"`
 	Detail        string   `json:"detail,omitempty"`
+	SavedTo       string   `json:"saved_to,omitempty"` // where the text of a release that did not run went
 	Warnings      []string `json:"warnings,omitempty"`
 }
 
@@ -898,6 +926,16 @@ func Release(ctx context.Context, env *Env, id, reason string) (*ReleaseOut, err
 // a private file; it is written only when the release is, so a lost or refused
 // release writes none of it.
 func ReleaseWithText(ctx context.Context, env *Env, id, reason, text string) (*ReleaseOut, error) {
+	out, err := releaseWithText(ctx, env, id, reason, text)
+	// Text from stdin must outlive a release that did not run, or whose
+	// ledger write did not (sync settles the claim but never the comment).
+	if out != nil && text != "" && (out.Outcome != OutcomeReleased || out.LedgerPending) {
+		out.SavedTo = saveText("release", text, &out.Warnings)
+	}
+	return out, err
+}
+
+func releaseWithText(ctx context.Context, env *Env, id, reason, text string) (*ReleaseOut, error) {
 	if !contains(ReleaseReasons, reason) {
 		return nil, fmt.Errorf("release: reason must be one of %s", strings.Join(ReleaseReasons, "|"))
 	}
@@ -908,6 +946,17 @@ func ReleaseWithText(ctx context.Context, env *Env, id, reason, text string) (*R
 		return nil, err
 	}
 	out := &ReleaseOut{ID: id, Reason: reason, Warnings: []string{}}
+	unlock, err := env.holdBead(ctx, id, &out.Warnings)
+	if err != nil {
+		return out.fail(err)
+	}
+	defer unlock()
+	if finished, err := env.finishRelease(ctx, id); err != nil {
+		return out.fail(err)
+	} else if finished {
+		out.Outcome, out.Detail = OutcomeRefused, "an earlier release of "+id+" had not finished deleting its claim; that is done now, and this run no longer holds it"
+		return out, nil
+	}
 	entry, ok := env.holdFor(id)
 	if !ok {
 		out.Outcome, out.Detail = OutcomeRefused, "this run does not hold "+id+"; claim --force is how a bead changes hands"
@@ -1132,7 +1181,11 @@ type SyncOut struct {
 	StrandedHolds []string `json:"stranded_holds"`
 	// LostClaims are beads this clone thought it held and no longer does.
 	LostClaims []string `json:"lost_claims"`
-	Warnings   []string `json:"warnings,omitempty"`
+	// Deferred are holds this sync left unchecked: another bops process on
+	// this machine was working on them, or they changed while it ran. The
+	// next sync checks them (bops-yph).
+	Deferred []string `json:"deferred"`
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 type cloneHold struct {
@@ -1189,7 +1242,10 @@ func (e *Env) allHolds() []cloneHold {
 // Sync reads the claims, pulls, settles every hold in this clone against its
 // ref, repairs the ledger display, and pushes.
 func Sync(ctx context.Context, env *Env, noPush bool) (*SyncOut, error) {
-	out := &SyncOut{StrandedHolds: []string{}, LostClaims: []string{}}
+	out := &SyncOut{StrandedHolds: []string{}, LostClaims: []string{}, Deferred: []string{}}
+	// The holds are read before the refs, so each hold's entry is no newer
+	// than the ref it is checked against (bops-yph).
+	holds := env.allHolds()
 	refs := map[string]lock.Ref{}
 	if env.LockOff {
 		out.Warnings = append(out.Warnings, lock.OffWarning)
@@ -1216,10 +1272,8 @@ func Sync(ctx context.Context, env *Env, noPush bool) (*SyncOut, error) {
 	} else {
 		out.Pulled = true
 	}
-	for _, h := range env.allHolds() {
-		if env.syncHold(ctx, h, refs, out) {
-			_, _ = env.BD.Run(ctx, "heartbeat", h.id) // best effort; the ref decides ownership
-		}
+	for _, h := range holds {
+		env.syncHeld(ctx, h, refs, out)
 	}
 	if noPush || !publish {
 		return out, nil
@@ -1229,6 +1283,36 @@ func Sync(ctx context.Context, env *Env, noPush bool) (*SyncOut, error) {
 	}
 	out.Pushed = true
 	return out, nil
+}
+
+// syncHeld settles one hold while holding the bead's lock, so no other bops
+// process sharing this clone changes it meanwhile. A hold another process is
+// working on, or one whose entry changed since this sync read the holds (so
+// the refs fetched after may predate it), is left for the next sync
+// (bops-yph).
+func (e *Env) syncHeld(ctx context.Context, h cloneHold, refs map[string]lock.Ref, out *SyncOut) {
+	unlock, err := e.lockBead(ctx, h.id, &out.Warnings, 0)
+	if lock.CodeOf(err) == lock.CodeContention {
+		out.Deferred = append(out.Deferred, h.id)
+		e.event("sync", h.id, "bead_lock", eventDeferred, "", nil)
+		return
+	}
+	if err != nil {
+		out.Warnings = append(out.Warnings, h.id+": "+err.Error())
+		return
+	}
+	defer unlock()
+	if e.Store != nil {
+		if !e.Store.Matches(h.run, h.id, h.entry) {
+			out.Deferred = append(out.Deferred, h.id)
+			e.event("sync", h.id, "entry_changed", eventDeferred, "", nil)
+			return
+		}
+	}
+	if e.syncHold(ctx, h, refs, out) {
+		// Under the lock, so a bead released meanwhile is not heartbeat.
+		_, _ = e.BD.Run(ctx, "heartbeat", h.id) // best effort; the ref decides ownership
+	}
 }
 
 // syncHold settles one hold and reports whether it is still live here. The
@@ -1248,12 +1332,33 @@ func (e *Env) syncHold(ctx context.Context, h cloneHold, refs map[string]lock.Re
 		live = ref.SHA
 	}
 	if h.entry.Intended != "" || h.entry.Phase == runstate.PhasePushing {
+		// The refs were fetched before this bead's lock, while its writer
+		// may still have been pushing; a writer that died since freed the
+		// lock with its push landed. Settle against the ref as it is now.
+		now, err := e.Lock.Read(ctx, h.id)
+		if err != nil {
+			out.Warnings = append(out.Warnings, h.id+": "+err.Error())
+			return false
+		}
+		ref, found, live = lock.Ref{}, now != nil, ""
+		if found {
+			ref, live = *now, now.SHA
+		}
 		state, err := e.Lock.Settle(h.id, live)
 		if err != nil {
 			out.Warnings = append(out.Warnings, h.id+": "+err.Error())
 			return false
 		}
 		if state == lock.Discarded {
+			return false
+		}
+		if state == lock.Adopted && ref.State == lock.StateLanding {
+			// A release --reason done that pushed its landing and died before
+			// dropping the hold: the bead is a landing now, which sweep closes.
+			if err := e.Lock.Journal.Drop(h.id); err != nil {
+				out.Warnings = append(out.Warnings, h.id+": "+err.Error())
+			}
+			e.event("sync", h.id, "ref_check", "landing", live, nil)
 			return false
 		}
 		h.entry, _ = e.Lock.Journal.Entry(h.id)
