@@ -486,6 +486,68 @@ func TestPreconditionsRefuseBeforeAnyRef(t *testing.T) {
 	}
 }
 
+// A blocking label refuses a plain claim before any ref, as the repo asks;
+// --force, a person's takeover of a stale claim, does not read it (bops-yja).
+func TestClaimRefusesABlockingLabel(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1").Labels = []string{"frozen"}
+	a := client(t, remote, "A", bd)
+	a.env.BlockingLabels = []string{"frozen"}
+	out, err := intent.Claim(bg, a.env, "x-1", false)
+	if err != nil || out.Outcome != intent.OutcomeRefused || !strings.Contains(out.Reason, "frozen") || !out.Negative() {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if liveSHA(t, a, "x-1") != "" || bd.wrote("x-1") {
+		t.Errorf("a refused claim wrote a ref or the ledger: %v", bd.calls)
+	}
+	a.env.BlockingLabels = nil
+	mustClaim(t, a, "x-1")
+}
+
+// A label added on another machine shows up only after the claim's pull, so
+// the claim gives its new ref back and says why.
+func TestClaimGivesBackABeadLabelledDuringThePull(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	n := bd.add("x-1")
+	bd.onPull = func() { n.Labels = append(n.Labels, "frozen") }
+	a := client(t, remote, "A", bd)
+	a.env.BlockingLabels = []string{"frozen"}
+	out, err := intent.Claim(bg, a.env, "x-1", false)
+	if err != nil || out.Outcome != intent.OutcomeRefused || !strings.Contains(out.Reason, "frozen") {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if liveSHA(t, a, "x-1") != "" || bd.wrote("x-1") {
+		t.Errorf("the ref must be given back with no ledger write: %v", bd.calls)
+	}
+}
+
+// A bead labelled after this run claimed it still answers held to a repeat
+// claim: the label keeps new work out, not work in flight (bops-yja).
+func TestRepeatClaimOfALabelledBeadIsHeld(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	n := bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	n.Labels = append(n.Labels, "frozen")
+	a.env.BlockingLabels = []string{"frozen"}
+	out, err := intent.Claim(bg, a.env, "x-1", false)
+	if err != nil || out.Outcome != intent.OutcomeHeld || liveSHA(t, a, "x-1") == "" {
+		t.Fatalf("%+v, %v", out, err)
+	}
+}
+
+// claim --force is a person's takeover of a stale claim: it does not read
+// blocking_labels, so a frozen bead's abandoned claim can still be recovered.
+func TestForceIgnoresBlockingLabels(t *testing.T) {
+	a, b, _, bdB := pair(t, "x-1")
+	mustClaim(t, a, "x-1")
+	n := bdB.beads["x-1"]
+	n.Assignee, n.Status, n.Labels = "old", "in_progress", []string{"run:A", "frozen"}
+	later(b, 3*time.Hour)
+	b.env.BlockingLabels = []string{"frozen"}
+	mustForce(t, b, "x-1")
+}
+
 // A shared ledger can show the winner's assignee before the ref is consulted.
 func TestAssignedBeadReportsWhatTheRefSays(t *testing.T) {
 	t.Run("another run holds it", func(t *testing.T) {
@@ -1520,6 +1582,22 @@ func TestResumeTakesBackALandingBead(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(n.Comments, ";"), "resumed=A") {
 		t.Errorf("comments = %v", n.Comments)
+	}
+}
+
+// claim --resume reopens landed work for review changes; a blocking label
+// added since does not stop it (bops-yja).
+func TestResumeIgnoresBlockingLabels(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	n := bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	landAndFinish(t, a, "x-1")
+	n.Labels = append(n.Labels, "frozen")
+	b := client(t, remote, "B", bd)
+	b.env.BlockingLabels = []string{"frozen"}
+	if out, err := intent.ClaimResume(bg, b.env, "x-1"); err != nil || out.Outcome != intent.OutcomeClaimed {
+		t.Fatalf("%+v, %v", out, err)
 	}
 }
 

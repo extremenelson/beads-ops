@@ -152,7 +152,7 @@ The manifest is [`bops/commands.json`](bops/commands.json). It is embedded in th
 
 Deterministic, documented, and the only place ordering lives:
 
-1. Exclude: not ready; epics; any failing lint rule in §6 (`needs-human`, `bops:hold` within window, `pool:` ≠ run's pool, any `needs:<cap>` not in run's caps, open gates, a live claim); and W14, a claim ref seen at the last `sync` that names another run. W14 reads `refs/bops/seen/*`, so `next` needs no network and is only as fresh as the last `sync`; `claim` is what decides.
+1. Exclude: not ready; epics; any failing lint rule in §6 (`needs-human`, `bops:hold` within window, `pool:` ≠ run's pool, any `needs:<cap>` not in run's caps, open gates, a live claim, a label in `blocking_labels`); and W14, a claim ref seen at the last `sync` that names another run. W14 reads `refs/bops/seen/*`, so `next` needs no network and is only as fresh as the last `sync`; `claim` is what decides.
 2. Order: priority ascending (0 first) → beads whose parent epic already has in-progress siblings (finish what's started) → oldest `created_at` → ID. If the in-progress listing fails, `next` still returns candidates without that step and says so in `warnings`.
 3. `why` lists which rules passed; `why_not` lists which rules excluded it (only with `--include-unworkable`).
 
@@ -178,6 +178,7 @@ Each rule has an id, a severity (`fail`|`warn`), and a one-line rationale; `--st
 | W12 | fail | not labelled `bops:hold` (cooling off after a scope/abandoned release) |
 | W13 | fail | in this run's pool: a run serves exactly one pool; unlabelled beads are the default pool, and a pooled run never takes default-pool beads |
 | W14 | fail | no claim ref held by another run, as seen at the last `sync` (evaluated by `next`, which has the refs) |
+| W15 | fail | no label the repo lists in `blocking_labels` (§10), such as a `frozen` its loop excludes. A plain `claim` refuses such a bead too, unless this run already holds it (`held`); `claim --force` and `claim --resume` do not read it |
 
 `W06s` is the stale variant of W06: the bead carries a claim, but its last heartbeat/update is older than `stale_minutes` (default 120). It is a *warn*, so a stale claim is a candidate again; `claim` on it still requires `--force`, which records the takeover in the event comment. `claim --force` measures staleness from the claim ref's `at` (§3.0), and from `updated_at` only for a ledger claim with no ref.
 
@@ -214,9 +215,9 @@ Bindings carry `contract=<n>` and refuse to run against a mismatched `bops versi
 
 ## 10. Configuration
 
-`.bops.json` in repo root (committed) merged with `$XDG_CONFIG_HOME/bops/config.json` (per user) and `BOPS_*` env. Keys: `pool`, `caps[]`, `hold_minutes`, `stale_minutes`, `forge`, `lint.strict`, `lint.disable[]`, `note.require_next` (bool), `lock.mode`, `lock.remote`.
+`.bops.json` in repo root (committed) merged with `$XDG_CONFIG_HOME/bops/config.json` (per user) and `BOPS_*` env. Keys: `pool`, `caps[]`, `hold_minutes`, `stale_minutes`, `forge`, `lint.strict`, `lint.disable[]`, `note.require_next` (bool), `lock.mode`, `lock.remote`, `blocking_labels[]`.
 
-Precedence, lowest to highest: built-in defaults, `.bops.json` in the worktree root, the per-user file (`~/.config/bops/config.json` when `XDG_CONFIG_HOME` is unset), `BOPS_*` env, then command flags. Each layer sets only the keys it names; a missing file is skipped. Nested keys are JSON objects (`{"lint": {"strict": true}}`), and each key's variable is `BOPS_` plus its path in upper case with `.` as `_` (`BOPS_STALE_MINUTES`, `BOPS_LINT_STRICT`); a list in the environment is comma-separated and an empty variable is unset. An unknown key, a wrong type, a non-integer or non-positive minute count, a `forge` outside `auto|github|gitlab|none`, a `lock.mode` outside `ref|none`, `lock.mode: none` from a layer above `.bops.json` when the repo file does not set it, or a `lock.remote` that is not a plausible git remote name (a letter or digit, then up to 99 letters, digits, `.`, `_` or `-`; no `..`, not ending in `.` or `.lock`) fails the command (exit 1, `code: bad_config`) naming the file or variable. The loader is `bops/internal/config`.
+Precedence, lowest to highest: built-in defaults, `.bops.json` in the worktree root, the per-user file (`~/.config/bops/config.json` when `XDG_CONFIG_HOME` is unset), `BOPS_*` env, then command flags. Each layer sets only the keys it names, except `blocking_labels`, to which each layer adds, so no layer can drop a label a lower one names; a missing file is skipped. Nested keys are JSON objects (`{"lint": {"strict": true}}`), and each key's variable is `BOPS_` plus its path in upper case with `.` as `_` (`BOPS_STALE_MINUTES`, `BOPS_LINT_STRICT`); a list in the environment is comma-separated and an empty variable is unset. An unknown key, a wrong type, a non-integer or non-positive minute count, a `forge` outside `auto|github|gitlab|none`, a `lock.mode` outside `ref|none`, `lock.mode: none` from a layer above `.bops.json` when the repo file does not set it, a `blocking_labels` entry that is empty or holds whitespace, a comma or a non-printable character, or a `lock.remote` that is not a plausible git remote name (a letter or digit, then up to 99 letters, digits, `.`, `_` or `-`; no `..`, not ending in `.` or `.lock`) fails the command (exit 1, `code: bad_config`) naming the file or variable. The loader is `bops/internal/config`.
 
 | Key | Default | Applied by |
 |---|---|---|
@@ -227,6 +228,7 @@ Precedence, lowest to highest: built-in defaults, `.bops.json` in the worktree r
 | `lint.strict`, `lint.disable[]` | `false`, none | loaded and validated; not applied yet (`lint --strict` is the flag) |
 | `note.require_next` | `false` | loaded and validated; not applied yet |
 | `lock.mode` (`BOPS_LOCK_MODE`) | `ref` | every command and `doctor`: `none` turns the claim lock off for a one-machine ledger (§3.0). Only `.bops.json` may set `none` |
+| `blocking_labels[]` (`BOPS_BLOCKING_LABELS`) | none | `next` and `lint` (W15), and a plain `claim`, which refuses a bead carrying one. Additive across layers |
 | `lock.remote` | `origin` | every command that reads or writes claim refs, the ledger check (§3.0) and `doctor` (`BOPS_LOCK_REMOTE`), and forge inference (§7); the lock itself is unused under `lock.mode: none` |
 
 Other environment `bops` reads: `BEADS_ACTOR` (actor), `BOPS_MACHINE` (machine name, else the hostname), `XDG_STATE_HOME` (§3.4), and `BOPS_INTEGRATION` / `BOPS_RACE_TRIALS` in tests.

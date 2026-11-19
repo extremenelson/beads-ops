@@ -39,7 +39,7 @@
       "intent": "Take this bead for this run",
       "kind": "write",
       "args": { "id": { "type": "string" }, "force": { "type": "bool", "default": false, "doc": "Take over a claim idle for stale_minutes (default 120), or an orphan. Refused on a landing bead." }, "resume": { "type": "bool", "default": false, "doc": "Take back a landing bead for PR rework. Only the ref's actor can." } },
-      "preconditions": ["assignee is empty OR --force", "status in (open, ready)", "no run: label", "the lock remote (lock.remote, default origin) matches the Dolt remote (lock.mode ref)"],
+      "preconditions": ["assignee is empty OR --force", "status in (open, ready)", "no run: label", "no label listed in blocking_labels (config; --force skips it, and a bead this run already holds answers held)", "the lock remote (lock.remote, default origin) matches the Dolt remote (lock.mode ref)"],
       "wraps": ["git push refs/bops/claims/<id> (create-only)", "bd dolt pull", "bd update <id> --claim", "bd label add <id> run:<ulid>", "bd comments add <id>", "bd dolt push"],
       "outcomes": { "claimed": 0, "held": 0, "lost": 3, "refused": 3, "unreachable": 1 },
       "output": { "id": "string", "run": "string", "outcome": "string", "claimed_at": "string?", "readback_ok": "bool?", "ledger_pending": "bool?", "ref_pending": "bool?", "holder": "object?", "reason": "string?", "age_minutes": "int?", "stale_minutes": "int?", "retry": "string?", "side_effects": "string?", "warnings": "string[]?" },

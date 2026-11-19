@@ -44,6 +44,9 @@ type Env struct {
 	// HoldFor is how long bops:hold keeps a bead out of `next` (config
 	// hold_minutes). Zero means the 120 minute default.
 	HoldFor time.Duration
+	// BlockingLabels (config blocking_labels) keep a bead out of `next` (W15)
+	// and make a plain claim refuse it.
+	BlockingLabels []string
 }
 
 // HoldStore is the part of the clone's state that spans worktrees.
@@ -123,7 +126,7 @@ func Next(ctx context.Context, env *Env, o NextOpts) (*NextOut, error) {
 	}
 	// Parents with an in-progress sibling come first in the ordering.
 	activeParents, listErr := parentsInProgress(ctx, env)
-	lenv := LintEnv{Pool: env.Run.Pool, Caps: env.caps(), Now: env.now(), StaleAfter: env.staleAfter(), HoldFor: env.HoldFor}
+	lenv := LintEnv{Pool: env.Run.Pool, Caps: env.caps(), Now: env.now(), StaleAfter: env.staleAfter(), HoldFor: env.HoldFor, BlockingLabels: env.BlockingLabels}
 	out := &NextOut{Candidates: []Candidate{}}
 	if listErr != nil { // it only affects the order, so a read still answers
 		out.Warnings = append(out.Warnings, "ordering ignores work in progress: "+listErr.Error())

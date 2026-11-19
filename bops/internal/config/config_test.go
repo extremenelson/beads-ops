@@ -200,3 +200,26 @@ func TestLockModeRejectsUnknownValue(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// blocking_labels from the committed file reach every machine: a user file or
+// BOPS_BLOCKING_LABELS can add labels but never drop the repo's (bops-yja).
+func TestBlockingLabelsAddAcrossLayers(t *testing.T) {
+	c, err := newWorld(t, "", "").load()
+	if err != nil || c.BlockingLabels != nil {
+		t.Fatalf("default = %v, %v; want none", c.BlockingLabels, err)
+	}
+	w := newWorld(t, `{"blocking_labels":["frozen"]}`, `{"blocking_labels":[]}`)
+	if c, err = w.load(); err != nil || !slices.Equal(c.BlockingLabels, []string{"frozen"}) {
+		t.Fatalf("an empty user list dropped the repo's: %v, %v", c.BlockingLabels, err)
+	}
+	w = newWorld(t, `{"blocking_labels":["frozen"]}`, `{"blocking_labels":["mine","frozen"]}`)
+	w.env["BOPS_BLOCKING_LABELS"] = "late, mine"
+	if c, err = w.load(); err != nil || !slices.Equal(c.BlockingLabels, []string{"frozen", "late", "mine"}) {
+		t.Fatalf("layers = %v, %v; want frozen,late,mine", c.BlockingLabels, err)
+	}
+	for _, bad := range []string{`{"blocking_labels":[""]}`, `{"blocking_labels":["a b"]}`, `{"blocking_labels":["a,b"]}`, `{"blocking_labels":"frozen"}`, `{"blocking_labels":["a\u00a0b"]}`, `{"blocking_labels":["a\u000bb"]}`, `{"blocking_labels":["fro\u200bzen"]}`} {
+		if _, err := newWorld(t, bad, "").load(); err == nil || !strings.Contains(err.Error(), "blocking_labels") {
+			t.Errorf("%s: err = %v, want a blocking_labels error", bad, err)
+		}
+	}
+}

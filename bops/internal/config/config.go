@@ -8,9 +8,10 @@
 //  4. `BOPS_*` environment variables
 //
 // Command-line flags override all of them; that happens in cmd/bops. A layer
-// sets only the keys it names. An unknown key, a value of the wrong type or
-// an out-of-range value is an error naming the file or variable, never
-// silently ignored.
+// sets only the keys it names, except blocking_labels, to which each layer
+// adds, so no layer can drop a label a lower one names. An unknown key, a
+// value of the wrong type or an out-of-range value is an error naming the
+// file or variable, never silently ignored.
 //
 // To add a key: add a field to Config, a default in Default if it needs one,
 // and one row to keys. The row gives its JSON path, kind and field; the
@@ -27,10 +28,12 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Config is the merged configuration.
@@ -45,6 +48,10 @@ type Config struct {
 	NoteRequireNext bool     // note.require_next (loaded, not yet applied)
 	LockMode        string   // lock.mode: ref|none; none only from the repo file
 	LockRemote      string   // lock.remote: git remote that holds the claim refs
+	// BlockingLabels (blocking_labels[]) keep a bead out of next and refuse a
+	// plain claim. Unlike every other key, each layer adds to it, so a user
+	// file or the environment can never drop a label the repo file names.
+	BlockingLabels []string
 }
 
 // Lock modes. LockNone decides claims from the local ledger alone, with no
@@ -81,6 +88,7 @@ const (
 	kForge
 	kLockMode
 	kRemote
+	kLabels
 )
 
 type key struct {
@@ -100,6 +108,7 @@ var keys = []key{
 	{"note.require_next", kBool, func(c *Config) any { return &c.NoteRequireNext }},
 	{"lock.mode", kLockMode, func(c *Config) any { return &c.LockMode }},
 	{"lock.remote", kRemote, func(c *Config) any { return &c.LockRemote }},
+	{"blocking_labels", kLabels, func(c *Config) any { return &c.BlockingLabels }},
 }
 
 var (
@@ -283,10 +292,13 @@ func setJSON(c *Config, k key, raw json.RawMessage) error {
 			return fmt.Errorf("%s: want a string", k.path)
 		}
 		return setString(c, k, s)
-	case kStrings:
+	case kStrings, kLabels:
 		var ss []string
 		if err := json.Unmarshal(raw, &ss); err != nil || ss == nil {
 			return fmt.Errorf("%s: want a list of strings", k.path)
+		}
+		if k.kind == kLabels {
+			return addLabels(c, k, ss)
 		}
 		*k.ref(c).(*[]string) = ss
 	case kMinutes:
@@ -328,12 +340,15 @@ func setString(c *Config, k key, v string) error {
 			return fmt.Errorf("%s: want a git remote name such as origin, got %q", k.path, v)
 		}
 		*k.ref(c).(*string) = v
-	case kStrings:
+	case kStrings, kLabels:
 		var ss []string
 		for _, s := range strings.Split(v, ",") {
 			if s = strings.TrimSpace(s); s != "" {
 				ss = append(ss, s)
 			}
+		}
+		if k.kind == kLabels {
+			return addLabels(c, k, ss)
 		}
 		*k.ref(c).(*[]string) = ss
 	case kMinutes:
@@ -349,6 +364,24 @@ func setString(c *Config, k key, v string) error {
 		}
 		*k.ref(c).(*bool) = b
 	}
+	return nil
+}
+
+// addLabels adds bead labels to a kLabels key, sorted and without repeats.
+// A label is one bd label: printable, with no whitespace or comma, since
+// anything else (a zero-width space, a control character) could never match
+// one bd stores.
+func addLabels(c *Config, k key, labels []string) error {
+	dst := k.ref(c).(*[]string)
+	for _, l := range labels {
+		if l == "" || strings.IndexFunc(l, func(r rune) bool { return r == ',' || unicode.IsSpace(r) || !unicode.IsPrint(r) }) >= 0 {
+			return fmt.Errorf("%s: want printable bead labels with no space or comma, got %q", k.path, l)
+		}
+		if !slices.Contains(*dst, l) {
+			*dst = append(*dst, l)
+		}
+	}
+	sort.Strings(*dst)
 	return nil
 }
 

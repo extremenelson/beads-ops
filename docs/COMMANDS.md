@@ -67,7 +67,7 @@ Take this bead for this run
 | `<id>` (positional) | string |  |  |
 | `--resume` | bool | `false` | Take back a landing bead for PR rework. Only the ref's actor can. |
 
-Preconditions: assignee is empty OR --force; status in (open, ready); no run: label; the lock remote (lock.remote, default origin) matches the Dolt remote (lock.mode ref).
+Preconditions: assignee is empty OR --force; status in (open, ready); no run: label; no label listed in blocking_labels (config; --force skips it, and a bead this run already holds answers held); the lock remote (lock.remote, default origin) matches the Dolt remote (lock.mode ref).
 
 Wraps: `git push refs/bops/claims/<id> (create-only)`, `bd dolt pull`, `bd update <id> --claim`, `bd label add <id> run:<ulid>`, `bd comments add <id>`, `bd dolt push`.
 

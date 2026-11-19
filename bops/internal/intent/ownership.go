@@ -204,7 +204,7 @@ func (e *Env) show(ctx context.Context, id string) (*ledger.Issue, error) {
 
 // notClaimable returns why a plain claim must refuse this bead, or "". A set
 // assignee refuses even with no ref, because a raw bd assignment has no ref.
-func notClaimable(cur *ledger.Issue) string {
+func (e *Env) notClaimable(cur *ledger.Issue) string {
 	if cur.Assignee != "" {
 		return fmt.Sprintf("assigned to %q; if that claim is abandoned, use claim --force after it goes stale", cur.Assignee)
 	}
@@ -213,6 +213,9 @@ func notClaimable(cur *ledger.Issue) string {
 	}
 	if cur.Status != "open" && cur.Status != "ready" {
 		return "status is " + cur.Status
+	}
+	if l := blockingLabel(cur, e.BlockingLabels); l != "" {
+		return "labelled " + l + ", which this repo's blocking_labels keep out of the pool; a person removes the label to release it"
 	}
 	return ""
 }
@@ -412,7 +415,7 @@ func Claim(ctx context.Context, env *Env, id string, force bool) (*ClaimOut, err
 	if err != nil {
 		return nil, err
 	}
-	if why := notClaimable(cur); why != "" {
+	if why := env.notClaimable(cur); why != "" {
 		return env.refuseOrLose(ctx, id, why, out), nil
 	}
 	res, err := env.Lock.Acquire(ctx, id)
@@ -436,7 +439,7 @@ func Claim(ctx context.Context, env *Env, id string, force bool) (*ClaimOut, err
 	if _, pullErr := withLockRetry(ctx, env, "dolt", "pull"); pullErr != nil {
 		out.Warnings = append(out.Warnings, "ledger not pulled: "+pullErr.Error())
 	} else if fresh, showErr := env.show(ctx, id); showErr == nil {
-		if why := notClaimable(fresh); why != "" {
+		if why := env.notClaimable(fresh); why != "" {
 			return env.giveBack(ctx, id, res.SHA, why, out)
 		}
 		cur = fresh
@@ -474,7 +477,7 @@ func claimLedger(ctx context.Context, env *Env, id string, out *ClaimOut) (*Clai
 	if err != nil {
 		return nil, err
 	}
-	if why := notClaimable(cur); why != "" {
+	if why := env.notClaimable(cur); why != "" {
 		out.Outcome, out.Reason = OutcomeRefused, why
 		env.event("claim", id, "precondition", OutcomeRefused, "", nil)
 		return out, nil

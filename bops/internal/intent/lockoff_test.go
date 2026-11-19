@@ -100,6 +100,20 @@ func TestLockOffClaimRefusesAnAssignedBead(t *testing.T) {
 	}
 }
 
+func TestLockOffClaimRefusesABlockingLabel(t *testing.T) {
+	bd := newBD()
+	bd.add("x-1").Labels = []string{"frozen"}
+	r := lockOffRig(t, "A", bd)
+	r.env.BlockingLabels = []string{"frozen"}
+	out, err := intent.Claim(bg, r.env, "x-1", false)
+	if err != nil || out.Outcome != intent.OutcomeRefused || !strings.Contains(out.Reason, "frozen") {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if bd.wrote("x-1") {
+		t.Errorf("calls = %v", bd.calls)
+	}
+}
+
 // Two worktrees of one clone share the ledger, so bd's own compare-and-set on
 // --claim decides; the loser is told who won.
 func TestLockOffClaimLosesARaceOnTheLedger(t *testing.T) {
@@ -224,6 +238,47 @@ func TestLockOffForceTakesAStaleLedgerClaim(t *testing.T) {
 	}
 	if e, ok := r.store.Entry("x-1"); !ok || !e.Legacy() {
 		t.Errorf("journal = %+v, %v", e, ok)
+	}
+}
+
+// With the lock off the pull comes before the read, so a label another
+// machine added is seen and the claim refuses with no ledger write.
+func TestLockOffClaimSeesALabelFromThePull(t *testing.T) {
+	bd := newBD()
+	n := bd.add("x-1")
+	bd.remotes = `[{"name":"origin","url":"git+https://example.com/ledger.git"}]`
+	bd.onPull = func() { n.Labels = append(n.Labels, "frozen") }
+	r := lockOffRig(t, "A", bd)
+	r.env.BlockingLabels = []string{"frozen"}
+	out, err := intent.Claim(bg, r.env, "x-1", false)
+	if err != nil || out.Outcome != intent.OutcomeRefused || !strings.Contains(out.Reason, "frozen") || bd.wrote("x-1") {
+		t.Fatalf("%+v, %v, %v", out, err, bd.calls)
+	}
+}
+
+func TestLockOffRepeatClaimOfALabelledBeadIsHeld(t *testing.T) {
+	bd := newBD()
+	n := bd.add("x-1")
+	r := lockOffRig(t, "A", bd)
+	if out, err := intent.Claim(bg, r.env, "x-1", false); err != nil || out.Outcome != intent.OutcomeClaimed {
+		t.Fatalf("claim: %+v, %v", out, err)
+	}
+	n.Labels = append(n.Labels, "frozen")
+	r.env.BlockingLabels = []string{"frozen"}
+	if out, err := intent.Claim(bg, r.env, "x-1", false); err != nil || out.Outcome != intent.OutcomeHeld {
+		t.Fatalf("%+v, %v", out, err)
+	}
+}
+
+func TestLockOffForceIgnoresBlockingLabels(t *testing.T) {
+	bd := newBD()
+	n := bd.add("x-1")
+	n.Assignee, n.Status, n.Labels = "other", "in_progress", []string{"run:B", "frozen"}
+	n.Updated = time.Now().Add(-3 * time.Hour)
+	r := lockOffRig(t, "A", bd)
+	r.env.BlockingLabels = []string{"frozen"}
+	if out, err := intent.Claim(bg, r.env, "x-1", true); err != nil || out.Outcome != intent.OutcomeClaimed {
+		t.Fatalf("%+v, %v", out, err)
 	}
 }
 

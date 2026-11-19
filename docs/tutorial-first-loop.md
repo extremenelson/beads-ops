@@ -75,7 +75,7 @@ bops next --json
       "priority": 1,
       "type": "task",
       "workable": true,
-      "why": ["W01", "W02", "W03", "W04", "W05", "W06", "W08", "W12", "W13", "W07 (warn): no parent epic"],
+      "why": ["W01", "W02", "W03", "W04", "W05", "W06", "W08", "W12", "W13", "W15", "W07 (warn): no parent epic"],
       "why_not": [],
       "blocked_by_gates": []
     }

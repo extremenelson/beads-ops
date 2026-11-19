@@ -569,3 +569,45 @@ func TestEmitHookEnvelope(t *testing.T) {
 		})
 	}
 }
+
+// blocking_labels in the committed .bops.json reaches `bops lint` as W15, so
+// the config is wired through newEnv and cmdLint, not only loaded (bops-yja).
+// bd is a stub on PATH answering the two calls lint makes.
+func TestLintReadsBlockingLabelsFromTheRepoFile(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("BOPS_BLOCKING_LABELS", "")
+	root := t.TempDir()
+	git(t, root, "init", "-q", "repo")
+	repo := filepath.Join(root, "repo")
+	if err := os.WriteFile(filepath.Join(repo, ".bops.json"), []byte(`{"blocking_labels":["frozen"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	stub := `#!/bin/sh
+case "$1" in
+show) echo '{"id":"x-1","title":"t","acceptance_criteria":"ac","status":"open","issue_type":"task","labels":["frozen"]}' ;;
+gate) echo '[]' ;;
+*) echo "unexpected bd $*" >&2; exit 1 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(bin, "bd"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Chdir(repo)
+	stdout, _ := os.CreateTemp(t.TempDir(), "out")
+	stderr, _ := os.CreateTemp(t.TempDir(), "err")
+	code := run([]string{"lint", "x-1", "--json"}, stdout, stderr)
+	b, _ := os.ReadFile(stdout.Name())
+	e, _ := os.ReadFile(stderr.Name())
+	got := map[string]any{}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("exit %d: %v: %s %s", code, err, b, e)
+	}
+	if got["workable"] != false || !strings.Contains(fmt.Sprint(got["fails"]), "W15") {
+		t.Fatalf("exit %d: lint = %v", code, got)
+	}
+}

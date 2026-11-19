@@ -194,7 +194,7 @@ func newEnv(mode runstate.Mode) (*intent.Env, *runstate.Store, error) {
 		run.Caps = cfg.Caps
 	}
 	l := &lock.Lock{Git: lock.Exec{Dir: root}, Journal: store, Run: run.ID, Actor: run.Actor, Remote: cfg.LockRemote}
-	return &intent.Env{BD: bdx.Exec{}, Run: run, Store: store, Lock: l, LockOff: cfg.LockOff(), StaleAfter: cfg.StaleAfter(), HoldFor: cfg.HoldFor()}, store, nil
+	return &intent.Env{BD: bdx.Exec{}, Run: run, Store: store, Lock: l, LockOff: cfg.LockOff(), StaleAfter: cfg.StaleAfter(), HoldFor: cfg.HoldFor(), BlockingLabels: cfg.BlockingLabels}, store, nil
 }
 
 func cmdNext(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
@@ -556,7 +556,7 @@ func cmdLint(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 	if err != nil {
 		return emit(m, "lint", asJSON, nil, err, stdout, stderr)
 	}
-	res := intent.Lint(issue, intent.LintEnv{Pool: env.Run.Pool, Caps: caps, Now: time.Now().UTC(), StaleAfter: 0, HoldFor: env.HoldFor, Strict: *strict,
+	res := intent.Lint(issue, intent.LintEnv{Pool: env.Run.Pool, Caps: caps, Now: time.Now().UTC(), StaleAfter: 0, HoldFor: env.HoldFor, BlockingLabels: env.BlockingLabels, Strict: *strict,
 		OpenGates: map[string][]string{issue.ID: gates}})
 	return emit(m, "lint", asJSON, &res, nil, stdout, stderr)
 }
