@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `blocking_labels` in `.bops.json` lists labels that take a bead out of the pool, such as a `frozen` label a repo's loop already excludes. `bops next` leaves such a bead out under a new lint rule, W15, and `bops lint` fails it. A plain `bops claim` refuses it before taking a lock, in both lock modes; `claim --force` does not read it. Unlike every other key, each config layer adds to the list, so a user file or `BOPS_BLOCKING_LABELS` can add labels but never drop the repo's. Older binaries reject the key as unknown, so upgrade every machine on a ledger before committing it. Before, `next` offered development-collaboration's frozen beads as workable (bops-yja).
+
 ## bops 0.2.0 (contract 1) — 2026-11-17
 
 - Release pipeline: pushing a tag `bops/vX.Y.Z` builds `bops` for linux, darwin and windows on amd64 and arm64, and android/arm64 for Termux, with the version stamped by `-ldflags -X main.version` so `bops version` prints the tag. `.github/workflows/bops-release.yml` publishes the archives and `checksums.txt` as a GitHub release, with the tag's CHANGELOG section as notes. `scripts/release-build.sh` does the build; `TestReleaseBuild` in `cmd/bops` runs it, so CI and `/verify` check every archive, the checksums and the stamped version. It is a plain `go build` with cgo off rather than goreleaser, whose free edition cannot read a `bops/`-prefixed tag. README and `bops/README.md` document the download (bops-ss6.14).

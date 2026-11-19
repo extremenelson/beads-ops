@@ -412,3 +412,33 @@ func ids(o *intent.NextOut) string {
 	}
 	return strings.Join(s, ",")
 }
+
+// A label in blocking_labels takes a bead out of next as W15, and lint fails
+// it, so a hand session is never offered work the repo has frozen (bops-yja).
+func TestNextExcludesBlockingLabels(t *testing.T) {
+	f := &bdx.Fake{Responses: map[string][]byte{
+		"ready --json":                     []byte(readyJSON),
+		"list --status in_progress --json": []byte(inProgressJSON),
+	}}
+	env := newEnv(f)
+	env.BlockingLabels = []string{"needs:gpu", "frozen"}
+	out, err := intent.Next(context.Background(), env, intent.NextOpts{N: 10, IncludeUnworkable: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range out.Candidates {
+		why := strings.Join(c.WhyNot, ";")
+		if c.ID == "x-5" {
+			if c.Workable || !strings.Contains(why, "W15: labelled needs:gpu") {
+				t.Errorf("x-5 = %+v, want W15", c)
+			}
+		} else if strings.Contains(why, "W15") {
+			t.Errorf("%s has no blocking label: %s", c.ID, why)
+		}
+	}
+	r := intent.Lint(&ledger.Issue{ID: "y", AcceptanceCriteria: "ac", Status: "open", Labels: []string{"frozen"}},
+		intent.LintEnv{BlockingLabels: []string{"frozen"}})
+	if r.Workable || len(r.Fails) != 1 || r.Fails[0].ID != "W15" {
+		t.Errorf("lint = %+v, want one W15 failure", r)
+	}
+}

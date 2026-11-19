@@ -32,6 +32,9 @@ type LintEnv struct {
 	HoldFor     time.Duration // how long bops:hold cools off; zero means defaultHold
 	MaxBodySize int
 	Strict      bool
+	// BlockingLabels are the repo's labels that take a bead out of the pool
+	// (config blocking_labels, W15).
+	BlockingLabels []string
 	// OpenGates maps bead id -> ids of unsatisfied gates (nil when unknown).
 	OpenGates map[string][]string
 }
@@ -140,8 +143,23 @@ func Lint(i *ledger.Issue, env LintEnv) LintResult {
 	} else {
 		pass("W13")
 	}
+	if l := blockingLabel(i, env.BlockingLabels); l != "" {
+		fail("W15", "labelled "+l+", a blocking label (config blocking_labels)")
+	} else {
+		pass("W15")
+	}
 	r.Workable = len(r.Fails) == 0
 	return r
+}
+
+// blockingLabel is the first of blocking that the bead carries, or "".
+func blockingLabel(i *ledger.Issue, blocking []string) string {
+	for _, l := range blocking {
+		if i.HasLabel(l) {
+			return l
+		}
+	}
+	return ""
 }
 
 func unmetCaps(i *ledger.Issue, have map[string]bool) []string {

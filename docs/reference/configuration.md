@@ -6,7 +6,7 @@ The normative definition is [SPEC.md §10](../../SPEC.md#10-configuration). The 
 
 ## Where settings come from
 
-Lowest to highest precedence. A higher layer overrides only the keys it names.
+Lowest to highest precedence. A higher layer overrides only the keys it names. `blocking_labels` is the exception: each layer adds to it.
 
 | # | Layer | Location | Notes |
 |---|---|---|---|
@@ -28,6 +28,7 @@ A missing file is skipped. A file that exists must be one JSON object.
 | [`caps`](#pool-and-caps) | list of strings | none | `BOPS_CAPS` (comma-separated) | every command's run |
 | [`forge`](#forge) | `auto` \| `github` \| `gitlab` \| `none` | `auto` | `BOPS_FORGE` | `land --verify`, `sweep` |
 | [`lock.mode`](#lockmode) | `ref` \| `none` | `ref` | `BOPS_LOCK_MODE` | every command, `doctor` |
+| [`blocking_labels`](#blocking_labels) | list of bead labels | none | `BOPS_BLOCKING_LABELS` (comma-separated) | `next`, `lint` (W15), `claim` |
 | [`lock.remote`](#lockremote) | git remote name | `origin` | `BOPS_LOCK_REMOTE` | claim-ref commands, `doctor`, forge inference |
 | `lint.strict` | boolean | `false` | `BOPS_LINT_STRICT` | loaded and validated, **not applied yet**; use `bops lint --strict` |
 | `lint.disable` | list of rule ids | none | `BOPS_LINT_DISABLE` | loaded and validated, **not applied yet** |
@@ -50,6 +51,18 @@ How long a bead stays out of `bops next` after `bops release --reason abandoned`
 `pool` makes a run serve only beads labelled `pool:<name>`. A run with no pool serves only unlabelled beads; a pooled run never takes default-pool beads (lint rule W13).
 
 `caps` lists what this machine can do. A bead labelled `needs:<cap>` is workable only on a run whose `caps` include `<cap>` (W04). These are per-machine facts, so they usually belong in the user file or the environment, not in `.bops.json`. `bops next --pool` and `--caps` override both for one call.
+
+### `blocking_labels`
+
+Labels that take a bead out of the pool for this repo, such as a `frozen` label the repo's own loop already excludes. `bops next` leaves out a bead carrying one (lint rule W15, shown with `--include-unworkable`), and a plain `bops claim` refuses it before it takes any lock. A claim this run already holds still answers `held`, and `claim --force`, a person's takeover of a stale claim, and `claim --resume` do not read it. A person releases the bead by removing the label.
+
+```json
+{"blocking_labels": ["frozen"]}
+```
+
+Put it in the committed `.bops.json`. Each layer adds to the list rather than replacing it, so a user file, `BOPS_BLOCKING_LABELS` or an empty list can add labels but never drop one the repo file names. A label must be non-empty and printable, with no whitespace or comma.
+
+**Upgrade every machine first.** A bops binary rejects any key it does not know, so a machine running a bops older than the release that adds `blocking_labels` fails every command with `bad_config` once the key is in `.bops.json`, including `release` and `sync`, so it cannot even hand back its claims. Commit the key only after every machine on the ledger has upgraded.
 
 ### `forge`
 
