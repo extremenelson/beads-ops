@@ -120,7 +120,8 @@ Ownership then returns to the ledger and this amendment is withdrawn.
 
 **Limits.** The guarantee covers claims made through `bops`. A raw `bd update
 --claim` bypasses the lock, and until they are moved so do `/bead-loop` and
-Kestrel. How often claims really collide is unmeasured, and the two-machine run
+Kestrel. (Status 2026-11-20: both now claim through `bops`; `/bead-loop` does so
+when the repo's protocol file sets `**Claim tool:** bops`, bops-t8j.) How often claims really collide is unmeasured, and the two-machine run
 for v0.1.0 records a count. The race itself is reproduced, which is why the lock
 is built before that number exists.
 

@@ -194,7 +194,7 @@ Contract 1 is not bumped for these changes. It is an unreleased draft with no ta
 
 - Recovery is `bops stale` plus `claim --force`. The `bd reclaim` timer is no longer recommended on bops ledgers, because it ignores the lock (D18).
 - PROCESS gains a recovery section for stuck states (D22). An abandoned PR on a landing bead is handled there with `claim --resume` under the holder's `BEADS_ACTOR`, then `release`.
-- Raw `bd update --claim` bypasses the lock. The guarantee holds only for claims made through `bops`. `/bead-loop` and Kestrel still claim through raw `bd`, so they are outside the v0.1.0 guarantee until `bops-ecs` moves them.
+- Raw `bd update --claim` bypasses the lock. The guarantee holds only for claims made through `bops`. `/bead-loop` and Kestrel still claim through raw `bd`, so they are outside the v0.1.0 guarantee until `bops-ecs` moves them. (Status 2026-11-20: both now claim through `bops`; `/bead-loop` does so when the repo's protocol file sets `**Claim tool:** bops`, bops-t8j.)
 - Upgrade every machine before the first claim on the new version, because an old binary ignores the lock.
 - A ledger used on one machine can turn the lock off with `lock.mode: none` in the committed `.bops.json` (bead `bops-4lv`, gate decision d4a). Commands then decide ownership from the ledger alone (`bd update --claim`, the `run:` label and assignee, `updated_at`), touch no ref and no remote for locking, and warn `lock.mode is none` on every result; `claim --resume` is refused and `doctor` skips every check. Only the repo file may set `none`, because one machine of a shared ledger turning it off would lose that machine's protection silently. The rules are SPEC §3.0.
 

@@ -58,7 +58,7 @@ bops sweep --dry-run=false                # closes landed beads once their PRs m
 
 New to `bops`? The [tutorial](docs/tutorial-first-loop.md) walks this loop on a scratch ledger with real output at every step.
 
-`bops claim` takes a bead through a git ref on your remote (`refs/bops/claims/<id>`), so two machines can never both hold it. `bd update --claim` cannot promise that across machines. Claims made with raw `bd` bypass the lock. The Kestrel binding claims through `bops claim`; `/bead-loop` still claims through raw `bd` until bead `bops-t8j` moves it. When something gets stuck, [`PROCESS.md` §12](docs/PROCESS.md#12-recovery-runbook-bops-ledgers) is the runbook.
+`bops claim` takes a bead through a git ref on your remote (`refs/bops/claims/<id>`), so two machines can never both hold it. `bd update --claim` cannot promise that across machines. Claims made with raw `bd` bypass the lock. The Kestrel binding claims through `bops claim`. `/bead-loop` claims through `bops claim` when the repo's protocol file sets `**Claim tool:** bops`; with no such line it claims through raw `bd` and is outside the guarantee, so set that line on every `bops` ledger. When something gets stuck, [`PROCESS.md` §12](docs/PROCESS.md#12-recovery-runbook-bops-ledgers) is the runbook.
 
 For a team on many machines, follow [`docs/MULTI-DEV-PLAN.md`](docs/MULTI-DEV-PLAN.md) phases 0–5.
 
