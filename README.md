@@ -33,7 +33,7 @@ bd init                                   # or: bd dolt remote list  (verify ori
 bd setup claude                           # upstream hooks + CLAUDE.md section
 
 # 1. install bops
-go install github.com/extremenelson/beads-ops/bops/cmd/bops@v0.4.1
+go install github.com/extremenelson/beads-ops/bops/cmd/bops@v0.4.2
 #    or the latest main, from a clone of this repo:  (cd bops && go install ./cmd/bops)
 #    no Go? release binaries (linux, macOS, windows, Termux): see bops/README.md#install
 bops version                              # prints contract 1 and the bd it found
