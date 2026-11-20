@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- A read-only command's version stamp no longer recreates a `state.json` removed since it read it, and no command saves its own actor (`BEADS_ACTOR`, or the git user) on another worktree's run that has none recorded; only the run it acts as gets that default. SPEC now says that an older bops partway through a command when the stamp lands fails with its push done, and that `bops sync` from the newer bops settles it (bops-mx0).
+
 ## bops 0.4.2 (contract 1) — 2026-11-20
 
 - A bops that finds an older `state.json` stamps version 3 on it as soon as it opens it, read-only commands included, not at its first write. An older bops sharing the clone then refuses it from the newer one's first command instead of running beside it without the bead lock. A read-only command that cannot stamp the file (its lock busy, which it does not wait for, or the directory not writable) still reads it, and a later command stamps it (bops-j9k).

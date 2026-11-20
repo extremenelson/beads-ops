@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -711,5 +712,166 @@ func TestStampKeepsTheStoredActor(t *testing.T) {
 	}
 	if !strings.Contains(string(b), `"version": 3`) || !strings.Contains(string(b), `"actor": "stored"`) || strings.Contains(string(b), "someone-else") {
 		t.Fatalf("the stamp must keep the stored actor:\n%s", b)
+	}
+}
+
+// A read-only stamp whose lock it took but whose write fails still reads,
+// leaves the file as it was and lets go of the lock (bops-mx0).
+func TestReadOpenSkipsTheStampWhenTheWriteFails(t *testing.T) {
+	root, stateHome := repo(t)
+	s := open(t, root, Read)
+	path := firstOrEmpty(stateFiles(t, stateHome))
+	older := `{"version":2,"runs":{"` + s.worktree + `":{"id":"RUN","machine":"m","actor":"a","started_at":"2026-11-09T00:00:00Z","held":{"x-1":{"sha":"aaa","phase":"held"}}}}}`
+	if err := os.WriteFile(path, []byte(older), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path+".tmp", 0o700); err != nil { // write's temp file cannot be created
+		t.Fatal(err)
+	}
+
+	r, err := Open(root, Read)
+	if err != nil {
+		t.Fatalf("a read must not fail for want of the stamp: %v", err)
+	}
+	if e, ok := r.Entry("x-1"); !ok || e.SHA != "aaa" {
+		t.Fatalf("the read must still see the file: %+v, %v", e, ok)
+	}
+	if b, _ := os.ReadFile(path); string(b) != older {
+		t.Fatalf("the file must be left for a later command to stamp:\n%s", b)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(path), "lock")); !os.IsNotExist(err) {
+		t.Fatalf("the stamp must let go of the lock: %v", err)
+	}
+}
+
+// The stamp's re-read under the lock still refuses a file a newer bops wrote
+// since Open's first read, and lets go of the lock (bops-mx0).
+func TestStampRefusesANewerFileOnReRead(t *testing.T) {
+	root, stateHome := repo(t)
+	s := open(t, root, Read)
+	path := firstOrEmpty(stateFiles(t, stateHome))
+	if err := os.WriteFile(path, []byte(`{"version":99,"runs":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.st.Version = 2 // as Open's first read found it
+
+	if err := s.stamp(Read); err == nil || !strings.Contains(err.Error(), "upgrade it") {
+		t.Fatalf("a newer file must be refused: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(path), "lock")); !os.IsNotExist(err) {
+		t.Fatalf("the stamp must let go of the lock: %v", err)
+	}
+}
+
+// A state file gone by the stamp's re-read is not recreated, empty, by a
+// read-only command (bops-mx0).
+func TestStampDoesNotRecreateAVanishedFile(t *testing.T) {
+	root, stateHome := repo(t)
+	s := open(t, root, Read)
+	path := firstOrEmpty(stateFiles(t, stateHome))
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	s.st.Version = 2
+	run := s.run
+
+	if err := s.stamp(Read); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		b, _ := os.ReadFile(path)
+		t.Fatalf("the stamp must not write a file it no longer finds:\n%s", b)
+	}
+	if s.run != run {
+		t.Fatal("the store must keep handing out its run")
+	}
+}
+
+// A stamp whose re-read lacks this worktree's run keeps the run it hands out
+// and does not write it back; the next write that needs it does (bops-mx0).
+func TestStampKeepsItsRunWhenTheReReadLacksIt(t *testing.T) {
+	root, stateHome := repo(t)
+	s := open(t, root, Read)
+	path := firstOrEmpty(stateFiles(t, stateHome))
+	older := `{"version":2,"runs":{"/elsewhere":{"id":"SIB","machine":"m","actor":"b","started_at":"2026-11-09T00:00:00Z"}}}`
+	if err := os.WriteFile(path, []byte(older), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.st.Version = 2
+	run := s.run
+
+	if err := s.stamp(Read); err != nil {
+		t.Fatal(err)
+	}
+	if s.run != run {
+		t.Fatal("the store must keep handing out its run")
+	}
+	b, _ := os.ReadFile(path)
+	if !strings.Contains(string(b), `"version": 3`) || !strings.Contains(string(b), `"SIB"`) || strings.Contains(string(b), run.ID) {
+		t.Fatalf("the stamp must write only what it re-read:\n%s", b)
+	}
+}
+
+// A run with no stored actor is not given this process's actor by a read or
+// a stamp; only the run this process hands out gets a default, in memory
+// (bops-mx0).
+func TestStampLeavesASiblingsEmptyActor(t *testing.T) {
+	root, stateHome := repo(t)
+	s := open(t, root, Read)
+	path := firstOrEmpty(stateFiles(t, stateHome))
+	older := `{"version":2,"runs":{` +
+		`"` + s.worktree + `":{"id":"RUN","machine":"m","started_at":"2026-11-09T00:00:00Z"},` +
+		`"/elsewhere":{"id":"SIB","machine":"m","started_at":"2026-11-09T00:00:00Z"}}}`
+	if err := os.WriteFile(path, []byte(older), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BEADS_ACTOR", "someone-else")
+
+	r := open(t, root, Read)
+	if r.run.Actor != "someone-else" {
+		t.Fatalf("this process acts as BEADS_ACTOR: %q", r.run.Actor)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"version": 3`) || strings.Contains(string(b), "someone-else") {
+		t.Fatalf("the stamp must not save this process's actor on any run:\n%s", b)
+	}
+}
+
+// With no BEADS_ACTOR, a run recorded without an actor is handed out as the
+// git user, and only that run is saved with it; a sibling's stays as stored
+// (bops-mx0). A claim ref must never carry an empty actor.
+func TestOpenDefaultsOnlyItsOwnEmptyActor(t *testing.T) {
+	root, stateHome := repo(t)
+	s := open(t, root, Read)
+	path := firstOrEmpty(stateFiles(t, stateHome))
+	stored := `{"version":3,"runs":{` +
+		`"` + s.worktree + `":{"id":"RUN","machine":"m","started_at":"2026-11-09T00:00:00Z"},` +
+		`"/elsewhere":{"id":"SIB","machine":"m","started_at":"2026-11-09T00:00:00Z"}}}`
+	if err := os.WriteFile(path, []byte(stored), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BEADS_ACTOR", "")
+	want := Actor()
+	if want == "" {
+		t.Fatal("Actor() must never be empty")
+	}
+
+	w := open(t, root, Write)
+	if w.Run().Actor != want {
+		t.Fatalf("this run must default to Actor() %q: %q", want, w.Run().Actor)
+	}
+	if err := w.write(); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(b), `"actor": `+strconv.Quote(want)) != 1 {
+		t.Fatalf("only this run may be saved with the default actor:\n%s", b)
 	}
 }
