@@ -639,11 +639,39 @@ type Event struct {
 // eventsMax is the size at which events.jsonl is rotated to one old copy.
 const eventsMax = 1 << 20
 
+// rotate moves a full events.jsonl to events.jsonl.1. Two processes that
+// both found it full would otherwise both rename it, the second moving the
+// first's fresh file over the old copy and losing it, so it rotates under its
+// own operating-system lock and re-checks the size there (bops-qef). It never
+// waits: a process that holds the lock is rotating, and Log appends to
+// whichever file it finds. A lock it cannot take for any other reason (a file
+// system with no locks, an events.lock it cannot open) leaves it rotating
+// unserialized, as before, rather than letting the file grow without end.
+func (s *Store) rotate(path string) {
+	beforeRotate()
+	release, err := lockFile(filepath.Join(s.dir, "events.lock"))
+	switch {
+	case errors.Is(err, ErrBeadBusy):
+		return
+	case err != nil: // no lock to be had: rotate unserialized, as before
+	default:
+		defer release()
+	}
+	if info, err := os.Stat(path); err == nil && info.Size() >= eventsMax {
+		_ = os.Rename(path, path+".1")
+	}
+}
+
+// beforeRotate runs between Log finding events.jsonl full and rotate taking
+// its lock. Tests set it to rotate from another Log in that window; a test
+// that does must not run in parallel.
+var beforeRotate = func() {}
+
 // Log appends an event. Losing one must never fail the command it describes.
 func (s *Store) Log(ev Event) {
 	path := filepath.Join(s.dir, "events.jsonl")
 	if info, err := os.Stat(path); err == nil && info.Size() >= eventsMax {
-		_ = os.Rename(path, path+".1")
+		s.rotate(path)
 	}
 	b, err := json.Marshal(ev)
 	if err != nil {
