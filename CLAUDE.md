@@ -76,3 +76,9 @@ Key routing rules:
 - Save progress → invoke /context-save
 - Resume context → invoke /context-restore
 - Author a backlog-ready spec/issue → invoke /spec
+
+## Roles
+
+Leads: Alex Nelson
+
+Leads are the `BEADS_ACTOR` handles that set P0/P1, close epics, resolve `human` gates and take over another person's landing ([docs/PROCESS.md](docs/PROCESS.md) §1, §12).

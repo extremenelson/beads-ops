@@ -1,7 +1,7 @@
 # Beads Operating Process
 
-**Status:** v0.3 draft (v0.2: §3.6 workability table, §3.7 pre-claim lint; v0.3: the `bops` claim lock in §1, §2.2, §3.7, §8, §9.3 and the recovery runbook in §12) — opinionated process layer over the upstream beads skill (gastownhall/beads, plugin v1.3.2 / skill v0.60.0, 2026-11-01).
-**Scope:** one human (Alex) + multiple agents (Claude Code, Hermes, Kestrel) sharing one issue graph per repo, across several machines that are sometimes offline.
+**Status:** v0.4 draft (v0.4: roles for more than one human in §1, takeover policy in §12; v0.2: §3.6 workability table, §3.7 pre-claim lint; v0.3: the `bops` claim lock in §1, §2.2, §3.7, §8, §9.3 and the recovery runbook in §12) — opinionated process layer over the upstream beads skill (gastownhall/beads, plugin v1.3.2 / skill v0.60.0, 2026-11-01).
+**Scope:** one or more humans (developers, at least one of them a lead, §1) + their agents (Claude Code, Hermes, Kestrel) sharing one issue graph per repo, each human on several machines that are sometimes offline. A solo repo is the case of one developer who is also the lead.
 **Relationship to upstream:** this document does not replace `bd prime` or the skill's `resources/`. It fixes the decisions upstream leaves open. Where upstream and this file disagree on *mechanics*, upstream wins (it tracks the binary). Where they disagree on *policy*, this file wins.
 
 ---
@@ -11,7 +11,7 @@
 Everything else in this document is derived from these.
 
 1. **The graph is the plan.** No markdown TODO lists, no `PLAN.md`, no `MEMORY.md`. If it is work, it is a bead. If it is a durable project fact, it is `bd remember`. If it is neither, it belongs in the conversation and is allowed to die with it.
-2. **Notes are written for a reader with zero context.** Every `in_progress` bead carries a note that a fresh agent — or Alex after two weeks — can resume from without the conversation. This is the only thing that makes compaction, crashes, and machine-hopping survivable.
+2. **Notes are written for a reader with zero context.** Every `in_progress` bead carries a note that a fresh agent — or a person after two weeks — can resume from without the conversation. This is the only thing that makes compaction, crashes, and machine-hopping survivable.
 3. **`blocks` means *cannot proceed*, nothing softer.** Only `blocks` affects `bd ready`. Everything that is sequencing preference, context, or provenance uses `related`, `parent-child`, or `discovered-from`. An over-constrained graph collapses `bd ready` to one item and kills parallelism — which is the whole point of having more than one agent.
 
 ---
@@ -20,11 +20,16 @@ Everything else in this document is derived from these.
 
 | Actor | Owns | Never does |
 |---|---|---|
-| **Alex (human)** | `bd init`, epic-level goals, priority (P0–P1), resolving `human` gates, deciding what gets distilled into a formula, `bd dolt push` policy | Hand-edit `.beads/`; create P2–P4 tasks that agents could file themselves |
+| **Lead (human)** | `bd init`, epic-level goals, priority (P0–P1), resolving `human` gates, deciding what gets distilled into a formula, `bd dolt push` policy, the team's `bd` and `bops` versions, taking over another person's landing or deleting an orphan claim ref (§12) | Hand-edit `.beads/`; create P2–P4 tasks that agents could file themselves |
+| **Developer (human)** | Their own claims and their agents' work; reviewing and merging PRs; `bops claim --resume` of their own beads; `bops claim --force` of a stale claim after trying to reach its holder (§12) | Hand-edit `.beads/`; set P0/P1 or close an epic unless also a lead; act as another person's actor |
 | **Agent (any harness)** | Decomposition below the epic, claiming, notes, discovered-from filing, closing with reasons, `bd gate check` at session start | `bd init`; change P0/P1 priority; close an epic; resolve a `human` gate; delete beads; run `bd dolt push --force` |
 | **Autonomous loop** (task-agent, Kestrel worker) | `bops next` → `bops claim` → execute → close → repeat (`bd ready --claim` on a ledger without `bops`) | Pick up anything with label `needs-human`; create epics; work when `bd blocked` shows a `human` gate on the current epic |
 
 `bd ready --claim` and `bd update --claim` compare and set on one replica only: two machines can both claim one bead, and Dolt's last-write-wins settles it later without telling the loser. `bops claim` closes that gap with a git ref per bead (§2.2). The guarantee covers only claims made through `bops`. The Kestrel binding claims through `bops claim`. `/bead-loop` still claims through raw `bd`, so it is outside the guarantee until bead `bops-t8j` moves it.
+
+**Who the leads are** is written in the repo's `AGENTS.md` (a `Leads:` line naming their actor handles), so agents and people read it from the same place. A team has at least one lead; in a solo repo the one developer is the lead.
+
+**Actor handles.** Each person has one `BEADS_ACTOR` handle, the same on every machine they use (the forge handle is the obvious choice), agreed when the ledger is set up ([MULTI-DEV-PLAN Phase 0](MULTI-DEV-PLAN.md#phase-0--decide-and-document-1-hour-one-person)). Their agents claim under that handle; the claim ref's `run` and `machine` tell their sessions apart. The handle is what `claim --resume` checks, so a person who uses two spellings on two machines cannot move a bead between them. A harness that runs under its own actor (Kestrel's `kestrel@<host>`, §9.3) is its own owner for these checks.
 
 The split is deliberate: humans set direction and approve, agents do decomposition and bookkeeping. Agents filing their own follow-ups is what makes the system cheaper than a human-maintained tracker; agents re-prioritizing is what makes it drift.
 
@@ -91,7 +96,7 @@ Closing is a claim that acceptance criteria are met. Before `bd close`:
 - [ ] `bd close <id> --reason "<what was done, how verified, PR/commit ref>"`
 - [ ] `bd ready --json` — report what just became unblocked
 
-Agents close tasks and features. **Only Alex closes epics**, after confirming the parent outcome — not merely that all children are closed.
+Agents close tasks and features. **Only a lead closes epics**, after confirming the parent outcome — not merely that all children are closed.
 
 ---
 
@@ -126,8 +131,8 @@ Ask first: fuzzy knowledge work, unclear intent, multiple valid approaches, anyt
 
 | P | Meaning | Who sets |
 |---|---|---|
-| 0 | Production down / data at risk / blocks everything | Alex |
-| 1 | Blocks the current epic's ready front | Alex (agent may propose in notes) |
+| 0 | Production down / data at risk / blocks everything | Lead |
+| 1 | Blocks the current epic's ready front | Lead (agent may propose in notes) |
 | 2 | Default for planned work | Agent |
 | 3 | Nice to have, no deadline | Agent |
 | 4 | Backlog / someday | Agent |
@@ -266,7 +271,7 @@ Gates are ephemeral wisps that hold a bead blocked until a condition is met. Use
 
 | Situation | Gate |
 |---|---|
-| Needs Alex's sign-off (deploy, spend, external comms, anything irreversible) | `bd gate create --type human --blocks <id> --reason "…"` |
+| Needs a lead's sign-off (deploy, spend, external comms, anything irreversible) | `bd gate create --type human --blocks <id> --reason "…"` |
 | Waiting on GitHub Actions | `--type gh:run --await-id <run-id>` |
 | Waiting on PR merge | `--type gh:pr --await-id <pr#>` |
 | Propagation / cool-down | `--type timer --timeout 15m` |
@@ -390,7 +395,7 @@ Integration points in Kestrel:
 |---|---|---|
 | `bd ready` shows one item in a 20-bead epic | `blocks` used for preferences | Audit with `bd blocked`; downgrade to `related` |
 | Notes say "made progress, more to do" | Note written for self-with-context | Rewrite in §4 format; fail resume if no NEXT |
-| Agent closes an epic | Agent conflated "children closed" with "outcome achieved" | Only Alex closes epics |
+| Agent closes an epic | Agent conflated "children closed" with "outcome achieved" | Only a lead closes epics |
 | `PLAN.md` or `TODO.md` appears in the repo | Someone bypassed the graph | Convert to beads, delete file, `bd remember "no markdown plans"` |
 | Formula written before the workflow has run twice | Speculative templating | Run ad-hoc, then `bd mol distill` |
 | Three beads `in_progress` for one actor | Context-hopping | Finish or hand off; in_progress beats ready |
@@ -438,6 +443,22 @@ git log -1 --format=%B refs/bops/seen/<id>     # run=, actor=, state=held|landin
 | `code: state_write_failed` | The state directory is not writable | Fix permissions on `~/.local/state/bops/`. Nothing was pushed: the journal is written before the ref |
 | `code: hold_not_recorded`, error names a sha | The ref was won but the state file was not written | Fix the state directory, then remove the ref as an orphan (below), using that sha |
 
+**Who may take over what.** Every takeover is a person's decision; an autonomous loop never forces, resumes or deletes a claim.
+
+| Takeover | Who may | First |
+|---|---|---|
+| Your own bead, from another of your machines (`claim --resume`) | You | Push the branch and `bops note` on the old machine if you can |
+| A stale claim of yours (`claim --force`) | You | Nothing: the old run is yours |
+| Another person's stale claim (`claim --force`) | Any developer | Try to reach the holder (the actor in the ref), and wait if they answer |
+| Another person's abandoned landing (act as their actor, below) | A lead | Confirm the PR is closed unmerged and the holder is not coming back |
+| Deleting an orphan claim ref (below) | A lead | Confirm it is an orphan |
+
+Whoever takes over adds a comment to the bead saying who did it, whose claim it was (actor and run, from the ref), and why, so the displaced person finds it:
+
+```bash
+bd comments add <id> "TAKEOVER by <your actor>: was <actor> run=<run> (state=<held|landing>, idle <n> min). Why: <reason>. Tried to reach them: <how, when>."
+```
+
 **The holder is gone (crash, machine off).** Once the claim ref's `at` is `stale_minutes` old (default 120, set in `.bops.json`; SPEC §10; `note` refreshes it). The 120 below is that default:
 
 ```bash
@@ -470,14 +491,14 @@ bops sync                                   # publish it
 bops release <id> --reason scope
 ```
 
-**An abandoned landing.** The bead was released `done`, its PR was closed unmerged, and its holder is not coming back. `claim --force` refuses a landing ref and `sweep` leaves it pending. Read the actor from the ref (above), then act as that actor, from any machine:
+**An abandoned landing.** The bead was released `done`, its PR was closed unmerged, and its holder is not coming back. `claim --force` refuses a landing ref and `sweep` leaves it pending. A lead reads the actor from the ref (above), then acts as that actor, from any machine:
 
 ```bash
 BEADS_ACTOR='<actor from the ref>' bops claim --resume <id>
 BEADS_ACTOR='<actor from the ref>' bops release <id> --reason scope
 ```
 
-The ref is deleted and the bead goes back to the pool behind the usual `bops:hold`. The actor is not authenticated ([SPEC §3.0](../SPEC.md#30-the-claim-lock-ownership)), so this is a deliberate act: say who did it and why in a comment on the bead.
+The ref is deleted and the bead goes back to the pool behind the usual `bops:hold`. The actor is not authenticated ([SPEC §3.0](../SPEC.md#30-the-claim-lock-ownership)), so this is a deliberate act: add the takeover comment above.
 
 **An orphan ref** (`state=held` naming a run with no claim on the ledger, for example after `hold_not_recorded`). `bops stale` lists it under `orphans` once it is older than `--older-than`. A plain claim reports `lost` to that run. First confirm it is an orphan, because deleting a live ref takes the bead from its holder:
 
