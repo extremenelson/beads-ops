@@ -64,3 +64,10 @@ func lockError(err error) error {
 	}
 	return err
 }
+
+// pruneLockFile removes nothing on Windows. A file deleted while another
+// handle has it open lingers as delete-pending, and on older Windows its
+// name cannot be reopened until every handle closes, so a prune could make a
+// bead unlockable for as long as some process holds it; the files are empty
+// (bops-exb).
+func pruneLockFile(string) (bool, error) { return false, nil }
