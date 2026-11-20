@@ -88,7 +88,8 @@ const stateVersion = 3
 type Mode int
 
 const (
-	// Read sees the current state and takes the lock only to record a new run.
+	// Read sees the current state and takes the lock only to record a new run
+	// or to stamp an older file with this version, which it skips if it cannot.
 	Read Mode = iota
 	// Write holds the clone's lock until Close.
 	Write
@@ -176,6 +177,17 @@ func Open(start string, mode Mode) (*Store, error) {
 		return nil, err
 	}
 	s.run = s.st.Runs[worktree]
+	// Stamp an older file at once, not at this process's first write: from
+	// then on an older bops, which takes no bead lock, refuses the clone
+	// rather than run beside this one unserialized (bops-j9k). It comes
+	// before the actor override, which is this process's alone. A read-only
+	// command that cannot stamp still reads; a later command stamps.
+	if s.st.Version < stateVersion {
+		if err := s.stamp(mode); err != nil {
+			s.Close()
+			return nil, err
+		}
+	}
 	if a := os.Getenv("BEADS_ACTOR"); a != "" {
 		s.run.Actor = a // the environment names who is acting now, not who created the run
 	}
@@ -183,6 +195,36 @@ func Open(start string, mode Mode) (*Store, error) {
 		s.Close()
 	}
 	return s, nil
+}
+
+// stamp writes an older file back at this version. In Write mode, which
+// holds the lock and read the file under it, a failure is an error. A
+// read-only command stamps only if it can take the lock at once and write,
+// and otherwise leaves the file for a later command; it re-reads the file
+// under the lock and writes only that, so nothing it read earlier is written
+// back. A file that cannot be re-read (a newer version, say) is an error.
+func (s *Store) stamp(mode Mode) error {
+	if mode == Write {
+		return s.write()
+	}
+	if !s.locked { // ensureRun may have left it held
+		if s.lockWithin(0) != nil {
+			return nil
+		}
+	}
+	defer s.Close()
+	if err := s.read(); err != nil {
+		return err
+	}
+	if s.st.Version < stateVersion {
+		_ = s.write()
+	}
+	if fresh := s.st.Runs[s.worktree]; fresh != nil {
+		s.run = fresh
+	} else {
+		s.st.Runs[s.worktree] = s.run
+	}
+	return nil
 }
 
 func (s *Store) ensureRun() error {
@@ -261,12 +303,15 @@ const renameTries = 10
 // lock takes the clone's write lock. A lock left by a crashed process is
 // broken after lockStale. Two waiters that both break the same stale lock
 // can, in a very narrow window, both proceed.
-func (s *Store) lock() error {
+func (s *Store) lock() error { return s.lockWithin(lockWait) }
+
+// lockWithin is lock waiting at most wait; with 0 it tries once.
+func (s *Store) lockWithin(wait time.Duration) error {
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return err
 	}
 	path := filepath.Join(s.dir, "lock")
-	deadline := time.Now().Add(lockWait)
+	deadline := time.Now().Add(wait)
 	for {
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {

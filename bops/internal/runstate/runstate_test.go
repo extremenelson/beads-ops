@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -568,4 +569,147 @@ func TestLockBeadTakesTheLongestValidID(t *testing.T) {
 		t.Fatal(err)
 	}
 	release()
+}
+
+// A newer bops stamps its version on the state file as soon as it opens it,
+// read-only commands included, so an older bops that takes no bead lock
+// refuses the clone from then on rather than only after the newer one first
+// writes (bops-j9k). Every run's holds come through, and a file already at
+// this version is not rewritten.
+func TestOpenStampsAnOlderStateFile(t *testing.T) {
+	root, stateHome := repo(t)
+	s := open(t, root, Read)
+	path := firstOrEmpty(stateFiles(t, stateHome))
+	older := `{"version":2,"runs":{` +
+		`"` + s.worktree + `":{"id":"RUN","machine":"m","actor":"a","started_at":"2026-11-09T00:00:00Z","held":{"x-1":{"sha":"aaa","phase":"held"}}},` +
+		`"/elsewhere":{"id":"SIB","machine":"m","actor":"b","started_at":"2026-11-09T00:00:00Z","held":{"x-2":{"sha":"bbb","phase":"held"}}}}}`
+	if err := os.WriteFile(path, []byte(older), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := open(t, root, Read)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"version": 3`) {
+		t.Fatalf("opening must stamp the version:\n%s", b)
+	}
+	for id, sha := range map[string]string{"x-1": "aaa", "x-2": "bbb"} {
+		if e, ok := r.Entry(id); !ok || e.SHA != sha {
+			t.Fatalf("stamping must keep every run's holds: %s = %+v, %v\n%s", id, e, ok, b)
+		}
+	}
+
+	if err := os.WriteFile(path, []byte(older), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w := open(t, root, Write)
+	if b, _ := os.ReadFile(path); !strings.Contains(string(b), `"version": 3`) {
+		t.Fatalf("a write open must stamp the version too:\n%s", b)
+	}
+	w.Close()
+
+	// write always indents, so a rewrite of this compact file would show.
+	current := `{"version":3,"runs":{"` + s.worktree + `":{"id":"RUN","machine":"m","actor":"a","started_at":"2026-11-09T00:00:00Z"}}}`
+	if err := os.WriteFile(path, []byte(current), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	open(t, root, Read)
+	if b, err := os.ReadFile(path); err != nil || string(b) != current {
+		t.Fatalf("a file already at this version must not be rewritten: %v\n%s", err, b)
+	}
+}
+
+// Stamping is best-effort for a read-only command: one that cannot take the
+// state lock still reads the file, and a later command stamps it (bops-j9k).
+// The other process's lock is left alone.
+func TestReadOpenSkipsTheStampWhenTheLockIsBusy(t *testing.T) {
+	root, stateHome := repo(t)
+	s := open(t, root, Read)
+	path := firstOrEmpty(stateFiles(t, stateHome))
+	older := `{"version":2,"runs":{"` + s.worktree + `":{"id":"RUN","machine":"m","actor":"a","started_at":"2026-11-09T00:00:00Z","held":{"x-1":{"sha":"aaa","phase":"held"}}}}}`
+	if err := os.WriteFile(path, []byte(older), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lock := filepath.Join(filepath.Dir(path), "lock")
+	if err := os.WriteFile(lock, []byte("other\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Under the full wait: the stamp must not spend a command's budget on a
+	// lock another process (a crashed one, say) holds.
+	start := time.Now()
+	r, err := Open(root, Read)
+	if took := time.Since(start); took > lockWait/2 { // gstack-timing-ok: bound is half the 30 s wait the stamp must not take
+		t.Fatalf("a read waited %v for the stamp's lock", took)
+	}
+	if err != nil {
+		t.Fatalf("a read must not fail for want of the stamp: %v", err)
+	}
+	if e, ok := r.Entry("x-1"); !ok || e.SHA != "aaa" {
+		t.Fatalf("the read must still see the file: %+v, %v", e, ok)
+	}
+	if b, _ := os.ReadFile(path); string(b) != older {
+		t.Fatalf("the file must be left for a later command to stamp:\n%s", b)
+	}
+	if b, _ := os.ReadFile(lock); string(b) != "other\n" {
+		t.Fatalf("another process's lock must be left alone: %q", b)
+	}
+}
+
+// A read-only command in a state directory it cannot write still reads, and
+// leaves the file for a later command to stamp (bops-j9k).
+func TestReadOpenSkipsTheStampWhenTheDirIsReadOnly(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs POSIX permissions that bind the caller")
+	}
+	root, stateHome := repo(t)
+	s := open(t, root, Read)
+	path := firstOrEmpty(stateFiles(t, stateHome))
+	older := `{"version":2,"runs":{"` + s.worktree + `":{"id":"RUN","machine":"m","actor":"a","started_at":"2026-11-09T00:00:00Z","held":{"x-1":{"sha":"aaa","phase":"held"}}}}}`
+	if err := os.WriteFile(path, []byte(older), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(path)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	r, err := Open(root, Read)
+	if err != nil {
+		t.Fatalf("a read must not fail for want of the stamp: %v", err)
+	}
+	if e, ok := r.Entry("x-1"); !ok || e.SHA != "aaa" {
+		t.Fatalf("the read must still see the file: %+v, %v", e, ok)
+	}
+	if b, _ := os.ReadFile(path); string(b) != older {
+		t.Fatalf("the file must be left for a later command to stamp:\n%s", b)
+	}
+}
+
+// The stamp writes the run's stored actor, not this process's BEADS_ACTOR,
+// which names who is acting now and is never saved by a read.
+func TestStampKeepsTheStoredActor(t *testing.T) {
+	root, stateHome := repo(t)
+	s := open(t, root, Read)
+	path := firstOrEmpty(stateFiles(t, stateHome))
+	older := `{"version":2,"runs":{"` + s.worktree + `":{"id":"RUN","machine":"m","actor":"stored","started_at":"2026-11-09T00:00:00Z"}}}`
+	if err := os.WriteFile(path, []byte(older), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BEADS_ACTOR", "someone-else")
+
+	r := open(t, root, Read)
+	if r.run.Actor != "someone-else" {
+		t.Fatalf("this process acts as BEADS_ACTOR: %q", r.run.Actor)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"version": 3`) || !strings.Contains(string(b), `"actor": "stored"`) || strings.Contains(string(b), "someone-else") {
+		t.Fatalf("the stamp must keep the stored actor:\n%s", b)
+	}
 }
