@@ -1,11 +1,11 @@
 # bops — reference implementation
 
-Go module for the intent-level command layer specified in [`../SPEC.md`](../SPEC.md). Contract 1. Latest release `bops/v0.4.0` (2026-11-19); contract 1 has been frozen since `bops/v0.1.0`.
+Go module for the intent-level command layer specified in [`../SPEC.md`](../SPEC.md). Contract 1. Latest release `bops/v0.4.1` (2026-11-19); contract 1 has been frozen since `bops/v0.1.0`.
 
 ## Install
 
 ```bash
-go install github.com/extremenelson/beads-ops/bops/cmd/bops@v0.4.0   # the tagged release
+go install github.com/extremenelson/beads-ops/bops/cmd/bops@v0.4.1   # the tagged release
 # or, from a checkout, the latest main:
 cd bops && go install ./cmd/bops
 bops version
@@ -14,7 +14,7 @@ bops version
 Without Go, download a binary from the [releases page](https://github.com/extremenelson/beads-ops/releases). Each `bops/vX.Y.Z` release has `bops_vX.Y.Z_<os>_<arch>.tar.gz` (`.zip` on Windows) for linux, darwin and windows on amd64 and arm64, and android/arm64 for Termux, plus `checksums.txt`:
 
 ```bash
-v=v0.4.0 t=linux_amd64      # or linux_arm64, darwin_arm64, android_arm64, ...
+v=v0.4.1 t=linux_amd64      # or linux_arm64, darwin_arm64, android_arm64, ...
 base=https://github.com/extremenelson/beads-ops/releases/download/bops/$v
 curl -fsSLO "$base/bops_${v}_$t.tar.gz" && curl -fsSLO "$base/checksums.txt"
 grep " bops_${v}_$t.tar.gz\$" checksums.txt | sha256sum -c -    # macOS: shasum -a 256 -c -
