@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## bops 0.4.2 (contract 1) — 2026-11-20
 
 - A bops that finds an older `state.json` stamps version 3 on it as soon as it opens it, read-only commands included, not at its first write. An older bops sharing the clone then refuses it from the newer one's first command instead of running beside it without the bead lock. A read-only command that cannot stamp the file (its lock busy, which it does not wait for, or the directory not writable) still reads it, and a later command stamps it (bops-j9k).
 
