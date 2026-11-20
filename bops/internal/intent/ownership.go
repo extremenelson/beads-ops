@@ -786,9 +786,10 @@ func claimForce(ctx context.Context, env *Env, id string) (*ClaimOut, error) {
 	return out, nil
 }
 
-// ClaimResume takes back a landing bead for PR rework (D25). The ref's state
-// and actor decide, not the ledger's label, and the lease separates two
-// machines sharing one actor name.
+// ClaimResume takes back a landing bead for PR rework (D25), or the caller's
+// own held bead from another machine (bops-xwr; resumeRefusal has the rule).
+// The ref's state, actor and machine decide, not the ledger's labels, and the
+// lease separates two machines sharing one actor name.
 func ClaimResume(ctx context.Context, env *Env, id string) (*ClaimOut, error) {
 	if err := lock.ValidateID(id); err != nil {
 		return nil, err
@@ -825,15 +826,12 @@ func ClaimResume(ctx context.Context, env *Env, id string) (*ClaimOut, error) {
 		env.event("claim", id, "resume_check", OutcomeRefused, "", nil)
 		return out, nil
 	}
-	switch {
-	case ref == nil:
+	if ref == nil {
 		return refuse("no claim exists for this bead, so there is nothing to resume; a merged bead is closed by sweep")
-	case ref.State != lock.StateLanding:
+	}
+	if why := resumeRefusal(ref, env.Run.Actor, env.Run.Machine); why != "" {
 		out.Holder = env.holder(ref)
-		return refuse("the bead is held, not waiting on a PR")
-	case ref.Actor != env.Run.Actor:
-		out.Holder = env.holder(ref)
-		return refuse(fmt.Sprintf("only %s can resume this bead", ref.Actor))
+		return refuse(why)
 	}
 	res, err := env.Lock.Replace(ctx, id, ref.SHA, lock.StateHeld)
 	if err != nil {
@@ -859,6 +857,33 @@ func ClaimResume(ctx context.Context, env *Env, id string) (*ClaimOut, error) {
 	}
 	env.finishTakeover(ctx, cur, res.SHA, " resumed="+ref.Run, out)
 	return out, nil
+}
+
+// resumeRefusal says why claim --resume may not take ref, or "" if it may.
+// Only the ref's actor resumes. A landing bead resumes from any machine, for
+// PR rework. A held bead resumes only from another machine than the one that
+// holds it, so a person can carry their own work from laptop to desktop
+// (bops-xwr): worktrees of one machine share the actor, and must not take
+// beads from each other, and a dead worktree's hold is a stranded hold. A held
+// ref with no machine key was written by a bops before bops-xwr and is refused
+// rather than guessed at.
+func resumeRefusal(ref *lock.Ref, actor, machine string) string {
+	switch {
+	case ref.State != lock.StateLanding && ref.State != lock.StateHeld:
+		return "the claim ref's state is unreadable; read it (PROCESS §12) before acting"
+	case ref.Actor != actor:
+		if ref.State == lock.StateHeld {
+			return fmt.Sprintf("held by %s; only that actor can resume it, from another machine", ref.Actor)
+		}
+		return fmt.Sprintf("only %s can resume this bead", ref.Actor)
+	case ref.State == lock.StateLanding:
+		return ""
+	case ref.Machine == "":
+		return "held by run " + ref.Run + " on a machine its claim ref does not name (written by an older bops); release it on that machine, or wait and use claim --force"
+	case ref.Machine == machine:
+		return "held by run " + ref.Run + " on this machine; resume moves a bead between machines. Work in that worktree, or release it from there (a removed worktree's hold is listed under stranded_holds by bops sync)"
+	}
+	return ""
 }
 
 // finishTakeover updates the display after the ref has changed hands.

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased (contract 1)
+
+- A person can move their own held bead to another machine: `bops claim --resume <id>` now also takes a `held` bead when the claim ref names the same actor on a different machine, not only a `landing` one. Claim refs gain a `machine=` line for this; older bops ignores it. A resume is refused on the holder's own machine, for another actor, and for a held ref with no `machine` line (written by an older bops: release it there, or wait and use `claim --force`). The old machine finds out as from a takeover, in `lost_claims` at its next `sync`. Additive, so contract 1 stands: a resume that was refused is now claimed in that one case, and no output field changes. Upgrade every machine before relying on it, since only refs written by this bops name a machine (bops-xwr).
+
 ## bops 0.5.1 (contract 1) — 2026-11-20
 
 - Two bops processes that find `events.jsonl` full at once no longer both rotate it, which could move a fresh, nearly empty file over `events.jsonl.1` and lose the old copy: rotation now takes its own lock (`events.lock`), never waiting for it, and re-checks the size under it (bops-qef).

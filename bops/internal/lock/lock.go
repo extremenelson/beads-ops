@@ -101,6 +101,7 @@ type Lock struct {
 	Journal Journal
 	Run     string
 	Actor   string
+	Machine string // written to every ref as machine=; claim --resume compares it
 	Now     func() time.Time
 	Remote  string // git remote that holds the refs; empty means DefaultRemote
 }
@@ -389,7 +390,7 @@ func (l *Lock) commit(ctx context.Context, state string) (string, error) {
 	if _, err := rand.Read(nonce); err != nil {
 		return "", &Error{Code: CodeGit, Err: err}
 	}
-	body, err := Message{Run: l.Run, Actor: l.Actor, State: state, Nonce: hex.EncodeToString(nonce), At: l.now()}.encode()
+	body, err := Message{Run: l.Run, Actor: l.Actor, Machine: l.Machine, State: state, Nonce: hex.EncodeToString(nonce), At: l.now()}.encode()
 	if err != nil {
 		return "", err
 	}

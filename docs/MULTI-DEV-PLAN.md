@@ -222,7 +222,8 @@ Go/no-go to expand: zero exit-4s, ≤1 exit-2 per developer-week, no one has typ
 ```
 start of session   bd sync → bops next → bops claim <id>        (no bops: bd ready → bd update <id> --claim)
 during             bd update <id> --append-notes "...", bd create ... --deps discovered-from:<id>
-switching machine  bd update <id> --append-notes "<handoff>"; bd sync     ← non-negotiable
+switching machine  git push; bops note <id> (NEXT: …); then on the other machine bops claim --resume <id>   ← non-negotiable
+                   (no bops: bd update <id> --append-notes "<handoff>"; bd sync)
 end of session     bd close <id> --reason "..."; bd sync
 offline            work normally; bd sync when back (note "REF: offline, unsynced" in the handoff)
 ```

@@ -446,6 +446,14 @@ bops claim --force <id>      # refused before 120 minutes, and on a landing ref
 
 The old holder's next `bops sync` lists the bead in `lost_claims` and drops it. Its next `note`, `land` or `release` returns `lost`; a refused note's text is kept at `saved_to`.
 
+**Moving your own bead to another machine.** The claim belongs to the run that took it, on its machine, so a plain claim from your other machine is refused. On the old machine, if you can: push the branch and `bops note <id>` with a `NEXT:` paragraph. On the new machine, from a worktree on that branch:
+
+```bash
+bops claim --resume <id>     # only the ref's actor, only from a different machine
+```
+
+The old run is displaced as by a takeover: its next `bops sync` lists the bead in `lost_claims`, and its next `note`, `land` or `release` returns `lost`. Work it never pushed stays on that disk. On the same machine `--resume` refuses a held bead: work in the worktree that holds it, or release it there.
+
 **You were displaced** (`lost` from `note`, `land` or `release`, or the bead in `lost_claims`). Stop working on that bead. Push your branch, and put what you learned where the new holder will see it: a comment on the bead, or the text from `saved_to`.
 
 **A ledger claim with no ref.** The assignee and `run:` label are set but there is no claim ref: a raw `bd update --claim`, a claim made before the lock, or a ref deleted with no new holder. A plain claim refuses it and `--force` waits 120 minutes from `updated_at`. When the ref of a `bops` claim is deleted and nobody takes the bead, the holder's next `bops sync` returns it to the pool by itself and lists it in `lost_claims`. For a raw `bd` claim, or a holder whose clone is gone, if the assignee is you, clear the display yourself instead of waiting:
