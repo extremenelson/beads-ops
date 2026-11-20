@@ -109,7 +109,7 @@ Landing and closing are separate on purpose. `release --reason done` rewrites th
 ## Trade-offs
 
 - **Claims need the network.** `claim`, `release` and `land` refuse with `unreachable` when the remote can't be reached. `note` and the work itself keep going offline. That's the price of a lock that holds across machines.
-- **The lock only covers `bops`.** A raw `bd update --claim`, `bd reclaim`, or an older `bops` that predates the lock bypasses it. Every machine on a ledger has to run a lock-aware `bops`. `/bead-loop` still claims through raw `bd` until bead `bops-t8j` moves it.
+- **The lock only covers `bops`.** A raw `bd update --claim`, `bd reclaim`, or an older `bops` that predates the lock bypasses it. Every machine on a ledger has to run a lock-aware `bops`. `/bead-loop` claims through `bops claim` when the repo's protocol file sets `**Claim tool:** bops`; with no such line it claims through raw `bd` and is outside the guarantee, so set that line on every `bops` ledger.
 - **The actor isn't authenticated.** Anyone with push access can write a claim ref under any name. The actor check on `claim --resume` is a safety rail, not access control. Access control is whoever can push to the remote.
 - **The forge must accept custom refs.** A host that rejects pushes under `refs/bops/` gives `lock_unsupported`, and there's no fallback in v0.1.0.
 - **Two writes per claim.** A ref push, then the ledger display. The display can lag (`ledger_pending`), so raw `bd show` may briefly name the wrong assignee.
