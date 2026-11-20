@@ -77,7 +77,7 @@ Properties:
 
 1. Confirm the git host preserves custom refs: `git ls-remote origin | grep -c dolt` after the first push should return 1. GitHub and GitLab do; some mirrors and read-only proxies don't.
 2. Agree the team `bd` version. Record it in `AGENTS.md`.
-3. Agree actor handles (`BEADS_ACTOR` = GitHub handle is the obvious choice).
+3. Agree actor handles (`BEADS_ACTOR` = GitHub handle is the obvious choice), one per person and the same on every machine they use, and name the leads on a `Leads:` line in `AGENTS.md` ([PROCESS §1](PROCESS.md#1-roles)).
 4. Agree on the `.gitignore`/commit policy in §2.
 5. On a `bops` ledger: agree the team `bops` release, and commit `.bops.json` with any shared settings (`stale_minutes`, `blocking_labels`) so every machine measures the same ([configuration](reference/configuration.md)).
 
@@ -180,7 +180,7 @@ On a ledger without `bops`:
 bd sync --json >/dev/null || { echo "bd sync failed (exit $?); push anyway? issue state not published"; }
 ```
 
-**(c) Timer on always-on machines** (Alex's home server, any dev box that stays up) — a user-level systemd timer every 15 minutes:
+**(c) Timer on always-on machines** (a home server, any dev box that stays up) — a user-level systemd timer every 15 minutes:
 
 ```ini
 # ~/.config/systemd/user/beads-sync@.service
@@ -221,7 +221,7 @@ Exit criterion: a change made on machine A appears on machine B within one timer
 - **Keep long work visibly alive.** On a `bops` ledger, `bops note` at each milestone refreshes the claim ref, which is what `--force` measures; do not run `bd reclaim` at all, because it ignores the lock and would hand out beads someone still holds. Without `bops`, loops call `bd heartbeat <id>` faster than the lease TTL, and one always-on machine runs `bd reclaim --older-than 2h` on the sync timer.
 - **Upgrade together.** Every machine runs a `bops` that knows the lock before anyone claims with it; an older binary ignores the lock.
 - **Per-machine work gets a label.** On a `bops` ledger it is `needs:<cap>` (`needs:gpu`, `needs:macos`), matched against each machine's `caps` (`BOPS_CAPS`, or the user file), and `bops next` filters on it. Without `bops`, a machine label (`gpu-3090`, `mac-arm`, `debian-box`), and machine-bound agents filter `bd ready` by their label plus unlabeled.
-- **Priority and epic ownership** per `PROCESS.md` §1: only designated humans set P0/P1 and close epics.
+- **Priority and epic ownership** per `PROCESS.md` §1: only leads set P0/P1 and close epics. Who may take over another person's claim or landing is PROCESS §12.
 - **Notes are the handoff**, including handoff to *another person's* machine. The `COMPLETED / IN PROGRESS / NEXT / BLOCKER` format is the contract. On a `bops` ledger write them with `bops note`, which stores a comment (comments from two replicas both survive a merge; the `notes` field conflicts, §6) and refreshes the claim.
 - **Closing.** On a `bops` ledger agents never `bd close`: `bops land` records the PR, `bops release --reason done` leaves the bead landing, and `bops sweep --dry-run=false` (a person or a scheduled job) closes it once the PR merges. Epics, and beads with no PR to land, are closed by a designated human with `bd close <id> --reason "…"`. Without `bops`, agents close tasks with `bd close --reason` per PROCESS §2.5.
 
