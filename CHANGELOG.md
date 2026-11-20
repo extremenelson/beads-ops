@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## bops 0.5.0 (contract 1) — 2026-11-20
 
 - `sync` and `session-start` remove the per-bead lock files (`beads/<digest>.lock`) of beads no run in the clone holds, which piled up one per bead ever touched. Each is removed only while holding its lock, never waiting for it, and a command that locks a bead re-checks that its file was not removed meanwhile. `events.jsonl` logs a `bead_locks_pruned` line when a sync removed some or failed. Windows keeps its files, which are empty. **state.json is now version 4**, because bops 0.4.0 to 0.4.3 does not re-check its lock file and could lock one a prune removed: that bops now refuses the clone, so upgrade every machine's bops, and any pinned or earlier-on-`PATH` copy, before running this one. A prune runs only on a file already stamped version 4 (bops-exb).
 - Two bops processes that find `events.jsonl` full at once no longer both rotate it, which could move a fresh, nearly empty file over `events.jsonl.1` and lose the old copy: rotation now takes its own lock (`events.lock`), never waiting for it, and re-checks the size under it (bops-qef).
