@@ -875,3 +875,88 @@ func TestOpenDefaultsOnlyItsOwnEmptyActor(t *testing.T) {
 		t.Fatalf("only this run may be saved with the default actor:\n%s", b)
 	}
 }
+
+// Two processes that both find events.jsonl full must not both rotate it:
+// the second would move the first's fresh file over events.jsonl.1 and lose
+// the old copy. Rotation re-checks the size under its own lock (bops-qef).
+func TestLogRotationKeepsTheOldCopyWhenTwoRotateAtOnce(t *testing.T) {
+	root, _ := repo(t)
+	s := open(t, root, Read)
+	path := filepath.Join(s.dir, "events.jsonl")
+	old := strings.Repeat(`{"step":"OLD"}`+"\n", eventsMax/15+1)
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The first Log has seen the file full; before it rotates, another
+	// process rotates and appends.
+	raced := false
+	beforeRotate = func() {
+		if raced {
+			return
+		}
+		raced = true
+		s.Log(Event{Step: "OTHER"})
+	}
+	t.Cleanup(func() { beforeRotate = func() {} })
+
+	s.Log(Event{Step: "MINE"})
+
+	b, err := os.ReadFile(path + ".1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"OLD"`) {
+		t.Fatalf("the old copy was lost; events.jsonl.1 holds %d bytes: %.200s", len(b), b)
+	}
+	cur, _ := os.ReadFile(path)
+	if !strings.Contains(string(cur), "OTHER") || !strings.Contains(string(cur), "MINE") {
+		t.Fatalf("both new lines belong in events.jsonl:\n%s", cur)
+	}
+}
+
+// A rotation another process is in the middle of is left to it: Log appends
+// and does not wait (bops-qef).
+func TestLogSkipsARotationAnotherProcessHolds(t *testing.T) {
+	root, _ := repo(t)
+	s := open(t, root, Read)
+	path := filepath.Join(s.dir, "events.jsonl")
+	if err := os.WriteFile(path, []byte(strings.Repeat("x", eventsMax)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	release, err := lockFile(filepath.Join(s.dir, "events.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	s.Log(Event{Step: "MINE"})
+	if _, err := os.Stat(path + ".1"); !os.IsNotExist(err) {
+		t.Fatalf("a rotation another process holds must be left to it: %v", err)
+	}
+	if b, _ := os.ReadFile(path); !strings.Contains(string(b), "MINE") {
+		t.Fatal("the line must still be appended")
+	}
+}
+
+// A rotation lock that cannot be taken for any reason but another holder
+// (here a directory where events.lock should be) still rotates, unserialized
+// as before, rather than let events.jsonl grow without end (bops-qef).
+func TestLogRotatesWhenItsLockCannotBeTaken(t *testing.T) {
+	root, _ := repo(t)
+	s := open(t, root, Read)
+	path := filepath.Join(s.dir, "events.jsonl")
+	if err := os.WriteFile(path, []byte(strings.Repeat("x", eventsMax)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(s.dir, "events.lock"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	s.Log(Event{Step: "MINE"})
+	if _, err := os.Stat(path + ".1"); err != nil {
+		t.Fatalf("a lock that cannot be taken must not stop rotation: %v", err)
+	}
+	if b, _ := os.ReadFile(path); !strings.Contains(string(b), "MINE") || len(b) > 1000 {
+		t.Fatalf("the line belongs in a fresh events.jsonl: %d bytes", len(b))
+	}
+}
