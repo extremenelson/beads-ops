@@ -226,10 +226,10 @@ Precedence, lowest to highest: built-in defaults, `.bops.json` in the worktree r
 | `hold_minutes` | 120 | `next` and `lint` (W12) |
 | `pool`, `caps[]` | none | every command's run; `next --pool/--caps` override |
 | `forge` | `auto` | `land --verify` and `sweep` when `--forge` is not given (§7) |
-| `lint.strict`, `lint.disable[]` | `false`, none | loaded and validated; not applied yet (`lint --strict` is the flag) |
+| `lint.strict`, `lint.disable[]` | `false`, none | loaded and validated; not applied yet (`lint --strict` is the flag). Only `.bops.json` may disable `W15`, so no layer undoes `blocking_labels` (bops-jmp) |
 | `note.require_next` | `false` | loaded and validated; not applied yet |
 | `lock.mode` (`BOPS_LOCK_MODE`) | `ref` | every command and `doctor`: `none` turns the claim lock off for a one-machine ledger (§3.0). Only `.bops.json` may set `none` |
-| `blocking_labels[]` (`BOPS_BLOCKING_LABELS`) | none | `next` and `lint` (W15), and a plain `claim`, which refuses a bead carrying one. Additive across layers |
+| `blocking_labels[]` (`BOPS_BLOCKING_LABELS`) | none | `next` and `lint` (W15), and a plain `claim`, which refuses a bead carrying one. Additive across layers. bops's own labels (`bops:`, `run:`, `pool:` prefixes) are refused, and `doctor` warns of a label no bead carries (bops-jmp) |
 | `lock.remote` | `origin` | every command that reads or writes claim refs, the ledger check (§3.0) and `doctor` (`BOPS_LOCK_REMOTE`), and forge inference (§7); the lock itself is unused under `lock.mode: none` |
 
 Other environment `bops` reads: `BEADS_ACTOR` (actor), `BOPS_MACHINE` (machine name, else the hostname), `XDG_STATE_HOME` (§3.4), and `BOPS_INTEGRATION` / `BOPS_RACE_TRIALS` in tests.

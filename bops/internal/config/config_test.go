@@ -223,3 +223,52 @@ func TestBlockingLabelsAddAcrossLayers(t *testing.T) {
 		}
 	}
 }
+
+// blocking_labels refuses bops's own labels: blocking on bops:hold would turn
+// W12's timed cool-off into a permanent exclusion with a second, confusing
+// reason, and run: and pool: labels belong to claims and pools (bops-jmp).
+func TestBlockingLabelsRefuseBopsOwnLabels(t *testing.T) {
+	for _, l := range []string{"bops:hold", "bops:landing", "run:01ABC", "pool:main"} {
+		_, err := newWorld(t, `{"blocking_labels":["frozen","`+l+`"]}`, "").load()
+		if err == nil || !strings.Contains(err.Error(), l) || !strings.Contains(err.Error(), "bops") {
+			t.Errorf("%s: err = %v, want a refusal naming it", l, err)
+		}
+	}
+	w := newWorld(t, "", "")
+	w.env["BOPS_BLOCKING_LABELS"] = "run:x"
+	if _, err := w.load(); err == nil || !strings.Contains(err.Error(), "BOPS_BLOCKING_LABELS") {
+		t.Errorf("env: err = %v", err)
+	}
+	if c, err := newWorld(t, `{"blocking_labels":["bopsish","runner","pooled"]}`, "").load(); err != nil || len(c.BlockingLabels) != 3 {
+		t.Errorf("labels that only start like bops's must pass: %v, %v", c.BlockingLabels, err)
+	}
+}
+
+// W15 in lint.disable would undo blocking_labels' promise that no layer drops
+// the repo's labels, so only the committed file may disable it, as with
+// lock.mode none (bops-jmp).
+func TestLintDisableW15OnlyFromTheRepoFile(t *testing.T) {
+	w := newWorld(t, `{"blocking_labels":["frozen"]}`, `{"lint":{"disable":["W03","W15"]}}`)
+	if _, err := w.load(); err == nil || !strings.Contains(err.Error(), "config.json") || !strings.Contains(err.Error(), "W15") {
+		t.Errorf("user file: err = %v, want it to name the file and W15", err)
+	}
+	w = newWorld(t, "", "")
+	w.env["BOPS_LINT_DISABLE"] = "W15"
+	if _, err := w.load(); err == nil || !strings.Contains(err.Error(), "BOPS_LINT_DISABLE") {
+		t.Errorf("env: err = %v", err)
+	}
+	for _, v := range []string{`["w15"]`, `[" W15 "]`} { // a rule id is not dodged by case or spaces
+		if _, err := newWorld(t, "", `{"lint":{"disable":`+v+`}}`).load(); err == nil || !strings.Contains(err.Error(), "W15") {
+			t.Errorf("%s: err = %v", v, err)
+		}
+	}
+	if c, err := newWorld(t, `{"lint":{"disable":["W15"]}}`, "").load(); err != nil || len(c.LintDisable) != 1 {
+		t.Errorf("the repo file may disable W15: %v, %v", c.LintDisable, err)
+	}
+	if _, err := newWorld(t, `{"lint":{"disable":["W15"]}}`, `{"lint":{"disable":["W15","W03"]}}`).load(); err != nil {
+		t.Errorf("a layer may keep W15 disabled when the repo file does: %v", err)
+	}
+	if _, err := newWorld(t, "", `{"lint":{"disable":["W03"]}}`).load(); err != nil {
+		t.Errorf("other rules stay free to disable: %v", err)
+	}
+}

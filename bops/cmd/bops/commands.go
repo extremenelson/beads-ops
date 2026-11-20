@@ -469,14 +469,16 @@ func selectForge(ctx context.Context, fs *flag.FlagSet, cfg config.Config, run f
 	return forge.Select(ctx, name, cfg.LockRemote, run)
 }
 
-// doctorBD answers doctor's one bd call, the Dolt remote list. Tests replace it.
+// doctorBD answers doctor's bd calls: the Dolt remote list, and one list of
+// every bead when blocking_labels are configured. Tests replace it.
 var doctorBD bdx.Runner = bdx.Exec{}
 
 // cmdDoctor checks the lock remote (lock.remote, default origin), read and
 // push access, lock support, and that a Dolt remote is on the same
-// repository. It needs no run state, and reads the ledger only for its Dolt
-// remote list. With
-// lock.mode none every check is skipped. A failed check exits 1 with the first failure's
+// repository. It needs no run state. It reads the ledger for its Dolt remote
+// list and, when blocking_labels are configured, for one list of every bead,
+// to warn of a label no bead carries (bops-jmp). With lock.mode none every
+// lock check is skipped; the label warning still runs. A failed check exits 1 with the first failure's
 // code, and the document still lists every check.
 func cmdDoctor(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
 	fs := newFlagSet("doctor", stderr)
@@ -503,6 +505,11 @@ func cmdDoctor(ctx context.Context, m *manifest.Manifest, args []string, asJSON 
 	}
 	if w := staleBinary(ctx, worktreeRoot(root), runningBuild()); w != "" {
 		out.Warnings = append(out.Warnings, w) // a warning: the lock checks still decide the exit
+	}
+	if u, err := intent.UnmatchedBlockingLabels(ctx, doctorBD, cfg.BlockingLabels); err != nil {
+		out.Warnings = append(out.Warnings, "blocking_labels not checked: bd could not list the beads: "+lock.Scrub(err.Error()))
+	} else if len(u) > 0 {
+		out.Warnings = append(out.Warnings, fmt.Sprintf("blocking_labels %s: no bead carries it, closed ones and gates included, so it keeps nothing out of the pool; check the spelling against `bd label list-all`", strings.Join(u, ", ")))
 	}
 	for _, c := range out.Checks {
 		if c.Status == lock.CheckFail {

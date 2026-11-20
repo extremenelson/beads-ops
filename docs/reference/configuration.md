@@ -18,6 +18,8 @@ Lowest to highest precedence. A higher layer overrides only the keys it names. `
 
 A missing file is skipped. A file that exists must be one JSON object.
 
+`.bops.json` is read from the worktree's own checkout, not from the default branch, so a worktree cut before a key was committed doesn't see that key until it merges or rebases the default branch. That holds for every key.
+
 ## Keys
 
 | Key | Type | Default | Env var | Used by |
@@ -31,7 +33,7 @@ A missing file is skipped. A file that exists must be one JSON object.
 | [`blocking_labels`](#blocking_labels) | list of bead labels | none | `BOPS_BLOCKING_LABELS` (comma-separated) | `next`, `lint` (W15), `claim` |
 | [`lock.remote`](#lockremote) | git remote name | `origin` | `BOPS_LOCK_REMOTE` | claim-ref commands, `doctor`, forge inference |
 | `lint.strict` | boolean | `false` | `BOPS_LINT_STRICT` | loaded and validated, **not applied yet**; use `bops lint --strict` |
-| `lint.disable` | list of rule ids | none | `BOPS_LINT_DISABLE` | loaded and validated, **not applied yet** |
+| `lint.disable` | list of rule ids | none | `BOPS_LINT_DISABLE` | loaded and validated, **not applied yet**. Only `.bops.json` may list `W15` |
 | `note.require_next` | boolean | `false` | `BOPS_NOTE_REQUIRE_NEXT` | loaded and validated, **not applied yet** |
 
 Nested keys are nested JSON objects in a file (`{"lock": {"mode": "none"}}`). The environment name is `BOPS_` plus the key path in upper case, with `.` replaced by `_`.
@@ -60,7 +62,9 @@ Labels that take a bead out of the pool for this repo, such as a `frozen` label 
 {"blocking_labels": ["frozen"]}
 ```
 
-Put it in the committed `.bops.json`. Each layer adds to the list rather than replacing it, so a user file, `BOPS_BLOCKING_LABELS` or an empty list can add labels but never drop one the repo file names. A label must be non-empty and printable, with no whitespace or comma.
+Put it in the committed `.bops.json`. Each layer adds to the list rather than replacing it, so a user file, `BOPS_BLOCKING_LABELS` or an empty list can add labels but never drop one the repo file names. A label must be non-empty and printable, with no whitespace or comma, and must not be one of bops's own: a label starting `bops:`, `run:` or `pool:` is refused, since bops sets and clears those itself and blocking on `bops:hold` would turn W12's timed cool-off into a permanent exclusion. W15, the rule that applies these labels, can be disabled in `lint.disable` only from `.bops.json`, so no other layer can undo them.
+
+A label no bead carries keeps nothing out and fails silently, as a typo such as `forzen` would. `bops doctor` warns of each configured label that no bead carries, closed ones and gates included, matching labels exactly as the commands do, and says so when it could not list the beads.
 
 **Upgrade every machine first.** A bops binary rejects any key it does not know, so a machine running a bops older than the release that adds `blocking_labels` fails every command with `bad_config` once the key is in `.bops.json`, including `release` and `sync`, so it cannot even hand back its claims. Commit the key only after every machine on the ledger has upgraded.
 

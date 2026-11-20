@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Two bops processes that find `events.jsonl` full at once no longer both rotate it, which could move a fresh, nearly empty file over `events.jsonl.1` and lose the old copy: rotation now takes its own lock (`events.lock`), never waiting for it, and re-checks the size under it (bops-qef).
+- `blocking_labels` refuses bops's own labels (any starting `bops:`, `run:` or `pool:`), and `lint.disable` may list `W15` only in `.bops.json`, as with `lock.mode none`; a config that did either now fails with `bad_config`. `bops doctor` warns of a configured blocking label that no bead carries, such as a typo. The configuration reference notes that `.bops.json` is read from each worktree's own checkout. **Before upgrading, check `.bops.json`, the user file and `BOPS_*` env for either:** a machine whose config is newly refused fails every command, `release` and `sync` included, until it is edited (bops-jmp).
 
 ## bops 0.5.0 (contract 1) — 2026-11-20
 
