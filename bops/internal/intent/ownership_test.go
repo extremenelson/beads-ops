@@ -231,7 +231,11 @@ func openStore(t *testing.T, dir, run string) *runstate.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.Run().ID, w.Run().Actor, w.Run().Machine = run, "tester", "box"
+	machine := "box" // every rig shares one machine unless clientOn names another
+	if m := os.Getenv("BOPS_MACHINE"); m != "" {
+		machine = m
+	}
+	w.Run().ID, w.Run().Actor, w.Run().Machine = run, "tester", machine
 	if err := w.Save(); err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +296,7 @@ func rigAt(t *testing.T, dir, run string, bd *fakeBD) *rig {
 	s := openStore(t, dir, run)
 	g := &flakyGit{Exec: lock.Exec{Dir: dir}}
 	env := &intent.Env{BD: bd, Run: s.Run(), Store: s, Sleep: func(time.Duration) {},
-		Lock: &lock.Lock{Git: g, Journal: s, Run: run, Actor: "tester"}}
+		Lock: &lock.Lock{Git: g, Journal: s, Run: run, Actor: "tester", Machine: s.Run().Machine}}
 	return &rig{env: env, bd: bd, store: s, git: g, dir: dir}
 }
 
@@ -1724,8 +1728,10 @@ func TestResumeRefusals(t *testing.T) {
 	})
 }
 
-// The label is display. A machine sharing the actor, whose replica still shows
-// bops:landing, must not displace a holder who already resumed.
+// The label is display. A session on the same machine sharing the actor, whose
+// replica still shows bops:landing, must not displace a holder who already
+// resumed. (From another machine, resuming a held bead is a deliberate move:
+// TestResumeMovesAHeldBeadToAnotherMachine.)
 func TestSecondMachineCannotDisplaceAResumedHolder(t *testing.T) {
 	a, b, _, bdB := pair(t, "x-1")
 	mustClaim(t, a, "x-1")
@@ -2864,4 +2870,151 @@ func TestALockWhoseStateCannotBeReadIsLoggedAndLetGo(t *testing.T) {
 		t.Fatalf("the lock must be let go: %v", err)
 	}
 	again()
+}
+
+// clientOn is client on a named machine. The machine is fixed when the run is
+// created (BOPS_MACHINE, else the hostname) and kept in state.json, as in use.
+func clientOn(t *testing.T, remote, run string, bd *fakeBD, machine string) *rig {
+	t.Helper()
+	t.Setenv("BOPS_MACHINE", machine)
+	return client(t, remote, run, bd)
+}
+
+// pairOn is pair with A and B on the named machines.
+func pairOn(t *testing.T, id, ma, mb string) (a, b *rig, bdA, bdB *fakeBD) {
+	t.Helper()
+	remote := bareRemote(t)
+	bdA, bdB = newBD(), newBD()
+	bdA.add(id)
+	bdB.add(id)
+	return clientOn(t, remote, "A", bdA, ma), clientOn(t, remote, "B", bdB, mb), bdA, bdB
+}
+
+// A person carries their own held bead from laptop to desktop with claim
+// --resume; the laptop finds out the way a displaced holder does (bops-xwr).
+func TestResumeMovesAHeldBeadToAnotherMachine(t *testing.T) {
+	a, b, _, bdB := pairOn(t, "x-1", "laptop", "desktop")
+	mustClaim(t, a, "x-1")
+	if ref, _ := a.env.Lock.Read(bg, "x-1"); ref == nil || ref.Machine != "laptop" {
+		t.Fatalf("ref = %+v", ref)
+	}
+	n := bdB.beads["x-1"] // B's replica has pulled A's claim
+	n.Assignee, n.Status, n.Labels = "tester", "in_progress", []string{"run:A"}
+
+	out, err := intent.ClaimResume(bg, b.env, "x-1")
+	if err != nil || out.Outcome != intent.OutcomeClaimed {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	ref, err := b.env.Lock.Read(bg, "x-1")
+	if err != nil || ref.Run != "B" || ref.State != lock.StateHeld || ref.Machine != "desktop" {
+		t.Fatalf("ref = %+v, %v", ref, err)
+	}
+	if !slices.Contains(n.Labels, "run:B") || slices.Contains(n.Labels, "run:A") || n.Status != "in_progress" {
+		t.Errorf("ledger = %+v", n)
+	}
+	if !strings.Contains(strings.Join(n.Comments, ";"), "resumed=A") {
+		t.Errorf("comments = %v", n.Comments)
+	}
+
+	note, err := intent.Note(bg, a.env, "x-1", "late\n\nNEXT: x")
+	if err != nil || note.Outcome != intent.OutcomeLost || note.SavedTo == "" {
+		t.Errorf("laptop note = %+v, %v", note, err)
+	}
+	if again, err := intent.ClaimResume(bg, b.env, "x-1"); err != nil || again.Outcome != intent.OutcomeHeld {
+		t.Errorf("second resume = %+v, %v", again, err)
+	}
+}
+
+// The laptop's next sync, not only its next write, tells it the bead moved.
+func TestResumedFromAnotherMachineIsALostClaim(t *testing.T) {
+	a, b, _, bdB := pairOn(t, "x-1", "laptop", "desktop")
+	mustClaim(t, a, "x-1")
+	n := bdB.beads["x-1"]
+	n.Assignee, n.Status, n.Labels = "tester", "in_progress", []string{"run:A"}
+	if out, err := intent.ClaimResume(bg, b.env, "x-1"); err != nil || out.Outcome != intent.OutcomeClaimed {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	out, err := intent.Sync(bg, a.env, false)
+	if err != nil || !slices.Contains(out.LostClaims, "x-1") {
+		t.Fatalf("sync = %+v, %v", out, err)
+	}
+	if _, held := a.env.Run.Held["x-1"]; held {
+		t.Error("laptop still journals the hold")
+	}
+}
+
+func TestResumeOfAHeldBeadIsRefused(t *testing.T) {
+	cases := []struct {
+		name               string
+		holder, taker      string // machines
+		actor              string
+		holderWritesNoMach bool
+	}{
+		{name: "same machine", holder: "laptop", taker: "laptop"},
+		{name: "another actor", holder: "laptop", taker: "desktop", actor: "someone-else"},
+		{name: "ref from an older bops", holder: "laptop", taker: "desktop", holderWritesNoMach: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			a, b, _, _ := pairOn(t, "x-1", c.holder, c.taker)
+			if c.holderWritesNoMach {
+				a.env.Lock.Machine = ""
+			}
+			if c.actor != "" {
+				b.env.Run.Actor = c.actor
+			}
+			mustClaim(t, a, "x-1")
+			out, err := intent.ClaimResume(bg, b.env, "x-1")
+			if err != nil || out.Outcome != intent.OutcomeRefused || out.Holder == nil || out.Holder.Run != "A" {
+				t.Fatalf("%+v, %v", out, err)
+			}
+			if ref, _ := b.env.Lock.Read(bg, "x-1"); ref == nil || ref.Run != "A" {
+				t.Errorf("ref moved: %+v", ref)
+			}
+		})
+	}
+}
+
+// Two machines resuming one held bead at once. The lease lets one write win
+// each round; a resume that reads the ref after the other won takes it in
+// turn, as a deliberate move would. Either way the ref ends naming one run,
+// and every other run that was told claimed learns at its sync that it lost.
+func TestConcurrentResumesLeaveOneHolder(t *testing.T) {
+	remote := bareRemote(t)
+	bds := []*fakeBD{newBD(), newBD(), newBD()}
+	for _, bd := range bds {
+		bd.add("x-1")
+	}
+	a := clientOn(t, remote, "A", bds[0], "laptop")
+	mustClaim(t, a, "x-1")
+	takers := []*rig{clientOn(t, remote, "B", bds[1], "desktop"), clientOn(t, remote, "C", bds[2], "server")}
+	outs := make([]*intent.ClaimOut, len(takers))
+	var wg sync.WaitGroup
+	for i, r := range takers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			outs[i], _ = intent.ClaimResume(bg, r.env, "x-1")
+		}()
+	}
+	wg.Wait()
+	ref, err := a.env.Lock.Read(bg, "x-1")
+	if err != nil || ref == nil || (ref.Run != "B" && ref.Run != "C") {
+		t.Fatalf("ref = %+v, %v; outs %+v %+v", ref, err, outs[0], outs[1])
+	}
+	for i, r := range takers {
+		if outs[i] == nil || r.env.Run.ID == ref.Run {
+			continue
+		}
+		switch outs[i].Outcome {
+		case intent.OutcomeLost:
+		case intent.OutcomeClaimed:
+			out, err := intent.Sync(bg, r.env, false)
+			if err != nil || !slices.Contains(out.LostClaims, "x-1") {
+				t.Errorf("%s was displaced but sync says %+v, %v", r.env.Run.ID, out, err)
+			}
+		default:
+			t.Errorf("%s: %+v", r.env.Run.ID, outs[i])
+		}
+	}
 }

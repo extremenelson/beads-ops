@@ -574,18 +574,64 @@ func TestReplicaResume(t *testing.T) {
 		t.Errorf("another actor: %d %s", x.Exit, x.Raw)
 	}
 
-	// Two machines sharing an actor: the ref state and lease allow only one.
+	// Two machines sharing an actor: the lease lets one write win at a time.
+	// A resume that reads the ref after the other won takes the held bead in
+	// turn (bops-xwr), so both may say claimed; the ref then names one run and
+	// the other's sync reports it lost.
 	rs := together(
 		func() result { return a.bops("claim", id, "--resume") },
 		func() result { return b.bops("claim", id, "--resume") },
 	)
 	got := outcomes(rs)
-	if got != "claimed,lost" && got != "claimed,refused" {
+	if got != "claimed,lost" && got != "claimed,refused" && got != "claimed,claimed" {
 		t.Fatalf("%s\n%s\n%s", got, rs[0].Raw, rs[1].Raw)
 	}
 	if got := a.refField(id, "state"); got != "held" {
 		t.Errorf("state = %q", got)
 	}
+	holder := a.refField(id, "run")
+	for i, r := range []*replica{a, b} {
+		if rs[i].outcome() == "claimed" && rs[i].str("run") != holder {
+			if x := r.bops("sync"); !slices.Contains(x.list("lost_claims"), id) {
+				t.Errorf("displaced resume not told: %s %s", x.Raw, x.Err)
+			}
+		}
+	}
+}
+
+// A person moves their own held bead from one machine to another (bops-xwr).
+func TestReplicaResumeMovesAHeldBead(t *testing.T) {
+	a, b := replicas(t, "same-actor", "same-actor")
+	id := beads(t, a, b, 1)[0]
+	if x := a.bops("claim", id); x.outcome() != "claimed" {
+		t.Fatal(x.Raw, x.Err)
+	}
+	if got := a.refField(id, "machine"); got != filepath.Base(a.dir) {
+		t.Fatalf("machine = %q", got)
+	}
+	a.must("bd", "dolt", "push")
+	b.must("bd", "dolt", "pull")
+
+	other := *b
+	other.actor = "someone-else"
+	if x := other.bops("claim", id, "--resume"); x.outcome() != "refused" || x.Exit != exitNegative {
+		t.Errorf("another actor: %d %s", x.Exit, x.Raw)
+	}
+	x := b.bops("claim", id, "--resume")
+	if x.outcome() != "claimed" || x.Exit != 0 {
+		t.Fatalf("%d %s %s", x.Exit, x.Raw, x.Err)
+	}
+	if got := a.refField(id, "machine"); got != filepath.Base(b.dir) {
+		t.Errorf("machine after resume = %q", got)
+	}
+	if v := b.show(id); v.Assignee != "same-actor" || v.Status != "in_progress" {
+		t.Errorf("display: %+v", v)
+	}
+	n := a.bopsIn("late\n\nNEXT: x", "note", id)
+	if n.outcome() != "lost" || n.Exit != exitNegative || n.str("saved_to") == "" {
+		t.Errorf("laptop note: %d %s %s", n.Exit, n.Raw, n.Err)
+	}
+	_ = os.Remove(n.str("saved_to"))
 }
 
 func TestReplicaNoteKeepsTheClaimAliveAndWorksOffline(t *testing.T) {

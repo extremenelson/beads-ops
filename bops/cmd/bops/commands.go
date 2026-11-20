@@ -193,7 +193,7 @@ func newEnv(mode runstate.Mode) (*intent.Env, *runstate.Store, error) {
 	if cfg.Caps != nil {
 		run.Caps = cfg.Caps
 	}
-	l := &lock.Lock{Git: lock.Exec{Dir: root}, Journal: store, Run: run.ID, Actor: run.Actor, Remote: cfg.LockRemote}
+	l := &lock.Lock{Git: lock.Exec{Dir: root}, Journal: store, Run: run.ID, Actor: run.Actor, Machine: run.Machine, Remote: cfg.LockRemote}
 	return &intent.Env{BD: bdx.Exec{}, Run: run, Store: store, Lock: l, LockOff: cfg.LockOff(), StaleAfter: cfg.StaleAfter(), HoldFor: cfg.HoldFor(), BlockingLabels: cfg.BlockingLabels, BeadWait: beadWait}, store, nil
 }
 

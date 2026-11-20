@@ -701,3 +701,23 @@ func TestSameRemote(t *testing.T) {
 func TestStoreSatisfiesJournal(t *testing.T) {
 	var _ Journal = (*runstate.Store)(nil)
 }
+
+// machine= is written when known and read back; a ref from an older bops has
+// none, and one with a line break in it is refused (bops-xwr).
+func TestMessageMachine(t *testing.T) {
+	at := time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)
+	body, err := Message{Run: "r", Actor: "a", Machine: "laptop", State: StateHeld, Nonce: "n", At: at}.encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := ParseMessage(body); m.Machine != "laptop" || m.Run != "r" || m.State != StateHeld || !m.At.Equal(at) {
+		t.Errorf("round trip = %+v from %q", m, body)
+	}
+	old, _ := Message{Run: "r", Actor: "a", State: StateHeld, Nonce: "n", At: at}.encode()
+	if strings.Contains(old, "machine=") || ParseMessage(old).Machine != "" {
+		t.Errorf("unknown machine written: %q", old)
+	}
+	if _, err := (Message{Machine: "a\nrun=forged"}).encode(); CodeOf(err) != CodeBadMessage {
+		t.Errorf("err = %v", err)
+	}
+}

@@ -21,11 +21,12 @@ const futureTolerance = 5 * time.Minute
 
 // Message is the content of a lock commit, one key=value per line (D20).
 type Message struct {
-	Run   string
-	Actor string
-	State string // StateHeld, StateLanding, or "" if unreadable
-	Nonce string
-	At    time.Time // zero if unreadable
+	Run     string
+	Actor   string
+	Machine string // the holder's machine; "" when unrecorded (a bops before bops-xwr)
+	State   string // StateHeld, StateLanding, or "" if unreadable
+	Nonce   string
+	At      time.Time // zero if unreadable
 }
 
 // Ref is one claim as read from git.
@@ -36,12 +37,16 @@ type Ref struct {
 }
 
 func (m Message) encode() (string, error) {
-	for _, v := range []string{m.Run, m.Actor, m.State, m.Nonce} {
+	for _, v := range []string{m.Run, m.Actor, m.Machine, m.State, m.Nonce} {
 		if strings.ContainsAny(v, "\r\n\x00") {
 			return "", &Error{Code: CodeBadMessage, Err: fmt.Errorf("value %q contains a line break", v)}
 		}
 	}
-	return fmt.Sprintf("run=%s\nactor=%s\nstate=%s\nnonce=%s\nat=%s\n", m.Run, m.Actor, m.State, m.Nonce, m.At.UTC().Format(time.RFC3339)), nil
+	machine := ""
+	if m.Machine != "" { // omitted when unknown, so the line is never empty
+		machine = "machine=" + m.Machine + "\n"
+	}
+	return fmt.Sprintf("run=%s\nactor=%s\n%sstate=%s\nnonce=%s\nat=%s\n", m.Run, m.Actor, machine, m.State, m.Nonce, m.At.UTC().Format(time.RFC3339)), nil
 }
 
 // ParseMessage reads untrusted text and never fails. Unknown keys are ignored,
@@ -64,6 +69,8 @@ func ParseMessage(s string) Message {
 			m.Run = v
 		case "actor":
 			m.Actor = v
+		case "machine":
+			m.Machine = v
 		case "nonce":
 			m.Nonce = v
 		case "state":

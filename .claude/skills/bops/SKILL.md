@@ -64,6 +64,7 @@ Do not close beads yourself. `bops sweep` previews which landed beads have merge
 - **`could not save run state` or `state lock`:** another `bops` process is busy. Wait and retry once.
 - **`ref_contention`:** another `bops` process here has the bead for a moment. Rerun the command after a few seconds, at most 3 times. A refused note's text is at `saved_to`.
 - **`ledger_pending: true`:** you still own the bead. Run `bops sync`, and report it if that does not clear it.
+- **Moving machines:** after `bops note` and a branch push, the person runs `bops claim --resume <id>` from the new machine's worktree. Never in an autonomous loop.
 - **A reviewer asks for changes after `release --reason done`:** run `bops claim --resume <id>` from a worktree, then continue from step 4. Only the actor who landed it can.
 - **`bops sync` lists `stranded_holds`:** those beads were held by a removed worktree. If the work is abandoned, run `bops release <id> --reason abandoned` from any worktree of this clone.
 - **A bead looks abandoned:** `bops stale` lists claims idle over 2 hours, with `same_machine`, and `orphans` (claim refs with no claim on the ledger). Taking one over with `bops claim --force <id>` is a person's decision; report the list rather than forcing on your own. The recovery runbook is PROCESS §12.

@@ -54,6 +54,7 @@ One git ref per claimed bead, `refs/bops/claims/<id>`, on the lock remote: the g
 ```
 run=<ulid>
 actor=<actor>
+machine=<name>
 state=held|landing
 nonce=<random>
 at=<iso8601>
@@ -62,6 +63,8 @@ at=<iso8601>
 - Every write is `git push --no-verify --force-with-lease=<ref>:<expected>`: create-only for a claim, leased on the sha last read for every other write. `-f` is never used. Of two writers, exactly one wins; the other gets `lost`.
 - **The ref decides; the ledger displays.** The assignee, `run:` label and `bops:landing` label are written best effort after the ref, can lag it (`ledger_pending`), and are repaired by `sync`. No ownership decision reads them.
 - `actor` is unauthenticated free text (`BEADS_ACTOR`, else git `user.name`, else the OS user), and anyone with push access can write these refs. The actor check on `claim --resume` is a safety check, not authentication.
+- `machine` is the holder run's machine (`BOPS_MACHINE`, else the hostname, fixed when the run is created). A bops before bops-xwr writes no `machine` line; an older bops reading a ref that has one ignores it as an unknown key.
+- **`claim --resume`** replaces a ref, under a lease on the sha it read, with this run and `state=held`, and only for the ref's own actor. It takes a `landing` bead from any machine, for PR rework. It takes a `held` bead only when the ref names a machine and it is not this one: that is how a person moves their own work between machines (bops-xwr). It refuses a `held` bead held on this machine (worktrees of one machine share an actor and must not take beads from each other; a removed worktree's hold is a stranded hold), a `held` ref with no `machine` line, and a ref whose state is unreadable. The displaced run finds out as from a takeover: its next `sync` lists the bead in `lost_claims`, and its next `note`, `land` or `release` is `lost`. Two machines resuming at once each win at most one lease round; one that reads the ref after the other won takes it in turn, so both may answer `claimed`, the ref names one run, and the other's next `sync` reports it lost. A person decides a resume; an autonomous loop never resumes a held bead.
 - A ref message is untrusted input: unknown keys are ignored, size is bounded, and an unreadable or future `at` never counts as stale.
 - Staleness is `stale_minutes` (§10, default 120) from the ref's `at`. `note` refreshes `at`. Set it in the committed `.bops.json` so every machine on a ledger measures the same window: a machine with a shorter one takes over claims sooner.
 - **The guarantee covers claims made through `bops`.** A raw `bd update --claim` writes no ref and bypasses the lock. The Kestrel binding claims through `bops claim`. `/bead-loop` still claims through raw `bd` until bead `bops-t8j` moves it, so it is outside the guarantee. Every machine on a ledger must run a `bops` that knows the lock before the first claim on it.

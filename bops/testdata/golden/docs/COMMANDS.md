@@ -65,9 +65,9 @@ Take this bead for this run
 |---|---|---|---|
 | `--force` | bool | `false` | Take over a claim idle for stale_minutes (default 120), or an orphan. Refused on a landing bead. |
 | `<id>` (positional) | string |  |  |
-| `--resume` | bool | `false` | Take back a landing bead for PR rework. Only the ref's actor can. |
+| `--resume` | bool | `false` | Take back a landing bead for PR rework, or your own held bead from another machine. Only the ref's actor can. |
 
-Preconditions: assignee is empty OR --force; status in (open, ready); no run: label; no label listed in blocking_labels (config; --force skips it, and a bead this run already holds answers held); the lock remote (lock.remote, default origin) matches the Dolt remote (lock.mode ref); no other bops process on this machine is working on the bead (waits up to 10 seconds, then ref_contention).
+Preconditions: assignee is empty OR --force; status in (open, ready); no run: label; no label listed in blocking_labels (config; --force skips it, and a bead this run already holds answers held); the lock remote (lock.remote, default origin) matches the Dolt remote (lock.mode ref); no other bops process on this machine is working on the bead (waits up to 10 seconds, then ref_contention); --resume: the claim ref's actor is this run's, and its state is landing, or held with a machine= that is not this machine (a held ref with no machine= is refused).
 
 Wraps: `git push refs/bops/claims/<id> (create-only)`, `bd dolt pull`, `bd update <id> --claim`, `bd label add <id> run:<ulid>`, `bd comments add <id>`, `bd dolt push`.
 
