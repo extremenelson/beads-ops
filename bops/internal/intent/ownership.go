@@ -1285,6 +1285,7 @@ func syncAs(ctx context.Context, env *Env, noPush bool, name string) (*SyncOut, 
 	for _, h := range holds {
 		env.syncHeld(ctx, name, h, refs, out)
 	}
+	env.pruneBeadLocks(name)
 	if noPush || !publish {
 		return out, nil
 	}
@@ -1293,6 +1294,23 @@ func syncAs(ctx context.Context, env *Env, noPush bool, name string) (*SyncOut, 
 	}
 	out.Pushed = true
 	return out, nil
+}
+
+// pruneBeadLocks removes the lock files of beads no run in this clone holds,
+// so the state directory does not keep one per bead ever touched (bops-exb).
+// It is housekeeping: it never waits, and a failure costs only disk space.
+func (e *Env) pruneBeadLocks(cmd string) {
+	if e.Store == nil {
+		return
+	}
+	n, err := e.Store.PruneBeadLocks()
+	if err != nil || n > 0 {
+		ev := runstate.Event{At: e.now(), Run: e.Run.ID, Command: cmd, Step: "bead_locks_pruned", Outcome: "pruned", Detail: fmt.Sprintf("%d files", n)}
+		if err != nil {
+			ev.Outcome, ev.Code, ev.Detail = OutcomeError, lock.CodeOf(err), fmt.Sprintf("%d files; %s", n, lock.Scrub(err.Error()))
+		}
+		e.Store.Log(ev)
+	}
 }
 
 // syncHeld settles one hold while holding the bead's lock, so no other bops

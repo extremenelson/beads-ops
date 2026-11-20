@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `sync` and `session-start` remove the per-bead lock files (`beads/<digest>.lock`) of beads no run in the clone holds, which piled up one per bead ever touched. Each is removed only while holding its lock, never waiting for it, and a command that locks a bead re-checks that its file was not removed meanwhile. `events.jsonl` logs a `bead_locks_pruned` line when a sync removed some or failed. Windows keeps its files, which are empty. **state.json is now version 4**, because bops 0.4.0 to 0.4.3 does not re-check its lock file and could lock one a prune removed: that bops now refuses the clone, so upgrade every machine's bops, and any pinned or earlier-on-`PATH` copy, before running this one. A prune runs only on a file already stamped version 4 (bops-exb).
+
 ## bops 0.4.3 (contract 1) — 2026-11-20
 
 - A read-only command's version stamp no longer recreates a `state.json` removed since it read it, and no command saves its own actor (`BEADS_ACTOR`, or the git user) on another worktree's run that has none recorded; only the run it acts as gets that default. SPEC now says that an older bops partway through a command when the stamp lands fails with its push done, and that `bops sync` from the newer bops settles it (bops-mx0).

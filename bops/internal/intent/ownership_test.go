@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -1260,6 +1261,90 @@ func TestSyncReportsADisplacedHold(t *testing.T) {
 	if _, ok := openStore(t, a.dir, "A").Entry("x-1"); ok {
 		t.Error("hold should be dropped")
 	}
+}
+
+// sync prunes the lock files of beads no run holds, so the state directory
+// does not keep one per bead ever touched, and keeps a held bead's (bops-exb).
+func TestSyncPrunesUnheldBeadLocks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows keeps its lock files (bops-exb)")
+	}
+	remote := bareRemote(t)
+	bd := newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	release, err := a.env.Store.LockBead("gone-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	locks := func() []string {
+		m, _ := filepath.Glob(filepath.Join(os.Getenv("XDG_STATE_HOME"), "bops", "*", "beads", "*.lock"))
+		return m
+	}
+	if n := len(locks()); n != 2 {
+		t.Fatalf("want x-1's and gone-1's lock files before the sync, have %d", n)
+	}
+
+	if _, err := intent.Sync(bg, a.env, false); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(locks()); n != 1 {
+		t.Fatalf("sync must leave only the held bead's lock file, have %v", locks())
+	}
+	if release, err := a.env.Store.LockBead("x-1"); err != nil {
+		t.Fatalf("the held bead's lock must still work: %v", err)
+	} else {
+		release()
+	}
+	if ev := prunedEvent(t); ev.Outcome != "pruned" || ev.Detail != "1 files" || ev.Command != "sync" {
+		t.Errorf("sync must log what it pruned: %+v", ev)
+	}
+}
+
+// A prune that fails costs only disk space: sync still succeeds, and the
+// failure is logged (bops-exb).
+func TestSyncLogsAFailedPruneAndCarriesOn(t *testing.T) {
+	remote := bareRemote(t)
+	bd := newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	a.env.Store = failingPrune{a.env.Store.(*runstate.Store)}
+
+	if _, err := intent.Sync(bg, a.env, false); err != nil {
+		t.Fatalf("a failed prune must not fail the sync: %v", err)
+	}
+	if ev := prunedEvent(t); ev.Outcome != intent.OutcomeError || !strings.Contains(ev.Detail, "disk on fire") {
+		t.Errorf("the failure must be logged: %+v", ev)
+	}
+}
+
+type failingPrune struct{ *runstate.Store }
+
+func (failingPrune) PruneBeadLocks() (int, error) { return 0, errors.New("disk on fire") }
+
+// prunedEvent is the last bead_locks_pruned line in the clone's events.jsonl.
+func prunedEvent(t *testing.T) runstate.Event {
+	t.Helper()
+	files, _ := filepath.Glob(filepath.Join(os.Getenv("XDG_STATE_HOME"), "bops", "*", "events.jsonl"))
+	var last runstate.Event
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+			var ev runstate.Event
+			if json.Unmarshal([]byte(line), &ev) == nil && ev.Step == "bead_locks_pruned" {
+				last = ev
+			}
+		}
+	}
+	if last.Step == "" {
+		t.Fatal("no bead_locks_pruned line")
+	}
+	return last
 }
 
 func TestSyncRepairsTheDisplayFromTheRef(t *testing.T) {

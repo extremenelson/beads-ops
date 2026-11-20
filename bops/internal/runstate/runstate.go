@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -82,7 +83,13 @@ func (h *Held) UnmarshalJSON(b []byte) error {
 // Version 3 adds no field: it marks a clone whose bops processes serialize
 // each bead (LockBead), so an older bops, which does not, refuses the file
 // and asks to be upgraded rather than race the newer ones (bops-yph).
-const stateVersion = 3
+//
+// Version 4 adds no field either: it marks a clone whose bead lock files may
+// be pruned, which is safe only for a bops that re-checks after locking that
+// its lock file was not replaced (bops-exb). bops 0.4.0 to 0.4.3 does not, so
+// it refuses a version 4 file, and a prune runs only on a file already
+// stamped.
+const stateVersion = 4
 
 // Mode says whether a Store may be saved.
 type Mode int
@@ -255,24 +262,32 @@ func (s *Store) ensureRun() error {
 }
 
 func (s *Store) read() error {
-	s.st = state{Runs: map[string]*Run{}}
+	st, err := s.load()
+	s.st = st
+	return err
+}
+
+// load reads the state file without touching the Store's view of it. A
+// missing file is an empty state.
+func (s *Store) load() (state, error) {
+	st := state{Runs: map[string]*Run{}}
 	b, err := os.ReadFile(filepath.Join(s.dir, "state.json"))
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return st, nil
 	}
 	if err != nil {
-		return err
+		return st, err
 	}
-	if err := json.Unmarshal(b, &s.st); err != nil {
-		return fmt.Errorf("state file %s: %w", filepath.Join(s.dir, "state.json"), err)
+	if err := json.Unmarshal(b, &st); err != nil {
+		return st, fmt.Errorf("state file %s: %w", filepath.Join(s.dir, "state.json"), err)
 	}
-	if s.st.Version > stateVersion {
-		return fmt.Errorf("state file %s is version %d; this bops understands up to %d, so upgrade it", filepath.Join(s.dir, "state.json"), s.st.Version, stateVersion)
+	if st.Version > stateVersion {
+		return st, fmt.Errorf("state file %s is version %d; this bops understands up to %d, so upgrade it", filepath.Join(s.dir, "state.json"), st.Version, stateVersion)
 	}
-	if s.st.Runs == nil {
-		s.st.Runs = map[string]*Run{}
+	if st.Runs == nil {
+		st.Runs = map[string]*Run{}
 	}
-	return nil
+	return st, nil
 }
 
 // write replaces the state file atomically. The lock must be held.
@@ -532,12 +547,75 @@ func (s *Store) LockBead(id string) (func(), error) {
 	if id == "" {
 		return nil, errors.New("an empty bead id cannot name a lock file")
 	}
-	dir := filepath.Join(s.dir, "beads")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	path := beadLockPath(s.dir, id)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
+	return lockFile(path)
+}
+
+// beadLockPath is the lock file for bead id in the state directory dir.
+func beadLockPath(dir, id string) string {
 	sum := sha256.Sum256([]byte(id))
-	return lockFile(filepath.Join(dir, hex.EncodeToString(sum[:16])+".lock"))
+	return filepath.Join(dir, "beads", hex.EncodeToString(sum[:16])+".lock")
+}
+
+// beadLockName matches the names beadLockPath gives, so a prune touches
+// nothing else in the directory.
+var beadLockName = regexp.MustCompile(`^[0-9a-f]{32}\.lock$`)
+
+// PruneBeadLocks removes the lock files of beads no run in this clone holds,
+// which would otherwise pile up, one per bead ever touched (bops-exb). It
+// never waits: a file another process has locked is left for a later prune.
+// It removes a file only while holding its lock, and LockBead re-checks after
+// locking that its path still names the file it locked, so no two processes
+// of this version hold one bead's lock on two files. An older bops does not
+// re-check, so a prune runs only once the state file on disk carries this
+// version, which that bops refuses; a read-only command's stamp can be
+// skipped, so the file itself is checked. It reads the file afresh and leaves
+// the Store's view alone. On Windows it removes nothing (see pruneLockFile
+// there). It returns how many files it removed, and the first error any file
+// gave.
+func (s *Store) PruneBeadLocks() (int, error) {
+	st, err := s.load()
+	if err != nil {
+		return 0, err
+	}
+	if st.Version != stateVersion {
+		return 0, nil
+	}
+	keep := map[string]bool{}
+	for _, r := range st.Runs {
+		for id := range r.Held {
+			keep[filepath.Base(beadLockPath(s.dir, id))] = true
+		}
+	}
+	for id := range s.run.Held { // this process's own, should they be newer
+		keep[filepath.Base(beadLockPath(s.dir, id))] = true
+	}
+	dir := filepath.Join(s.dir, "beads")
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	var first error
+	for _, e := range entries {
+		if keep[e.Name()] || !beadLockName.MatchString(e.Name()) {
+			continue
+		}
+		removed, err := pruneLockFile(filepath.Join(dir, e.Name()))
+		if removed {
+			n++
+		}
+		if err != nil && first == nil {
+			first = err
+		}
+	}
+	return n, first
 }
 
 // Event is one line of events.jsonl, the local record of what bops did (D21).

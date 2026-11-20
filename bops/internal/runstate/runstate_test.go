@@ -237,7 +237,7 @@ func TestLegacyHeldListStillLoads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), `"version": 3`) {
+	if !strings.Contains(string(b), `"version": 4`) {
 		t.Errorf("not migrated:\n%s", b)
 	}
 	if got := open(t, root, Read).Run().HeldIDs(); len(got) != 2 {
@@ -593,7 +593,7 @@ func TestOpenStampsAnOlderStateFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), `"version": 3`) {
+	if !strings.Contains(string(b), `"version": 4`) {
 		t.Fatalf("opening must stamp the version:\n%s", b)
 	}
 	for id, sha := range map[string]string{"x-1": "aaa", "x-2": "bbb"} {
@@ -606,13 +606,13 @@ func TestOpenStampsAnOlderStateFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := open(t, root, Write)
-	if b, _ := os.ReadFile(path); !strings.Contains(string(b), `"version": 3`) {
+	if b, _ := os.ReadFile(path); !strings.Contains(string(b), `"version": 4`) {
 		t.Fatalf("a write open must stamp the version too:\n%s", b)
 	}
 	w.Close()
 
 	// write always indents, so a rewrite of this compact file would show.
-	current := `{"version":3,"runs":{"` + s.worktree + `":{"id":"RUN","machine":"m","actor":"a","started_at":"2026-11-09T00:00:00Z"}}}`
+	current := `{"version":4,"runs":{"` + s.worktree + `":{"id":"RUN","machine":"m","actor":"a","started_at":"2026-11-09T00:00:00Z"}}}`
 	if err := os.WriteFile(path, []byte(current), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -710,7 +710,7 @@ func TestStampKeepsTheStoredActor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), `"version": 3`) || !strings.Contains(string(b), `"actor": "stored"`) || strings.Contains(string(b), "someone-else") {
+	if !strings.Contains(string(b), `"version": 4`) || !strings.Contains(string(b), `"actor": "stored"`) || strings.Contains(string(b), "someone-else") {
 		t.Fatalf("the stamp must keep the stored actor:\n%s", b)
 	}
 }
@@ -807,7 +807,7 @@ func TestStampKeepsItsRunWhenTheReReadLacksIt(t *testing.T) {
 		t.Fatal("the store must keep handing out its run")
 	}
 	b, _ := os.ReadFile(path)
-	if !strings.Contains(string(b), `"version": 3`) || !strings.Contains(string(b), `"SIB"`) || strings.Contains(string(b), run.ID) {
+	if !strings.Contains(string(b), `"version": 4`) || !strings.Contains(string(b), `"SIB"`) || strings.Contains(string(b), run.ID) {
 		t.Fatalf("the stamp must write only what it re-read:\n%s", b)
 	}
 }
@@ -835,7 +835,7 @@ func TestStampLeavesASiblingsEmptyActor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), `"version": 3`) || strings.Contains(string(b), "someone-else") {
+	if !strings.Contains(string(b), `"version": 4`) || strings.Contains(string(b), "someone-else") {
 		t.Fatalf("the stamp must not save this process's actor on any run:\n%s", b)
 	}
 }
@@ -847,7 +847,7 @@ func TestOpenDefaultsOnlyItsOwnEmptyActor(t *testing.T) {
 	root, stateHome := repo(t)
 	s := open(t, root, Read)
 	path := firstOrEmpty(stateFiles(t, stateHome))
-	stored := `{"version":3,"runs":{` +
+	stored := `{"version":4,"runs":{` +
 		`"` + s.worktree + `":{"id":"RUN","machine":"m","started_at":"2026-11-09T00:00:00Z"},` +
 		`"/elsewhere":{"id":"SIB","machine":"m","started_at":"2026-11-09T00:00:00Z"}}}`
 	if err := os.WriteFile(path, []byte(stored), 0o600); err != nil {

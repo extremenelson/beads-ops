@@ -64,6 +64,8 @@ type HoldStore interface {
 	LockBead(id string) (func(), error)
 	Refresh() error
 	Matches(run, id string, expect runstate.Entry) bool
+	// PruneBeadLocks removes the lock files of beads no run holds (bops-exb).
+	PruneBeadLocks() (int, error)
 }
 
 // holdBead takes this clone's lock on id for the rest of a command and
