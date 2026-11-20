@@ -74,39 +74,75 @@ type HoldStore interface {
 // /bead-loop orchestrator's run (bops-yph). A held lock is ref_contention.
 // Where the state directory's file system has no file locks, the command runs
 // unserialized, as bops did before, and warns once.
-func (e *Env) holdBead(ctx context.Context, id string, warnings *[]string) (func(), error) {
-	return e.lockBead(ctx, id, warnings, e.BeadWait)
+func (e *Env) holdBead(ctx context.Context, cmd, id string, warnings *[]string) (func(), error) {
+	return e.lockBead(ctx, cmd, id, warnings, e.BeadWait)
 }
 
 // beadPoll is how often a waiting command tries a busy bead's lock again.
 const beadPoll = 200 * time.Millisecond
 
-func (e *Env) lockBead(ctx context.Context, id string, warnings *[]string, wait time.Duration) (func(), error) {
+func (e *Env) lockBead(ctx context.Context, cmd, id string, warnings *[]string, wait time.Duration) (func(), error) {
 	if e.Store == nil {
 		return func() {}, nil
 	}
+	start := time.Now() // the real clock: these are durations, not timestamps
 	unlock, err := e.Store.LockBead(id)
-	for deadline := time.Now().Add(wait); errors.Is(err, runstate.ErrBeadBusy) && time.Now().Before(deadline) && ctx.Err() == nil; {
+	for deadline := start.Add(wait); errors.Is(err, runstate.ErrBeadBusy) && time.Now().Before(deadline) && ctx.Err() == nil; {
 		e.sleepFor(beadPoll)
 		unlock, err = e.Store.LockBead(id)
 	}
+	held := time.Now()
+	waited := held.Sub(start)
 	if errors.Is(err, runstate.ErrBeadBusy) {
+		if wait > 0 { // sync and sweep, which do not wait, log a deferral instead
+			// timeout: the command's own time ran out first, so this wait
+			// says less about how long the holder kept the bead than busy.
+			outcome := "busy"
+			if ctx.Err() != nil {
+				outcome = "timeout"
+			}
+			e.lockEvent(cmd, id, outcome, &waited, nil)
+		}
 		return nil, lock.BusyError(id)
 	}
 	if errors.Is(err, runstate.ErrBeadLockUnsupported) {
 		if !slices.Contains(*warnings, noBeadLockWarning) {
 			*warnings = append(*warnings, noBeadLockWarning)
 		}
-		unlock, err = func() {}, nil
+		if err := e.Store.Refresh(); err != nil {
+			return nil, err
+		}
+		return func() {}, nil // no lock, so nothing to time
 	}
 	if err != nil {
 		return nil, err
 	}
 	if err := e.Store.Refresh(); err != nil {
+		d := time.Since(held)
+		e.lockEvent(cmd, id, "refresh_failed", &waited, &d)
 		unlock()
 		return nil, err
 	}
-	return unlock, nil
+	return func() {
+		// Logged while still held, so the line precedes the next holder's.
+		d := time.Since(held)
+		e.lockEvent(cmd, id, "released", &waited, &d)
+		unlock()
+	}, nil
+}
+
+// lockEvent logs how long a command waited for a bead's lock and held it, so
+// BeadWait can be sized from what commands really do (bops-7uu).
+func (e *Env) lockEvent(cmd, id, outcome string, waited, held *time.Duration) {
+	ms := func(d *time.Duration) *int64 {
+		if d == nil {
+			return nil
+		}
+		v := d.Milliseconds()
+		return &v
+	}
+	e.Store.Log(runstate.Event{At: e.now(), Run: e.Run.ID, Command: cmd, Bead: id, Step: "bead_lock", Outcome: outcome,
+		WaitedMS: ms(waited), HeldMS: ms(held)})
 }
 
 // finishRelease finishes a release of id whose ref delete never completed,
@@ -375,7 +411,7 @@ func Note(ctx context.Context, env *Env, id, text string) (*NoteOut, error) {
 	out := &NoteOut{ID: id, Warnings: []string{}}
 	// While another process works on the bead, this run cannot tell whether
 	// it still holds it, so the note waits; its text is kept at saved_to.
-	unlock, err := env.holdBead(ctx, id, &out.Warnings)
+	unlock, err := env.holdBead(ctx, "note", id, &out.Warnings)
 	if err != nil {
 		return out.refuse(OutcomeError, err.Error(), nil, text), err
 	}
@@ -550,7 +586,7 @@ func Land(ctx context.Context, env *Env, id string, o LandOpts) (*LandOut, error
 		return nil, err
 	}
 	warnings := []string{}
-	unlock, err := env.holdBead(ctx, id, &warnings)
+	unlock, err := env.holdBead(ctx, "land", id, &warnings)
 	if err != nil {
 		return &LandOut{ID: id, Outcome: OutcomeError}, err
 	}
@@ -776,11 +812,12 @@ func (e *Env) sweepOne(ctx context.Context, c sweepCandidate, refs map[string]lo
 		out.WouldClose = append(out.WouldClose, id)
 		return nil
 	}
-	unlock, err := e.lockBead(ctx, id, &out.Warnings, 0) // a busy bead waits for the next sweep
+	unlock, err := e.lockBead(ctx, "sweep", id, &out.Warnings, 0) // a busy bead waits for the next sweep
 	if err != nil {
 		out.Unknown = append(out.Unknown, id)
 		if lock.CodeOf(err) == lock.CodeContention {
 			out.Warnings = append(out.Warnings, id+": "+err.Error())
+			e.event("sweep", id, "bead_lock", eventDeferred, "", nil)
 			return nil
 		}
 		return err

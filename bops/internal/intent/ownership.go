@@ -405,7 +405,11 @@ func Claim(ctx context.Context, env *Env, id string, force bool) (*ClaimOut, err
 		return nil, err
 	}
 	out := &ClaimOut{ID: id, Run: env.Run.ID, Warnings: []string{}}
-	unlock, err := env.holdBead(ctx, id, &out.Warnings)
+	name := "claim"
+	if force {
+		name = "claim --force"
+	}
+	unlock, err := env.holdBead(ctx, name, id, &out.Warnings)
 	if err != nil {
 		return out.fail(err)
 	}
@@ -790,7 +794,7 @@ func ClaimResume(ctx context.Context, env *Env, id string) (*ClaimOut, error) {
 		return nil, err
 	}
 	out := &ClaimOut{ID: id, Run: env.Run.ID, Warnings: []string{}}
-	unlock, err := env.holdBead(ctx, id, &out.Warnings)
+	unlock, err := env.holdBead(ctx, "claim --resume", id, &out.Warnings)
 	if err != nil {
 		return out.fail(err)
 	}
@@ -946,7 +950,7 @@ func releaseWithText(ctx context.Context, env *Env, id, reason, text string) (*R
 		return nil, err
 	}
 	out := &ReleaseOut{ID: id, Reason: reason, Warnings: []string{}}
-	unlock, err := env.holdBead(ctx, id, &out.Warnings)
+	unlock, err := env.holdBead(ctx, "release", id, &out.Warnings)
 	if err != nil {
 		return out.fail(err)
 	}
@@ -1242,6 +1246,12 @@ func (e *Env) allHolds() []cloneHold {
 // Sync reads the claims, pulls, settles every hold in this clone against its
 // ref, repairs the ledger display, and pushes.
 func Sync(ctx context.Context, env *Env, noPush bool) (*SyncOut, error) {
+	return syncAs(ctx, env, noPush, "sync")
+}
+
+// syncAs is Sync with the command name its bead-lock lines carry, so
+// session-start's are told apart from sync's (bops-7uu).
+func syncAs(ctx context.Context, env *Env, noPush bool, name string) (*SyncOut, error) {
 	out := &SyncOut{StrandedHolds: []string{}, LostClaims: []string{}, Deferred: []string{}}
 	// The holds are read before the refs, so each hold's entry is no newer
 	// than the ref it is checked against (bops-yph).
@@ -1273,7 +1283,7 @@ func Sync(ctx context.Context, env *Env, noPush bool) (*SyncOut, error) {
 		out.Pulled = true
 	}
 	for _, h := range holds {
-		env.syncHeld(ctx, h, refs, out)
+		env.syncHeld(ctx, name, h, refs, out)
 	}
 	if noPush || !publish {
 		return out, nil
@@ -1290,11 +1300,11 @@ func Sync(ctx context.Context, env *Env, noPush bool) (*SyncOut, error) {
 // working on, or one whose entry changed since this sync read the holds (so
 // the refs fetched after may predate it), is left for the next sync
 // (bops-yph).
-func (e *Env) syncHeld(ctx context.Context, h cloneHold, refs map[string]lock.Ref, out *SyncOut) {
-	unlock, err := e.lockBead(ctx, h.id, &out.Warnings, 0)
+func (e *Env) syncHeld(ctx context.Context, name string, h cloneHold, refs map[string]lock.Ref, out *SyncOut) {
+	unlock, err := e.lockBead(ctx, name, h.id, &out.Warnings, 0)
 	if lock.CodeOf(err) == lock.CodeContention {
 		out.Deferred = append(out.Deferred, h.id)
-		e.event("sync", h.id, "bead_lock", eventDeferred, "", nil)
+		e.event(name, h.id, "bead_lock", eventDeferred, "", nil)
 		return
 	}
 	if err != nil {
@@ -1305,7 +1315,7 @@ func (e *Env) syncHeld(ctx context.Context, h cloneHold, refs map[string]lock.Re
 	if e.Store != nil {
 		if !e.Store.Matches(h.run, h.id, h.entry) {
 			out.Deferred = append(out.Deferred, h.id)
-			e.event("sync", h.id, "entry_changed", eventDeferred, "", nil)
+			e.event(name, h.id, "entry_changed", eventDeferred, "", nil)
 			return
 		}
 	}
