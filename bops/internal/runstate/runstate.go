@@ -190,6 +190,8 @@ func Open(start string, mode Mode) (*Store, error) {
 	}
 	if a := os.Getenv("BEADS_ACTOR"); a != "" {
 		s.run.Actor = a // the environment names who is acting now, not who created the run
+	} else if s.run.Actor == "" {
+		s.run.Actor = Actor() // a run recorded without one; other runs' are left as stored
 	}
 	if mode == Read {
 		s.Close()
@@ -216,7 +218,10 @@ func (s *Store) stamp(mode Mode) error {
 	if err := s.read(); err != nil {
 		return err
 	}
-	if s.st.Version < stateVersion {
+	// read gives an empty state for a file that is gone, so a file removed
+	// since Open read it is not recreated; one left with no runs is likewise
+	// left for a later write to stamp.
+	if s.st.Version < stateVersion && len(s.st.Runs) > 0 {
 		_ = s.write()
 	}
 	if fresh := s.st.Runs[s.worktree]; fresh != nil {
@@ -266,11 +271,6 @@ func (s *Store) read() error {
 	}
 	if s.st.Runs == nil {
 		s.st.Runs = map[string]*Run{}
-	}
-	for _, r := range s.st.Runs {
-		if r.Actor == "" {
-			r.Actor = Actor()
-		}
 	}
 	return nil
 }
