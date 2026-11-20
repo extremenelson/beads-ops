@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## bops 0.4.3 (contract 1) — 2026-11-20
 
 - A read-only command's version stamp no longer recreates a `state.json` removed since it read it, and no command saves its own actor (`BEADS_ACTOR`, or the git user) on another worktree's run that has none recorded; only the run it acts as gets that default. SPEC now says that an older bops partway through a command when the stamp lands fails with its push done, and that `bops sync` from the newer bops settles it (bops-mx0).
 
