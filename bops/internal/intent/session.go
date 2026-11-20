@@ -49,7 +49,7 @@ func SessionStart(ctx context.Context, env *Env) (*SessionStartOut, error) {
 		out.Warnings = append(out.Warnings, lock.OffWarning)
 	}
 	var syncErr error
-	if s, err := Sync(ctx, env, true); err != nil {
+	if s, err := syncAs(ctx, env, true, "session-start"); err != nil {
 		syncErr = errors.New("sync failed; the facts below are from this machine's last copy: " + firstLine(err.Error()))
 		if code := lock.CodeOf(err); code != "" { // e.g. remote_mismatch with no Dolt remote
 			syncErr = &lock.Error{Code: code, Err: syncErr}

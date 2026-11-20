@@ -2308,6 +2308,9 @@ func TestCommandsRunUnlockedWhereFileLocksAreMissing(t *testing.T) {
 	if strings.Count(strings.Join(out.Warnings, "\n"), "bead lock unavailable") != 1 {
 		t.Errorf("want the warning once for two holds: %q", out.Warnings)
 	}
+	if evs := lockEvents(t); len(evs) != 0 {
+		t.Errorf("with no lock there is nothing to time: %+v", evs)
+	}
 }
 
 // Any other failure to take the lock is reported, never read as a lost or
@@ -2581,4 +2584,199 @@ func TestAReleaseThatIsRefusedKeepsItsText(t *testing.T) {
 	if err != nil || out.Outcome != intent.OutcomeRefused || out.SavedTo == "" {
 		t.Fatalf("%+v, %v", out, err)
 	}
+}
+
+// lockEvents reads every bead_lock event this test's clones logged.
+func lockEvents(t *testing.T) []runstate.Event {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(os.Getenv("XDG_STATE_HOME"), "bops", "*", "events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []runstate.Event
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+			var ev runstate.Event
+			if json.Unmarshal([]byte(line), &ev) == nil && ev.Step == "bead_lock" {
+				out = append(out, ev)
+			}
+		}
+	}
+	return out
+}
+
+// Each command logs how long it held a bead's lock, and how long it waited
+// for one it gave up on, so the wait can be sized from data (bops-7uu).
+func TestCommandsLogHowLongTheyHeldTheBeadLock(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	bd.add("x-2")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	var released *runstate.Event
+	for _, ev := range lockEvents(t) {
+		if ev.Command == "claim" && ev.Bead == "x-1" && ev.Outcome == "released" {
+			released = &ev
+		}
+	}
+	if released == nil || released.WaitedMS == nil || released.HeldMS == nil {
+		t.Fatalf("want claim's lock times logged, zeros included, got %+v", lockEvents(t))
+	}
+
+	unlock, err := openStore(t, a.dir, "A").LockBead("x-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	a.env.BeadWait = 30 * time.Millisecond
+	a.env.Sleep = func(time.Duration) { time.Sleep(5 * time.Millisecond) }
+	if _, err := intent.Claim(bg, a.env, "x-2", false); lock.CodeOf(err) != lock.CodeContention {
+		t.Fatalf("want ref_contention, got %v", err)
+	}
+	for _, ev := range lockEvents(t) {
+		if ev.Command == "claim" && ev.Bead == "x-2" && ev.Outcome == "busy" && ev.WaitedMS != nil && *ev.WaitedMS >= 30 {
+			return
+		}
+	}
+	t.Fatalf("want the wait logged, got %+v", lockEvents(t))
+}
+
+// sync and sweep, which never wait, log a busy bead as deferred, not busy.
+func TestSyncAndSweepLogABusyBeadAsDeferred(t *testing.T) {
+	a, bd := landed(t) // x-1 is a landing, for sweep
+	bd.add("x-2")
+	mustClaim(t, a, "x-2") // a hold, for sync and session-start
+	for _, id := range []string{"x-1", "x-2"} {
+		unlock, err := openStore(t, a.dir, "A").LockBead(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer unlock()
+	}
+	r := rigAt(t, a.dir, "A", bd)
+	if _, err := intent.Sweep(bg, r.env, mergedForge{}, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := intent.Sync(bg, r.env, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := intent.SessionStart(bg, r.env); err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range lockEvents(t) {
+		if ev.Outcome == "busy" {
+			t.Fatalf("a run that does not wait must not log busy: %+v", ev)
+		}
+	}
+	for cmd, id := range map[string]string{"sweep": "x-1", "sync": "x-2", "session-start": "x-2"} {
+		found := false
+		for _, ev := range lockEvents(t) {
+			if ev.Command == cmd && ev.Bead == id && ev.Outcome == "deferred" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("want %s's deferral logged, got %+v", cmd, lockEvents(t))
+		}
+	}
+}
+
+// A command whose time runs out while it waits for a busy bead still answers
+// ref_contention, coded and retryable, and logs the cut-short wait as timeout
+// rather than busy (bops-7uu).
+func TestACommandOutOfTimeWhileWaitingLogsTimeout(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	unlock, err := openStore(t, a.dir, "A").LockBead("x-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	ctx, cancel := context.WithCancel(bg)
+	a.env.BeadWait = time.Minute
+	a.env.Sleep = func(time.Duration) { cancel() }
+	out, err := intent.Claim(ctx, a.env, "x-1", false)
+	if lock.CodeOf(err) != lock.CodeContention || out == nil || out.Retry == "" {
+		t.Fatalf("want coded ref_contention with retry advice, got %+v, %v", out, err)
+	}
+	var outcomes []string
+	for _, ev := range lockEvents(t) {
+		outcomes = append(outcomes, ev.Outcome)
+	}
+	if strings.Join(outcomes, ",") != "timeout" {
+		t.Fatalf("want one timeout line, got %v", outcomes)
+	}
+}
+
+// Each command's lock lines carry its own name (bops-7uu).
+func TestLockLinesNameTheirCommand(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	unlock, err := openStore(t, a.dir, "A").LockBead("x-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	a.env.BeadWait = time.Millisecond
+	a.env.Sleep = func(time.Duration) { time.Sleep(time.Millisecond) }
+	runs := map[string]func(){
+		"claim --force":  func() { _, _ = intent.Claim(bg, a.env, "x-1", true) },
+		"claim --resume": func() { _, _ = intent.ClaimResume(bg, a.env, "x-1") },
+		"note":           func() { _, _ = intent.Note(bg, a.env, "x-1", "work\n\nNEXT: more") },
+		"land":           func() { _, _ = intent.Land(bg, a.env, "x-1", intent.LandOpts{Ref: prRef, SHA: prSHA}) },
+		"release":        func() { _, _ = intent.Release(bg, a.env, "x-1", "scope") },
+	}
+	for name, run := range runs {
+		run()
+		found := false
+		for _, ev := range lockEvents(t) {
+			if ev.Command == name && ev.Outcome == "busy" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s: no busy line under its name in %+v", name, lockEvents(t))
+		}
+	}
+}
+
+// A lock taken whose state then cannot be re-read is logged as such, and
+// let go (bops-7uu).
+func TestALockWhoseStateCannotBeReadIsLoggedAndLetGo(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	files, err := filepath.Glob(filepath.Join(os.Getenv("XDG_STATE_HOME"), "bops", "*", "state.json"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("state files: %v, %v", files, err)
+	}
+	good, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(files[0], []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := intent.Claim(bg, a.env, "x-1", false); err == nil {
+		t.Fatal("a claim over an unreadable state file must fail")
+	}
+	evs := lockEvents(t)
+	if len(evs) != 1 || evs[0].Outcome != "refresh_failed" || evs[0].WaitedMS == nil || evs[0].HeldMS == nil {
+		t.Fatalf("want one refresh_failed line with both times, got %+v", evs)
+	}
+	if err := os.WriteFile(files[0], good, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	again, err := openStore(t, a.dir, "A").LockBead("x-1")
+	if err != nil {
+		t.Fatalf("the lock must be let go: %v", err)
+	}
+	again()
 }

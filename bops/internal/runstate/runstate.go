@@ -506,6 +506,11 @@ type Event struct {
 	Code    string    `json:"code,omitempty"`
 	SHA     string    `json:"sha,omitempty"`
 	Detail  string    `json:"detail,omitempty"`
+	// WaitedMS and HeldMS time a command's bead lock (step bead_lock): how
+	// long it waited for the lock and how long it then held it (bops-7uu).
+	// They are set only on those lines, where 0 is a real value.
+	WaitedMS *int64 `json:"waited_ms,omitempty"`
+	HeldMS   *int64 `json:"held_ms,omitempty"`
 }
 
 // eventsMax is the size at which events.jsonl is rotated to one old copy.
