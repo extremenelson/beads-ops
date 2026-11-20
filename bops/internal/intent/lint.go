@@ -60,7 +60,7 @@ const (
 	defaultHold    = 120 * time.Minute // SPEC §3.1 hold_minutes default
 )
 
-// Lint evaluates rules W01–W11 against one bead. W11 (cycles) is delegated
+// Lint evaluates rules W01–W15 against one bead. W11 (cycles) is delegated
 // to bd at claim time and reported here only when OpenGates reports it.
 func Lint(i *ledger.Issue, env LintEnv) LintResult {
 	r := LintResult{ID: i.ID, Fails: []Rule{}, Warns: []Rule{}, Passes: []string{}}

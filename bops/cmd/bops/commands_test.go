@@ -621,3 +621,64 @@ func TestBeadWaitFitsEveryBudget(t *testing.T) {
 		}
 	}
 }
+
+// A blocking label no bead carries fails open with no sign (a typo such as
+// forzen, or a form bd stores differently), so doctor names it, matching as
+// the commands do: closed beads and gates count (bops-jmp).
+func TestDoctorWarnsOfBlockingLabelsNoBeadCarries(t *testing.T) {
+	code, got := runDoctor(t, func(clone string) {
+		if err := os.WriteFile(filepath.Join(clone, ".bops.json"), []byte(`{"blocking_labels":["forzen","frozen","gated"]}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		doctorBD.(*bdx.Fake).Responses["list --all --include-gates --limit 0 --json"] = []byte(
+			`[{"id":"x-1","title":"t","status":"closed","labels":["frozen"]},{"id":"x-2","title":"g","status":"open","issue_type":"gate","labels":["gated"]}]`)
+	})
+	if code != exitVerdict || got["ok"] != true {
+		t.Fatalf("a warning must not fail doctor: exit %d: %v", code, got)
+	}
+	named := blockingWarnings(got)
+	if len(named) != 1 || !strings.HasPrefix(named[0], "blocking_labels forzen: ") {
+		t.Fatalf("want one warning naming only forzen, got %q", named)
+	}
+}
+
+// A bead list bd cannot give is said, not read as "every label matched".
+func TestDoctorSaysWhenItCouldNotCheckBlockingLabels(t *testing.T) {
+	code, got := runDoctor(t, func(clone string) {
+		if err := os.WriteFile(filepath.Join(clone, ".bops.json"), []byte(`{"blocking_labels":["frozen"]}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if code != exitVerdict || got["ok"] != true {
+		t.Fatalf("exit %d: %v", code, got)
+	}
+	if named := blockingWarnings(got); len(named) != 1 || !strings.HasPrefix(named[0], "blocking_labels not checked") {
+		t.Fatalf("want a not-checked warning, got %q", named)
+	}
+}
+
+func blockingWarnings(got map[string]any) []string {
+	var named []string
+	warnings, _ := got["warnings"].([]any)
+	for _, w := range warnings {
+		if s, _ := w.(string); strings.Contains(s, "blocking_labels") {
+			named = append(named, s)
+		}
+	}
+	return named
+}
+
+// With no blocking labels doctor asks bd nothing about them.
+func TestDoctorAsksNothingWithoutBlockingLabels(t *testing.T) {
+	_, got := runDoctor(t, nil)
+	for _, w := range got["warnings"].([]any) {
+		if strings.Contains(w.(string), "blocking_labels") {
+			t.Fatalf("unexpected warning %q", w)
+		}
+	}
+	for _, c := range doctorBD.(*bdx.Fake).Calls {
+		if len(c) > 0 && c[0] == "list" {
+			t.Fatalf("doctor listed beads with no blocking labels: %v", c)
+		}
+	}
+}

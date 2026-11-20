@@ -104,7 +104,7 @@ var keys = []key{
 	{"stale_minutes", kMinutes, func(c *Config) any { return &c.StaleMinutes }},
 	{"forge", kForge, func(c *Config) any { return &c.Forge }},
 	{"lint.strict", kBool, func(c *Config) any { return &c.LintStrict }},
-	{"lint.disable", kStrings, func(c *Config) any { return &c.LintDisable }},
+	{keyLintDisable, kStrings, func(c *Config) any { return &c.LintDisable }},
 	{"note.require_next", kBool, func(c *Config) any { return &c.NoteRequireNext }},
 	{"lock.mode", kLockMode, func(c *Config) any { return &c.LockMode }},
 	{"lock.remote", kRemote, func(c *Config) any { return &c.LockRemote }},
@@ -126,6 +126,27 @@ func lockOffHere(c *Config, repoMode string) error {
 	}
 	return nil
 }
+
+// lintW15Here refuses W15 in lint.disable from a layer above the repo file
+// unless the repo file already disables it. W15 is what blocking_labels
+// enforce in next, and each layer only adds to those labels so none can drop
+// the repo's; disabling W15 above the repo would undo that (bops-jmp).
+func lintW15Here(c *Config, repoDisable []string) error {
+	if disablesW15(c.LintDisable) && !disablesW15(repoDisable) {
+		return fmt.Errorf("lint.disable W15 is accepted only from %s, the committed file every machine reads: W15 enforces blocking_labels, which no other layer may drop", RepoFile)
+	}
+	return nil
+}
+
+// disablesW15 reports whether a lint.disable list names W15, however cased or
+// spaced, so the guard is not dodged by "w15" or " W15 ".
+func disablesW15(ids []string) bool {
+	return slices.ContainsFunc(ids, func(id string) bool { return strings.EqualFold(strings.TrimSpace(id), "W15") })
+}
+
+// keyLintDisable is lint.disable's path, shared by its row in keys and the
+// W15 guard on the environment layer.
+const keyLintDisable = "lint.disable"
 
 // remoteName is a plausible git remote name: one refname segment that cannot
 // be read as a flag or a URL.
@@ -167,13 +188,16 @@ func Load(repoRoot string, getenv func(string) string) (Config, error) {
 	if u := UserPath(getenv); u != "" {
 		files = append(files, u)
 	}
-	repoMode := c.LockMode
+	repoMode, repoDisable := c.LockMode, c.LintDisable
 	for n, f := range files {
 		err := mergeFile(&c, f)
 		if n == 0 {
-			repoMode = c.LockMode
+			repoMode, repoDisable = c.LockMode, c.LintDisable
 		} else if err == nil {
 			err = lockOffHere(&c, repoMode)
+			if err == nil {
+				err = lintW15Here(&c, repoDisable)
+			}
 		}
 		if err != nil {
 			return Config{}, fmt.Errorf("config %s: %w", f, err)
@@ -188,6 +212,9 @@ func Load(repoRoot string, getenv func(string) string) (Config, error) {
 		err := setString(&c, k, v)
 		if err == nil && k.kind == kLockMode {
 			err = lockOffHere(&c, repoMode)
+		}
+		if err == nil && k.path == keyLintDisable {
+			err = lintW15Here(&c, repoDisable)
 		}
 		if err != nil {
 			return Config{}, fmt.Errorf("config %s: %w", name, err)
@@ -367,15 +394,27 @@ func setString(c *Config, k key, v string) error {
 	return nil
 }
 
+// bopsLabelPrefixes are the label prefixes bops itself sets: bops:hold and
+// bops:landing on a bead's way through, run:<id> on a claim and pool:<name>
+// on a pooled bead. A blocking label among them would turn W12's timed
+// cool-off into a permanent exclusion, or block every claimed or pooled bead,
+// with a second reason that explains neither (bops-jmp).
+var bopsLabelPrefixes = []string{"bops:", "run:", "pool:"}
+
 // addLabels adds bead labels to a kLabels key, sorted and without repeats.
 // A label is one bd label: printable, with no whitespace or comma, since
 // anything else (a zero-width space, a control character) could never match
-// one bd stores.
+// one bd stores. bops's own labels are refused.
 func addLabels(c *Config, k key, labels []string) error {
 	dst := k.ref(c).(*[]string)
 	for _, l := range labels {
 		if l == "" || strings.IndexFunc(l, func(r rune) bool { return r == ',' || unicode.IsSpace(r) || !unicode.IsPrint(r) }) >= 0 {
 			return fmt.Errorf("%s: want printable bead labels with no space or comma, got %q", k.path, l)
+		}
+		for _, p := range bopsLabelPrefixes {
+			if strings.HasPrefix(l, p) {
+				return fmt.Errorf("%s: %q is one of bops's own labels (%s*), which bops sets and clears itself; name a label of the repo's own", k.path, l, p)
+			}
 		}
 		if !slices.Contains(*dst, l) {
 			*dst = append(*dst, l)
