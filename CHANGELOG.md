@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## bops 0.4.1 (contract 1) — 2026-11-19
 
 - `events.jsonl` logs how long each command waited for and held a bead's lock (`bead_lock`, with `waited_ms` and `held_ms`), so the 10-second wait can be re-sized from real hold times. `sweep` now logs a `deferred` line when it skips a busy bead, as `sync` does, and `session-start`, `claim --force` and `claim --resume` are logged under their own names. A wait cut short by the command's own time limit is logged as `timeout` rather than `busy`. SPEC records why `sync` keeps taking every hold's lock in the clone (it is what repairs a live agent's display), and its budget line now lists `land` and `doctor`, which already had 60 seconds (bops-7uu).
 
