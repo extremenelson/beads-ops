@@ -157,6 +157,7 @@ func TestBadConfigCarriesItsCode(t *testing.T) {
 		{name: "unknown key", repo: `{"stale_minute":60}`, wantIn: `unknown key "stale_minute"`},
 		{name: "out of range", env: "0", wantIn: "BOPS_STALE_MINUTES"},
 		{name: "lock off from the user file", user: `{"lock":{"mode":"none"}}`, wantIn: "lock.mode none is accepted only from .bops.json"},
+		{name: "stale shortened by the environment", env: "30", wantIn: "stale_minutes 30 is shorter than 120"},
 	}
 	for _, c := range cases {
 		for _, cmd := range []string{"next", "sweep", "doctor"} {

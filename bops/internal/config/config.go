@@ -101,7 +101,7 @@ var keys = []key{
 	{"pool", kString, func(c *Config) any { return &c.Pool }},
 	{"caps", kStrings, func(c *Config) any { return &c.Caps }},
 	{"hold_minutes", kMinutes, func(c *Config) any { return &c.HoldMinutes }},
-	{"stale_minutes", kMinutes, func(c *Config) any { return &c.StaleMinutes }},
+	{keyStaleMinutes, kMinutes, func(c *Config) any { return &c.StaleMinutes }},
 	{"forge", kForge, func(c *Config) any { return &c.Forge }},
 	{"lint.strict", kBool, func(c *Config) any { return &c.LintStrict }},
 	{keyLintDisable, kStrings, func(c *Config) any { return &c.LintDisable }},
@@ -137,6 +137,22 @@ func lintW15Here(c *Config, repoDisable []string) error {
 	}
 	return nil
 }
+
+// staleHere refuses a stale_minutes from a layer above the repo file that is
+// shorter than the repo file's (or the default, when it sets none). A machine
+// with a shorter window takes over other machines' claims sooner than they
+// expect, so only the committed file may shorten it; any layer may lengthen
+// it, which only makes that machine wait longer (bops-i08).
+func staleHere(c *Config, repoStale int) error {
+	if c.StaleMinutes < repoStale {
+		return fmt.Errorf("stale_minutes %d is shorter than %d, the window %s sets (or the default, if it sets none): a machine with a shorter window takes over other machines' claims sooner, so only %s, the committed file every machine reads, may shorten it; another layer may only lengthen it", c.StaleMinutes, repoStale, RepoFile, RepoFile)
+	}
+	return nil
+}
+
+// keyStaleMinutes is stale_minutes' path, shared by its row in keys and the
+// staleHere guard on the environment layer.
+const keyStaleMinutes = "stale_minutes"
 
 // disablesW15 reports whether a lint.disable list names W15, however cased or
 // spaced, so the guard is not dodged by "w15" or " W15 ".
@@ -188,15 +204,18 @@ func Load(repoRoot string, getenv func(string) string) (Config, error) {
 	if u := UserPath(getenv); u != "" {
 		files = append(files, u)
 	}
-	repoMode, repoDisable := c.LockMode, c.LintDisable
+	repoMode, repoDisable, repoStale := c.LockMode, c.LintDisable, c.StaleMinutes
 	for n, f := range files {
 		err := mergeFile(&c, f)
 		if n == 0 {
-			repoMode, repoDisable = c.LockMode, c.LintDisable
+			repoMode, repoDisable, repoStale = c.LockMode, c.LintDisable, c.StaleMinutes
 		} else if err == nil {
 			err = lockOffHere(&c, repoMode)
 			if err == nil {
 				err = lintW15Here(&c, repoDisable)
+			}
+			if err == nil {
+				err = staleHere(&c, repoStale)
 			}
 		}
 		if err != nil {
@@ -215,6 +234,9 @@ func Load(repoRoot string, getenv func(string) string) (Config, error) {
 		}
 		if err == nil && k.path == keyLintDisable {
 			err = lintW15Here(&c, repoDisable)
+		}
+		if err == nil && k.path == keyStaleMinutes {
+			err = staleHere(&c, repoStale)
 		}
 		if err != nil {
 			return Config{}, fmt.Errorf("config %s: %w", name, err)

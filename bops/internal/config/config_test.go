@@ -272,3 +272,27 @@ func TestLintDisableW15OnlyFromTheRepoFile(t *testing.T) {
 		t.Errorf("other rules stay free to disable: %v", err)
 	}
 }
+
+// A shorter stale window takes over other machines' claims sooner, so only the
+// committed file may shorten it; any layer may lengthen it (bops-i08).
+func TestStaleMinutesShortenedOnlyByTheRepoFile(t *testing.T) {
+	if _, err := newWorld(t, `{"stale_minutes":60}`, `{"stale_minutes":30}`).load(); err == nil || !strings.Contains(err.Error(), "config.json") || !strings.Contains(err.Error(), "stale_minutes 30") {
+		t.Errorf("user file shorter than the repo's: err = %v", err)
+	}
+	if _, err := newWorld(t, "", `{"stale_minutes":119}`).load(); err == nil || !strings.Contains(err.Error(), "shorter than 120") {
+		t.Errorf("user file shorter than the default: err = %v", err)
+	}
+	w := newWorld(t, `{"stale_minutes":60}`, "")
+	w.env["BOPS_STALE_MINUTES"] = "59"
+	if _, err := w.load(); err == nil || !strings.Contains(err.Error(), "BOPS_STALE_MINUTES") {
+		t.Errorf("env shorter than the repo's: err = %v", err)
+	}
+	if c, err := newWorld(t, `{"stale_minutes":30}`, "").load(); err != nil || c.StaleAfter() != 30*time.Minute {
+		t.Errorf("the repo file may shorten it: %v, %v", c.StaleAfter(), err)
+	}
+	w = newWorld(t, `{"stale_minutes":30}`, `{"stale_minutes":30}`)
+	w.env["BOPS_STALE_MINUTES"] = "240"
+	if c, err := w.load(); err != nil || c.StaleAfter() != 240*time.Minute {
+		t.Errorf("equal and longer stay allowed: %v, %v", c.StaleAfter(), err)
+	}
+}
