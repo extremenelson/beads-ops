@@ -19,6 +19,7 @@ Start with the tutorial if you're new. Use the reference when you know what you 
 - [Configuration reference](reference/configuration.md). `.bops.json`, the user config file, `BOPS_*` variables, validation errors.
 - [SPEC.md](../SPEC.md). The normative contract: glossary, ledger conventions, the claim lock, lint rules, ordering, versioning.
 - [PROCESS.md](PROCESS.md). The operating process: roles, session protocol, handoff notes, the 21-row workability checklist.
+- [Agent protocol](agent-protocol.md). This repo's values for `/bead-loop`: the gate, the close contract, `Claim tool: bops`, and why agents cannot land here yet.
 
 ## Understand
 
