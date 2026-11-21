@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
 
@@ -51,6 +52,20 @@ func run(args []string, stdout, stderr *os.File) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), budget(name))
 	defer cancel()
+	gateWarnings = nil
+	if c, ok := m.Lookup(name); ok && name != "doctor" {
+		if warn, err := minBopsGate(c.Kind); err != nil {
+			if name == "session-start" && slices.Contains(rest, "--hook-json") {
+				return emitHook(m, name, "SessionStart", nil, err, stdout, stderr)
+			}
+			return emit(m, name, wantJSON, nil, err, stdout, stderr)
+		} else if warn != "" {
+			gateWarnings = []string{warn}
+			if !wantJSON {
+				fmt.Fprintln(stderr, "warning:", warn)
+			}
+		}
+	}
 
 	switch name {
 	case "version", "manifest":

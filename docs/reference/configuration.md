@@ -6,7 +6,7 @@ The normative definition is [SPEC.md §10](../../SPEC.md#10-configuration). The 
 
 ## Where settings come from
 
-Lowest to highest precedence. A higher layer overrides only the keys it names. `blocking_labels` is the exception: each layer adds to it. Three choices that would weaken a shared ledger are the repo file's alone: `lock.mode: none`, a `stale_minutes` shorter than the repo file's, and `W15` in `lint.disable`.
+Lowest to highest precedence. A higher layer overrides only the keys it names. `blocking_labels` is the exception: each layer adds to it. Four choices that would weaken a shared ledger are the repo file's alone: `lock.mode: none`, a `stale_minutes` shorter than the repo file's, `W15` in `lint.disable`, and `min_bops`.
 
 | # | Layer | Location | Notes |
 |---|---|---|---|
@@ -32,6 +32,7 @@ A missing file is skipped. A file that exists must be one JSON object.
 | [`lock.mode`](#lockmode) | `ref` \| `none` | `ref` | `BOPS_LOCK_MODE` | every command, `doctor` |
 | [`blocking_labels`](#blocking_labels) | list of bead labels | none | `BOPS_BLOCKING_LABELS` (comma-separated) | `next`, `lint` (W15), `claim` |
 | [`lock.remote`](#lockremote) | git remote name | `origin` | `BOPS_LOCK_REMOTE` | claim-ref commands, `doctor`, forge inference |
+| [`min_bops`](#min_bops) | bops release, `MAJOR.MINOR.PATCH` | none | only from `.bops.json` | every command, `doctor` |
 | `lint.strict` | boolean | `false` | `BOPS_LINT_STRICT` | loaded and validated, **not applied yet**; use `bops lint --strict` |
 | `lint.disable` | list of rule ids | none | `BOPS_LINT_DISABLE` | loaded and validated, **not applied yet**. Only `.bops.json` may list `W15` |
 | `note.require_next` | boolean | `false` | `BOPS_NOTE_REQUIRE_NEXT` | loaded and validated, **not applied yet** |
@@ -67,6 +68,25 @@ Put it in the committed `.bops.json`. Each layer adds to the list rather than re
 A label no bead carries keeps nothing out and fails silently, as a typo such as `forzen` would. `bops doctor` warns of each configured label that no bead carries, closed ones and gates included, matching labels exactly as the commands do, and says so when it could not list the beads.
 
 **Upgrade every machine first.** A bops binary rejects any key it does not know, so a machine running a bops older than the release that adds `blocking_labels` fails every command with `bad_config` once the key is in `.bops.json`, including `release` and `sync`, so it cannot even hand back its claims. Commit the key only after every machine on the ledger has upgraded.
+
+### `min_bops`
+
+The oldest `bops` release this ledger accepts, such as `"0.6.0"` (a leading `v` is allowed). Every machine on a ledger must run a `bops` that handles the claim lock the way the ledger expects ([PROCESS §8](../PROCESS.md)). `min_bops` turns that from a habit into a check:
+
+- A write (`claim`, `note`, `release`, `land`, `sweep`, `sync`, `session-start`) by an older `bops` exits 1 before it touches the ledger or the lock, with `code: bops_too_old` and the upgrade command.
+- A read (`next`, `stale`, `lint`, `gates`, `deps`) still answers, with the same message in `warnings`, or on stderr when the output is not JSON.
+- `bops doctor` fails a `bops_version` check, which it adds only when `min_bops` is set.
+
+```console
+$ bops claim bd-1
+bops claim: bops_too_old: this bops is v0.5.1, older than min_bops 0.6.0 in .bops.json; upgrade it: go install github.com/extremenelson/beads-ops/bops/cmd/bops@v0.6.0 (or later) (did NOT run to completion)
+```
+
+Only `.bops.json` may set it: a user file or `BOPS_MIN_BOPS` could otherwise lower it for one machine, so either is an error unless it repeats the repo file's value. A prerelease is not accepted as the floor. A running prerelease or Go pseudo-version (`v0.6.1-0.2026…`) counts as older than its release.
+
+A build with no version, such as `go install ./cmd/bops` from a clone, reports `dev`. It cannot be compared, so commands run; `bops doctor` warns that it could not check.
+
+**Upgrade every machine before raising it**, as with any change to `.bops.json`. Also, a `bops` older than the release that adds `min_bops` does not know the key, so it fails every command with `bad_config` instead of `bops_too_old`. That is also a refusal, with a less helpful message.
 
 ### `forge`
 
@@ -106,7 +126,7 @@ The git remote that holds the claim refs. It must be the same repository as the 
 $ cat .bops.json
 {"stale_minute": 60}
 $ bops next
-bops next: bad_config: config /path/to/repo/.bops.json: unknown key "stale_minute" (have: pool, caps, hold_minutes, stale_minutes, forge, lint.strict, lint.disable, note.require_next, lock.mode, lock.remote) (did NOT run to completion)
+bops next: bad_config: config /path/to/repo/.bops.json: unknown key "stale_minute" (have: pool, caps, hold_minutes, stale_minutes, forge, lint.strict, lint.disable, note.require_next, lock.mode, lock.remote, blocking_labels, min_bops) (did NOT run to completion)
 
 $ BOPS_STALE_MINUTES=0 bops next
 bops next: bad_config: config BOPS_STALE_MINUTES: stale_minutes: want at least 1, got 0 (did NOT run to completion)

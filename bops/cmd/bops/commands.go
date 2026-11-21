@@ -85,6 +85,13 @@ func document(env envelope, result any) map[string]any {
 		rb, _ := json.Marshal(result)
 		_ = json.Unmarshal(rb, &merged)
 	}
+	if len(gateWarnings) > 0 {
+		ws, _ := merged["warnings"].([]any)
+		for _, w := range gateWarnings {
+			ws = append(ws, w)
+		}
+		merged["warnings"] = ws
+	}
 	return merged
 }
 
@@ -502,6 +509,11 @@ func cmdDoctor(ctx context.Context, m *manifest.Manifest, args []string, asJSON 
 		l := &lock.Lock{Git: lock.Exec{Dir: root}, Run: "doctor", Actor: "bops-doctor", Remote: cfg.LockRemote}
 		out = l.Doctor(ctx)
 		out.Add(intent.DoltRemoteCheck(ctx, doctorBD, l)) // the ledger must sit beside the lock
+	}
+	if c, w := minBopsCheck(cfg.MinBops, runningVersion()); c != nil {
+		out.Add(*c)
+	} else if w != "" {
+		out.Warnings = append(out.Warnings, w)
 	}
 	if w := staleBinary(ctx, worktreeRoot(root), runningBuild()); w != "" {
 		out.Warnings = append(out.Warnings, w) // a warning: the lock checks still decide the exit
