@@ -6,7 +6,7 @@ The normative definition is [SPEC.md §10](../../SPEC.md#10-configuration). The 
 
 ## Where settings come from
 
-Lowest to highest precedence. A higher layer overrides only the keys it names. `blocking_labels` is the exception: each layer adds to it.
+Lowest to highest precedence. A higher layer overrides only the keys it names. `blocking_labels` is the exception: each layer adds to it. Three choices that would weaken a shared ledger are the repo file's alone: `lock.mode: none`, a `stale_minutes` shorter than the repo file's, and `W15` in `lint.disable`.
 
 | # | Layer | Location | Notes |
 |---|---|---|---|
@@ -42,7 +42,7 @@ Nested keys are nested JSON objects in a file (`{"lock": {"mode": "none"}}`). Th
 
 How long a claim can sit idle before another run may take it over with `bops claim --force`. Age is measured from the claim ref's `at` time, which `bops note` refreshes. A claim with no ref is aged from the ledger's `updated_at`.
 
-Set it in the committed `.bops.json` so every machine on a ledger agrees. A machine with a shorter window takes over claims sooner than its teammates expect.
+Set it in the committed `.bops.json` so every machine on a ledger agrees. A machine with a shorter window takes over claims sooner than its teammates expect, so only `.bops.json` may shorten it: a user file or `BOPS_STALE_MINUTES` shorter than the repo file's value (or than the default 120, when the repo file sets none) is an error. Either may lengthen it, which only makes that machine wait longer before a takeover.
 
 ### `hold_minutes`
 
@@ -110,6 +110,9 @@ bops next: bad_config: config /path/to/repo/.bops.json: unknown key "stale_minut
 
 $ BOPS_STALE_MINUTES=0 bops next
 bops next: bad_config: config BOPS_STALE_MINUTES: stale_minutes: want at least 1, got 0 (did NOT run to completion)
+
+$ BOPS_STALE_MINUTES=30 bops next
+bops next: bad_config: config BOPS_STALE_MINUTES: stale_minutes 30 is shorter than 120, the window .bops.json sets (or the default, if it sets none): a machine with a shorter window takes over other machines' claims sooner, so only .bops.json, the committed file every machine reads, may shorten it; another layer may only lengthen it (did NOT run to completion)
 
 $ cat ~/.config/bops/config.json
 {"lock":{"mode":"none"}}
