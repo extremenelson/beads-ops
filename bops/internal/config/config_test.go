@@ -296,3 +296,50 @@ func TestStaleMinutesShortenedOnlyByTheRepoFile(t *testing.T) {
 		t.Errorf("equal and longer stay allowed: %v, %v", c.StaleAfter(), err)
 	}
 }
+
+func TestMinBopsOnlyFromTheRepoFile(t *testing.T) {
+	if c, err := newWorld(t, `{"min_bops":"v0.6.0"}`, "").load(); err != nil || c.MinBops != "0.6.0" {
+		t.Errorf("repo file: min_bops = %q, err = %v; want 0.6.0", c.MinBops, err)
+	}
+	if _, err := newWorld(t, "", `{"min_bops":"0.6.0"}`).load(); err == nil || !strings.Contains(err.Error(), "config.json") || !strings.Contains(err.Error(), "only from .bops.json") {
+		t.Errorf("user file: err = %v", err)
+	}
+	w := newWorld(t, `{"min_bops":"0.6.0"}`, "")
+	w.env["BOPS_MIN_BOPS"] = "0.1.0"
+	if _, err := w.load(); err == nil || !strings.Contains(err.Error(), "BOPS_MIN_BOPS") {
+		t.Errorf("env lowering it: err = %v", err)
+	}
+	w = newWorld(t, `{"min_bops":"0.6.0"}`, `{"min_bops":"v0.6.0"}`)
+	w.env["BOPS_MIN_BOPS"] = "0.6.0"
+	if c, err := w.load(); err != nil || c.MinBops != "0.6.0" {
+		t.Errorf("repeating the repo's value: %q, %v", c.MinBops, err)
+	}
+	for _, bad := range []string{`"0.6"`, `"0.6.0-rc1"`, `"latest"`, `"01.2.3"`, `6`} {
+		if _, err := newWorld(t, `{"min_bops":`+bad+`}`, "").load(); err == nil || !strings.Contains(err.Error(), "min_bops") {
+			t.Errorf("min_bops %s: err = %v, want a min_bops error", bad, err)
+		}
+	}
+}
+
+func TestBelowMin(t *testing.T) {
+	cases := []struct {
+		running, min string
+		below, known bool
+	}{
+		{"v0.5.1", "0.5.1", false, true},
+		{"0.5.1", "0.5.2", true, true},
+		{"v0.6.0", "0.5.9", false, true},
+		{"v1.0.0", "0.99.99", false, true},
+		{"v0.5.10", "0.5.9", false, true},
+		{"v0.5.2-0.20261120000000-abcdef123456", "0.5.2", true, true},
+		{"v0.5.2-0.20261120000000-abcdef123456", "0.5.1", false, true},
+		{"v0.5.2+dirty", "0.5.2", false, true},
+		{"dev", "0.5.1", false, false},
+		{"(devel)", "0.5.1", false, false},
+	}
+	for _, c := range cases {
+		if below, known := config.BelowMin(c.running, c.min); below != c.below || known != c.known {
+			t.Errorf("BelowMin(%q, %q) = %v, %v; want %v, %v", c.running, c.min, below, known, c.below, c.known)
+		}
+	}
+}

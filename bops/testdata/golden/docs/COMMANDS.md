@@ -345,7 +345,7 @@ Can the claim lock work against its remote (lock.remote, default origin)?
 
 Never: write a claim ref or the ledger, leave its probe ref behind silently (a failed delete is a warning naming the command).
 
-Wraps: `origin: git remote get-url <lock.remote>`, `fetch: git ls-remote <lock.remote> refs/bops/claims/*`, `push: git push --dry-run (create-only) refs/bops/doctor/<nonce>`, `lock: git push (create-only) refs/bops/doctor/<nonce>, then a second create-only push that must be refused`, `git push (lease): delete the probe ref`, `dolt_remote: bd dolt remote list --json (a Dolt remote on the lock remote's repository, else remote_mismatch)`, `blocking_labels: bd list --all --include-gates --limit 0 --json, once, when blocking_labels are set: a label no bead carries, matched exactly, is a warning, and a list bd cannot give is a not-checked warning, neither a failed check`, `git log -1 -- bops/ and git merge-base --is-ancestor, only in bops's own source checkout: a binary built before the last bops/ commit is a warning, not a failed check`.
+Wraps: `origin: git remote get-url <lock.remote>`, `fetch: git ls-remote <lock.remote> refs/bops/claims/*`, `push: git push --dry-run (create-only) refs/bops/doctor/<nonce>`, `lock: git push (create-only) refs/bops/doctor/<nonce>, then a second create-only push that must be refused`, `git push (lease): delete the probe ref`, `dolt_remote: bd dolt remote list --json (a Dolt remote on the lock remote's repository, else remote_mismatch)`, `blocking_labels: bd list --all --include-gates --limit 0 --json, once, when blocking_labels are set: a label no bead carries, matched exactly, is a warning, and a list bd cannot give is a not-checked warning, neither a failed check`, `git log -1 -- bops/ and git merge-base --is-ancestor, only in bops's own source checkout: a binary built before the last bops/ commit is a warning, not a failed check`, `bops_version: only when .bops.json sets min_bops: this bops older than it fails (bops_too_old), and a build with no version is a warning`.
 
 Output:
 
@@ -355,7 +355,7 @@ Output:
   "probe_ref": "string",
   "checks": [
     {
-      "id": "origin|fetch|push|lock|dolt_remote",
+      "id": "origin|fetch|push|lock|dolt_remote|bops_version",
       "status": "ok|fail|skip",
       "detail": "string",
       "code": "string?",

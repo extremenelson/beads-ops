@@ -52,6 +52,9 @@ type Config struct {
 	// plain claim. Unlike every other key, each layer adds to it, so a user
 	// file or the environment can never drop a label the repo file names.
 	BlockingLabels []string
+	// MinBops (min_bops) is the oldest bops release this ledger accepts,
+	// MAJOR.MINOR.PATCH without a v; only the repo file may set it.
+	MinBops string
 }
 
 // Lock modes. LockNone decides claims from the local ledger alone, with no
@@ -89,6 +92,7 @@ const (
 	kLockMode
 	kRemote
 	kLabels
+	kMinVersion
 )
 
 type key struct {
@@ -109,6 +113,7 @@ var keys = []key{
 	{"lock.mode", kLockMode, func(c *Config) any { return &c.LockMode }},
 	{"lock.remote", kRemote, func(c *Config) any { return &c.LockRemote }},
 	{"blocking_labels", kLabels, func(c *Config) any { return &c.BlockingLabels }},
+	{keyMinBops, kMinVersion, func(c *Config) any { return &c.MinBops }},
 }
 
 var (
@@ -204,11 +209,11 @@ func Load(repoRoot string, getenv func(string) string) (Config, error) {
 	if u := UserPath(getenv); u != "" {
 		files = append(files, u)
 	}
-	repoMode, repoDisable, repoStale := c.LockMode, c.LintDisable, c.StaleMinutes
+	repoMode, repoDisable, repoStale, repoMin := c.LockMode, c.LintDisable, c.StaleMinutes, c.MinBops
 	for n, f := range files {
 		err := mergeFile(&c, f)
 		if n == 0 {
-			repoMode, repoDisable, repoStale = c.LockMode, c.LintDisable, c.StaleMinutes
+			repoMode, repoDisable, repoStale, repoMin = c.LockMode, c.LintDisable, c.StaleMinutes, c.MinBops
 		} else if err == nil {
 			err = lockOffHere(&c, repoMode)
 			if err == nil {
@@ -216,6 +221,9 @@ func Load(repoRoot string, getenv func(string) string) (Config, error) {
 			}
 			if err == nil {
 				err = staleHere(&c, repoStale)
+			}
+			if err == nil {
+				err = minBopsHere(&c, repoMin)
 			}
 		}
 		if err != nil {
@@ -237,6 +245,9 @@ func Load(repoRoot string, getenv func(string) string) (Config, error) {
 		}
 		if err == nil && k.path == keyStaleMinutes {
 			err = staleHere(&c, repoStale)
+		}
+		if err == nil && k.path == keyMinBops {
+			err = minBopsHere(&c, repoMin)
 		}
 		if err != nil {
 			return Config{}, fmt.Errorf("config %s: %w", name, err)
@@ -335,7 +346,7 @@ func strictJSON(b []byte, v any) error {
 
 func setJSON(c *Config, k key, raw json.RawMessage) error {
 	switch k.kind {
-	case kString, kForge, kLockMode, kRemote:
+	case kString, kForge, kLockMode, kRemote, kMinVersion:
 		var s string
 		if err := json.Unmarshal(raw, &s); err != nil {
 			return fmt.Errorf("%s: want a string", k.path)
@@ -389,6 +400,11 @@ func setString(c *Config, k key, v string) error {
 			return fmt.Errorf("%s: want a git remote name such as origin, got %q", k.path, v)
 		}
 		*k.ref(c).(*string) = v
+	case kMinVersion:
+		if !minVersion.MatchString(v) {
+			return fmt.Errorf("%s: want a bops release such as 0.5.1, got %q", k.path, v)
+		}
+		*k.ref(c).(*string) = normalizeMin(v)
 	case kStrings, kLabels:
 		var ss []string
 		for _, s := range strings.Split(v, ",") {
