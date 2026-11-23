@@ -248,7 +248,7 @@ func Next(ctx context.Context, env *Env, o NextOpts) (*NextOut, error) {
 	if o.N <= 0 {
 		o.N = 3
 	}
-	raw, err := env.BD.Run(ctx, "ready", "--json")
+	raw, err := env.BD.Run(ctx, "ready", "--limit", "0", "--json")
 	if err != nil {
 		return nil, err
 	}
@@ -362,7 +362,7 @@ func Next(ctx context.Context, env *Env, o NextOpts) (*NextOut, error) {
 // parentsInProgress finds the parents that already have work in flight.
 func parentsInProgress(ctx context.Context, env *Env) (map[string]bool, error) {
 	parents := map[string]bool{}
-	raw, err := env.BD.Run(ctx, "list", "--status", "in_progress", "--json")
+	raw, err := env.BD.Run(ctx, "list", "--status", "in_progress", "--limit", "0", "--json")
 	if err != nil {
 		return parents, err
 	}

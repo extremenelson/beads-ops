@@ -96,11 +96,11 @@ const showXG = `[{"id":"x-g","title":"gated","description":"d","acceptance_crite
 
 func gatedFake() *bdx.Fake {
 	return &bdx.Fake{Responses: map[string][]byte{
-		"ready --json":                     []byte(readyJSON),
-		"list --status in_progress --json": []byte(`[]`),
-		"gate list --limit 0 --json":       []byte(openGates),
-		"blocked --json":                   []byte(blockedJSON),
-		"show x-g --json":                  []byte(showXG),
+		"ready --limit 0 --json":                     []byte(readyJSON),
+		"list --status in_progress --limit 0 --json": []byte(`[]`),
+		"gate list --limit 0 --json":                 []byte(openGates),
+		"blocked --json":                             []byte(blockedJSON),
+		"show x-g --json":                            []byte(showXG),
 	}}
 }
 
