@@ -42,6 +42,9 @@ type Env struct {
 	// this machine is working on before it answers ref_contention. sync and
 	// sweep never wait; they leave such a bead for their next run (bops-yph).
 	BeadWait time.Duration
+	// PullReserve is how much of session-start's budget its pull must leave
+	// for the rest of the document; 0 means DefaultPullReserve (bops-9rb).
+	PullReserve time.Duration
 	// StaleAfter is how long a claim may go without a heartbeat/update
 	// before `next` treats it as stale and `claim --force` may take it
 	// (config stale_minutes). Default 2h.

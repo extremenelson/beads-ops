@@ -1,6 +1,7 @@
 package intent_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -119,5 +120,42 @@ func TestSessionStartWarnsAndContinuesWhenAPartFails(t *testing.T) {
 	}
 	if len(out.Warnings) != 1 || !strings.HasPrefix(out.Warnings[0], "next: ") || out.Prime != "rules" {
 		t.Errorf("got %+v", out)
+	}
+}
+
+// neverPulls is a bd whose pull runs until its context ends, as one on a slow
+// link does.
+type neverPulls struct{ *fakeBD }
+
+func (n neverPulls) Run(ctx context.Context, args ...string) ([]byte, error) {
+	if len(args) >= 2 && args[0] == "dolt" && args[1] == "pull" {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return n.fakeBD.Run(ctx, args...)
+}
+
+// A pull that would take session-start's whole budget is cut off early, so
+// the hook still gets every other fact before its deadline (bops-9rb).
+func TestSessionStartLeavesTimeAfterASlowPull(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.prime = "rules"
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	a.env.BD = neverPulls{bd}
+	a.env.PullReserve = 2 * time.Second
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := intent.SessionStart(ctx, a.env)
+	if ctx.Err() != nil {
+		t.Fatal("session-start ran into its own deadline")
+	}
+	if err == nil || !strings.Contains(err.Error(), "did not finish in the") || !strings.Contains(err.Error(), "bops sync") {
+		t.Fatalf("err = %v, want the cut-off pull named with bops sync", err)
+	}
+	if out == nil || out.Synced || !slices.Equal(out.Mine, []string{"x-1"}) || out.Prime != "rules" || out.ReadyCount != 2 {
+		t.Errorf("the rest of the document must still come: %+v", out)
 	}
 }

@@ -1283,15 +1283,25 @@ func (e *Env) allHolds() []cloneHold {
 // run's live hold is checked but not re-displayed or heartbeat: its own run
 // does that, and a heartbeat from here would hide that run dying (bops-yr2).
 func Sync(ctx context.Context, env *Env, noPush bool) (*SyncOut, error) {
-	return syncAs(ctx, env, noPush, "sync", false)
+	return syncAs(ctx, env, syncOpts{noPush: noPush, name: "sync"})
 }
 
-// syncAs is Sync with the command name its bead-lock lines carry, so
+// syncOpts shape one sync. name is the command its bead-lock lines carry, so
 // session-start's are told apart from sync's (bops-7uu). With ownOnly it
 // settles only this run's holds and writes nothing for any other's, only
 // listing a stranded one: session-start runs on every session start in any
-// checkout, so it must not touch work another run owns (bops-yr2).
-func syncAs(ctx context.Context, env *Env, noPush bool, name string, ownOnly bool) (*SyncOut, error) {
+// checkout, so it must not touch work another run owns (bops-yr2). A
+// pullReserve above 0 ends the pull that long before ctx's deadline, so the
+// caller has time left to report (bops-9rb).
+type syncOpts struct {
+	noPush      bool
+	name        string
+	ownOnly     bool
+	pullReserve time.Duration
+}
+
+func syncAs(ctx context.Context, env *Env, o syncOpts) (*SyncOut, error) {
+	noPush, name, ownOnly := o.noPush, o.name, o.ownOnly
 	out := &SyncOut{StrandedHolds: []string{}, LostClaims: []string{}, Deferred: []string{}}
 	// The holds are read before the refs, so each hold's entry is no newer
 	// than the ref it is checked against (bops-yph).
@@ -1329,7 +1339,7 @@ func syncAs(ctx context.Context, env *Env, noPush bool, name string, ownOnly boo
 	publish := !env.unpublished(ctx) // pulled and pushed stay false when it is not
 	if !publish {
 		out.Warnings = append(out.Warnings, noDoltRemoteWarning)
-	} else if _, err := withLockRetry(ctx, env, "dolt", "pull"); err != nil {
+	} else if _, err := pull(ctx, env, o.pullReserve); err != nil {
 		return out, err
 	} else {
 		out.Pulled = true
@@ -1346,6 +1356,24 @@ func syncAs(ctx context.Context, env *Env, noPush bool, name string, ownOnly boo
 	}
 	out.Pushed = true
 	return out, nil
+}
+
+// pull runs bd dolt pull, ending it reserve before ctx's deadline when
+// reserve is set. A pull cut off that way says so and names bops sync, whose
+// budget is longer, rather than bd's bare "signal: terminated".
+func pull(ctx context.Context, env *Env, reserve time.Duration) ([]byte, error) {
+	dl, ok := ctx.Deadline()
+	if reserve <= 0 || !ok {
+		return withLockRetry(ctx, env, "dolt", "pull")
+	}
+	given := time.Until(dl.Add(-reserve)).Round(time.Second)
+	pctx, cancel := context.WithDeadline(ctx, dl.Add(-reserve))
+	defer cancel()
+	b, err := withLockRetry(pctx, env, "dolt", "pull")
+	if err != nil && pctx.Err() != nil && ctx.Err() == nil {
+		return b, fmt.Errorf("bd dolt pull did not finish in the %s session-start gives it; run `bops sync`, which allows 2 minutes: %w", given, err)
+	}
+	return b, err
 }
 
 // pruneBeadLocks removes the lock files of beads no run in this clone holds,
