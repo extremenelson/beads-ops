@@ -55,6 +55,9 @@ type Config struct {
 	// MinBops (min_bops) is the oldest bops release this ledger accepts,
 	// MAJOR.MINOR.PATCH without a v; only the repo file may set it.
 	MinBops string
+	// BranchPattern (branch_pattern) is the branch the generated skill names
+	// for a bead's worktree; only the repo file may set it.
+	BranchPattern string
 }
 
 // Lock modes. LockNone decides claims from the local ledger alone, with no
@@ -72,7 +75,7 @@ const DefaultMinutes = 120
 
 // Default is the configuration with no files and no environment.
 func Default() Config {
-	return Config{HoldMinutes: DefaultMinutes, StaleMinutes: DefaultMinutes, Forge: "auto", LockMode: LockRef, LockRemote: "origin"}
+	return Config{HoldMinutes: DefaultMinutes, StaleMinutes: DefaultMinutes, Forge: "auto", LockMode: LockRef, LockRemote: "origin", BranchPattern: DefaultBranchPattern}
 }
 
 // StaleAfter is stale_minutes as a duration.
@@ -93,6 +96,7 @@ const (
 	kRemote
 	kLabels
 	kMinVersion
+	kBranch
 )
 
 type key struct {
@@ -114,6 +118,7 @@ var keys = []key{
 	{"lock.remote", kRemote, func(c *Config) any { return &c.LockRemote }},
 	{"blocking_labels", kLabels, func(c *Config) any { return &c.BlockingLabels }},
 	{keyMinBops, kMinVersion, func(c *Config) any { return &c.MinBops }},
+	{keyBranchPattern, kBranch, func(c *Config) any { return &c.BranchPattern }},
 }
 
 var (
@@ -209,11 +214,11 @@ func Load(repoRoot string, getenv func(string) string) (Config, error) {
 	if u := UserPath(getenv); u != "" {
 		files = append(files, u)
 	}
-	repoMode, repoDisable, repoStale, repoMin := c.LockMode, c.LintDisable, c.StaleMinutes, c.MinBops
+	repoMode, repoDisable, repoStale, repoMin, repoBranch := c.LockMode, c.LintDisable, c.StaleMinutes, c.MinBops, c.BranchPattern
 	for n, f := range files {
 		err := mergeFile(&c, f)
 		if n == 0 {
-			repoMode, repoDisable, repoStale, repoMin = c.LockMode, c.LintDisable, c.StaleMinutes, c.MinBops
+			repoMode, repoDisable, repoStale, repoMin, repoBranch = c.LockMode, c.LintDisable, c.StaleMinutes, c.MinBops, c.BranchPattern
 		} else if err == nil {
 			err = lockOffHere(&c, repoMode)
 			if err == nil {
@@ -224,6 +229,9 @@ func Load(repoRoot string, getenv func(string) string) (Config, error) {
 			}
 			if err == nil {
 				err = minBopsHere(&c, repoMin)
+			}
+			if err == nil {
+				err = branchHere(&c, repoBranch)
 			}
 		}
 		if err != nil {
@@ -248,6 +256,9 @@ func Load(repoRoot string, getenv func(string) string) (Config, error) {
 		}
 		if err == nil && k.path == keyMinBops {
 			err = minBopsHere(&c, repoMin)
+		}
+		if err == nil && k.path == keyBranchPattern {
+			err = branchHere(&c, repoBranch)
 		}
 		if err != nil {
 			return Config{}, fmt.Errorf("config %s: %w", name, err)
@@ -346,7 +357,7 @@ func strictJSON(b []byte, v any) error {
 
 func setJSON(c *Config, k key, raw json.RawMessage) error {
 	switch k.kind {
-	case kString, kForge, kLockMode, kRemote, kMinVersion:
+	case kString, kForge, kLockMode, kRemote, kMinVersion, kBranch:
 		var s string
 		if err := json.Unmarshal(raw, &s); err != nil {
 			return fmt.Errorf("%s: want a string", k.path)
@@ -405,6 +416,11 @@ func setString(c *Config, k key, v string) error {
 			return fmt.Errorf("%s: want a bops release such as 0.5.1, got %q", k.path, v)
 		}
 		*k.ref(c).(*string) = normalizeMin(v)
+	case kBranch:
+		if !validBranchPattern(v) {
+			return fmt.Errorf("%s: want a branch name of at most %d letters, digits, '.', '_', '/', '-' and <placeholder> words, such as work/<id>, got %q", k.path, maxBranchPattern, v)
+		}
+		*k.ref(c).(*string) = v
 	case kStrings, kLabels:
 		var ss []string
 		for _, s := range strings.Split(v, ",") {

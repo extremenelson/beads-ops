@@ -50,12 +50,29 @@ var (
 	}
 )
 
+// Options are what a repo's .bops.json changes in the agent bindings.
+type Options struct {
+	// Branch is the branch the skill names for a bead's worktree
+	// (branch_pattern); empty means config.DefaultBranchPattern.
+	Branch string
+}
+
+// defaultBranch is config.DefaultBranchPattern, kept here so the generators
+// stay pure functions of the manifest and their options.
+const defaultBranch = "work/<id>"
+
+// branchSlot is where the preamble names the branch.
+var branchSlot = []byte("{branch}")
+
 // CC renders the Claude Code binding (SPEC.md §8): skills/bops/SKILL.md (the
 // preamble plus a reference of every command whose surfaces.cc lists
 // "skill"), hooks.json (one SessionStart hook per command listing
 // "hook:SessionStart") and commands/bops-next.md.
-func CC(m *manifest.Manifest) ([]File, error) {
-	files, skill, err := agentBinding(m, claudeCode)
+func CC(m *manifest.Manifest) ([]File, error) { return CCWith(m, Options{}) }
+
+// CCWith is CC for a repo whose .bops.json sets o.
+func CCWith(m *manifest.Manifest, o Options) ([]File, error) {
+	files, skill, err := agentBinding(m, claudeCode, o)
 	if err != nil {
 		return nil, err
 	}
@@ -70,14 +87,17 @@ func CC(m *manifest.Manifest) ([]File, error) {
 // Codex renders the Codex binding (SPEC.md §8): skills/bops/SKILL.md, for
 // .agents/skills/bops, and a hooks.json fragment to merge into
 // .codex/hooks.json, both from surfaces.codex.
-func Codex(m *manifest.Manifest) ([]File, error) {
-	files, _, err := agentBinding(m, codex)
+func Codex(m *manifest.Manifest) ([]File, error) { return CodexWith(m, Options{}) }
+
+// CodexWith is Codex for a repo whose .bops.json sets o.
+func CodexWith(m *manifest.Manifest, o Options) ([]File, error) {
+	files, _, err := agentBinding(m, codex, o)
 	return files, err
 }
 
 // agentBinding renders the skill and hooks fragment for h, and returns the
 // commands the skill lists.
-func agentBinding(m *manifest.Manifest, h harness) ([]File, []manifest.Command, error) {
+func agentBinding(m *manifest.Manifest, h harness, o Options) ([]File, []manifest.Command, error) {
 	var skill []manifest.Command
 	hooks := map[string][]hookGroup{}
 	for _, c := range m.Commands {
@@ -101,9 +121,14 @@ func agentBinding(m *manifest.Manifest, h harness) ([]File, []manifest.Command, 
 		return nil, nil, fmt.Errorf("gen %s: no command has a %s skill surface", h.target, h.key)
 	}
 
+	branch := o.Branch
+	if branch == "" {
+		branch = defaultBranch
+	}
+	preamble := bytes.ReplaceAll(skillPreamble, branchSlot, []byte(branch))
 	var b bytes.Buffer
-	b.Write(skillPreamble)
-	if !bytes.HasSuffix(skillPreamble, []byte("\n")) {
+	b.Write(preamble)
+	if !bytes.HasSuffix(preamble, []byte("\n")) {
 		b.WriteString("\n")
 	}
 	fmt.Fprintf(&b, "\n## Command reference (contract %d)\n\n", m.Contract)
