@@ -62,3 +62,30 @@ func TestGenRefusesUnknownFlags(t *testing.T) {
 		}
 	}
 }
+
+// gen cc and gen codex read branch_pattern from the repo they run in, and a
+// bad one fails rather than writing a skill (bops-onn).
+func TestGenSkillsReadTheRepoBranchPattern(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.WriteFile(filepath.Join(dir, ".bops.json"), []byte(`{"branch_pattern":"feat/<slug>-<id>"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{"cc", "codex"} {
+		out := t.TempDir()
+		if code, _, errs := runGen(t, target, "--out", out); code != exitVerdict {
+			t.Fatalf("gen %s: exit %d: %s", target, code, errs)
+		}
+		b, err := os.ReadFile(filepath.Join(out, "skills", "bops", "SKILL.md"))
+		if err != nil || !strings.Contains(string(b), "--branch feat/<slug>-<id>") {
+			t.Errorf("gen %s: skill does not name the repo's pattern: %v", target, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".bops.json"), []byte(`{"branch_pattern":"a b"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, errs := runGen(t, "cc", "--out", t.TempDir()); code != exitCantRun || !strings.Contains(errs, "branch_pattern") {
+		t.Errorf("a bad branch_pattern: exit %d, %s", code, errs)
+	}
+}

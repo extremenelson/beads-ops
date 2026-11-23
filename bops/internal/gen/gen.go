@@ -2,7 +2,8 @@
 //
 // Every generator is a pure function of the manifest (and, for prose, the
 // templates embedded beside it) so bindings can be golden-tested (SPEC.md
-// §9). Five targets are registered: docs (docs/COMMANDS.md), cc (the Claude
+// §9). cc and codex also take Options, the repo's branch_pattern, which
+// cmd/bops reads from .bops.json; the registry renders them with none. Five targets are registered: docs (docs/COMMANDS.md), cc (the Claude
 // Code skill, hooks fragment and /bops-next command), codex (the same skill
 // and a Codex hooks fragment), clj (a Clojure namespace with Malli schemas)
 // and mcp (the tools/list result `bops serve-mcp` serves; `bops gen mcp

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	bops "github.com/extremenelson/beads-ops/bops"
+	"github.com/extremenelson/beads-ops/bops/internal/config"
 	"github.com/extremenelson/beads-ops/bops/internal/gen"
 	"github.com/extremenelson/beads-ops/bops/internal/manifest"
 )
@@ -209,6 +210,50 @@ func TestSkillNamesNoFixedStalenessTime(t *testing.T) {
 	for _, want := range []string{"`stale_minutes`", "default 120", "/bead-loop", "docs/agent-protocol.md"} {
 		if !strings.Contains(skill, want) {
 			t.Errorf("SKILL.md lacks %q", want)
+		}
+	}
+}
+
+// A repo's branch_pattern replaces work/<id> in both skills' worktree
+// commands, and the default leaves the skill as it was (bops-onn).
+func TestSkillNamesTheRepoBranchPattern(t *testing.T) {
+	m := embedded(t)
+	def := ccFiles(t, m)["skills/bops/SKILL.md"]
+	if strings.Contains(def, "{branch}") || !strings.Contains(def, "--branch work/<id>") || !strings.Contains(def, "-b work/<id>") {
+		t.Fatal("the default skill must name work/<id> in both worktree commands")
+	}
+	if config.DefaultBranchPattern != "work/<id>" {
+		t.Fatalf("gen's default branch has drifted from config's %q", config.DefaultBranchPattern)
+	}
+	const p = "feat/<slug>-<id>"
+	for name, g := range map[string]func(*manifest.Manifest, gen.Options) ([]gen.File, error){"cc": gen.CCWith, "codex": gen.CodexWith} {
+		files, err := g(m, gen.Options{Branch: p})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range files {
+			if f.Path != "skills/bops/SKILL.md" {
+				continue
+			}
+			s := string(f.Data)
+			if strings.Contains(s, "work/<id>") || !strings.Contains(s, "--branch "+p) || !strings.Contains(s, "-b "+p) {
+				t.Errorf("%s: skill does not name %s in place of work/<id>", name, p)
+			}
+		}
+	}
+}
+
+// The longest pattern branch_pattern allows keeps the skill under its cap.
+func TestSkillUnderTheCapWithTheLongestBranchPattern(t *testing.T) {
+	files, err := gen.CCWith(embedded(t), gen.Options{Branch: strings.Repeat("a", 40)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if f.Path == "skills/bops/SKILL.md" {
+			if n := len(f.Data) / 4; n >= 2000 {
+				t.Fatalf("SKILL.md is about %d tokens (%d bytes) with a 40-character branch; the cap is 2000", n, len(f.Data))
+			}
 		}
 	}
 }

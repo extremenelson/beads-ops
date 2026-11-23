@@ -6,7 +6,7 @@ The normative definition is [SPEC.md §10](../../SPEC.md#10-configuration). The 
 
 ## Where settings come from
 
-Lowest to highest precedence. A higher layer overrides only the keys it names. `blocking_labels` is the exception: each layer adds to it. Four choices that would weaken a shared ledger are the repo file's alone: `lock.mode: none`, a `stale_minutes` shorter than the repo file's, `W15` in `lint.disable`, and `min_bops`.
+Lowest to highest precedence. A higher layer overrides only the keys it names. `blocking_labels` is the exception: each layer adds to it. Four choices that would weaken a shared ledger are the repo file's alone: `lock.mode: none`, a `stale_minutes` shorter than the repo file's, `W15` in `lint.disable`, and `min_bops`. `branch_pattern` is the repo file's too, because it shapes the skill the repo commits.
 
 | # | Layer | Location | Notes |
 |---|---|---|---|
@@ -33,6 +33,7 @@ A missing file is skipped. A file that exists must be one JSON object.
 | [`blocking_labels`](#blocking_labels) | list of bead labels | none | `BOPS_BLOCKING_LABELS` (comma-separated) | `next`, `lint` (W15), `claim` |
 | [`lock.remote`](#lockremote) | git remote name | `origin` | `BOPS_LOCK_REMOTE` | claim-ref commands, `doctor`, forge inference |
 | [`min_bops`](#min_bops) | bops release, `MAJOR.MINOR.PATCH` | none | only from `.bops.json` | every command, `doctor` |
+| [`branch_pattern`](#branch_pattern) | branch name, at most 40 characters | `work/<id>` | only from `.bops.json` | `gen cc`, `gen codex` |
 | `lint.strict` | boolean | `false` | `BOPS_LINT_STRICT` | loaded and validated, **not applied yet**; use `bops lint --strict` |
 | `lint.disable` | list of rule ids | none | `BOPS_LINT_DISABLE` | loaded and validated, **not applied yet**. Only `.bops.json` may list `W15` |
 | `note.require_next` | boolean | `false` | `BOPS_NOTE_REQUIRE_NEXT` | loaded and validated, **not applied yet** |
@@ -87,6 +88,10 @@ Only `.bops.json` may set it: a user file or `BOPS_MIN_BOPS` could otherwise low
 A build with no version, such as `go install ./cmd/bops` from a clone, reports `dev`. It cannot be compared, so commands run; `bops doctor` warns that it could not check.
 
 **Upgrade every machine before raising it**, as with any change to `.bops.json`. Also, a `bops` older than the release that adds `min_bops` does not know the key, so it fails every command with `bad_config` instead of `bops_too_old`. That is also a refusal, with a less helpful message.
+
+### `branch_pattern`
+
+The branch the generated agent skill names for a bead's worktree, in place of `work/<id>`, such as `"feat/<slug>-<id>"`. `bops gen cc` and `bops gen codex` read it from the `.bops.json` of the repo they run in, so regenerate the skill after changing it. bops itself creates no branch; the skill's commands do. It may use letters, digits, `.`, `_`, `/`, `-` and lowercase `<placeholder>` words, at most 40 characters, and nothing git refuses in a branch name (`..`, `//`, a leading `-` or `/`, a trailing `/`, `.` or `.lock`). Only `.bops.json` may set it, so every machine regenerates the same skill. A `bops` older than the release that adds it fails every command in that repo with `bad_config`, as for any unknown key.
 
 ### `forge`
 

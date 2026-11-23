@@ -235,6 +235,21 @@ func cmdGen(m *manifest.Manifest, rest []string, stdout, stderr *os.File) int {
 		fmt.Fprintf(stderr, "bops gen: unknown target %q (have: %s)\n", target, strings.Join(gen.Targets(), ", "))
 		return exitUsage
 	}
+	// The agent skills name the repo's branch_pattern, read from the
+	// .bops.json of the repo gen runs in (bops-onn).
+	if target == "cc" || target == "codex" {
+		cfg, err := loadConfig()
+		if err != nil {
+			fmt.Fprintln(stderr, "bops gen:", err)
+			return exitCantRun
+		}
+		o := gen.Options{Branch: cfg.BranchPattern}
+		if target == "cc" {
+			g = func(m *manifest.Manifest) ([]gen.File, error) { return gen.CCWith(m, o) }
+		} else {
+			g = func(m *manifest.Manifest) ([]gen.File, error) { return gen.CodexWith(m, o) }
+		}
+	}
 	files, err := g(m)
 	if err != nil {
 		fmt.Fprintln(stderr, "bops gen:", err)

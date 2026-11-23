@@ -196,7 +196,7 @@ Only `sweep` (and optionally `land --verify`) touch a forge. Adapter interface: 
 
 ## 8. Harness bindings (generated)
 
-The generator reads `commands.json` and emits:
+The generator reads `commands.json` and emits the targets below. `cc` and `codex` also read `branch_pattern` from the `.bops.json` of the repo they run in (§10); every other target is a pure function of the manifest.
 
 | Target | Emits | Notes |
 |---|---|---|
@@ -219,7 +219,7 @@ Bindings carry `contract=<n>` and refuse to run against a mismatched `bops versi
 
 ## 10. Configuration
 
-`.bops.json` in repo root (committed) merged with `$XDG_CONFIG_HOME/bops/config.json` (per user) and `BOPS_*` env. Keys: `pool`, `caps[]`, `hold_minutes`, `stale_minutes`, `forge`, `lint.strict`, `lint.disable[]`, `note.require_next` (bool), `lock.mode`, `lock.remote`, `blocking_labels[]`, `min_bops`.
+`.bops.json` in repo root (committed) merged with `$XDG_CONFIG_HOME/bops/config.json` (per user) and `BOPS_*` env. Keys: `pool`, `caps[]`, `hold_minutes`, `stale_minutes`, `forge`, `lint.strict`, `lint.disable[]`, `note.require_next` (bool), `lock.mode`, `lock.remote`, `blocking_labels[]`, `min_bops`, `branch_pattern`.
 
 Precedence, lowest to highest: built-in defaults, `.bops.json` in the worktree root, the per-user file (`~/.config/bops/config.json` when `XDG_CONFIG_HOME` is unset), `BOPS_*` env, then command flags. Each layer sets only the keys it names, except `blocking_labels`, to which each layer adds, so no layer can drop a label a lower one names; a missing file is skipped. Nested keys are JSON objects (`{"lint": {"strict": true}}`), and each key's variable is `BOPS_` plus its path in upper case with `.` as `_` (`BOPS_STALE_MINUTES`, `BOPS_LINT_STRICT`); a list in the environment is comma-separated and an empty variable is unset. An unknown key, a wrong type, a non-integer or non-positive minute count, a `forge` outside `auto|github|gitlab|none`, a `lock.mode` outside `ref|none`, `lock.mode: none` from a layer above `.bops.json` when the repo file does not set it, a `blocking_labels` entry that is empty or holds whitespace, a comma or a non-printable character, or a `lock.remote` that is not a plausible git remote name (a letter or digit, then up to 99 letters, digits, `.`, `_` or `-`; no `..`, not ending in `.` or `.lock`) fails the command (exit 1, `code: bad_config`) naming the file or variable. The loader is `bops/internal/config`.
 
@@ -234,6 +234,7 @@ Precedence, lowest to highest: built-in defaults, `.bops.json` in the worktree r
 | `lock.mode` (`BOPS_LOCK_MODE`) | `ref` | every command and `doctor`: `none` turns the claim lock off for a one-machine ledger (§3.0). Only `.bops.json` may set `none` |
 | `blocking_labels[]` (`BOPS_BLOCKING_LABELS`) | none | `next` and `lint` (W15), and a plain `claim`, which refuses a bead carrying one. Additive across layers. bops's own labels (`bops:`, `run:`, `pool:` prefixes) are refused, and `doctor` warns of a label no bead carries (bops-jmp) |
 | `min_bops` | none | every command and `doctor`. Only `.bops.json` may set it, as `MAJOR.MINOR.PATCH` with an optional `v`. A write or read+sync command run by an older `bops` exits 1 with `code: bops_too_old` before any step; a read answers with a warning; `doctor` fails a `bops_version` check. A prerelease or pseudo-version counts as older than its release, and a build with no version (`dev`) is not checked: `doctor` warns (bops-n4r) |
+| `branch_pattern` | `work/<id>` | `gen cc` and `gen codex`: the branch the skill names for a bead's worktree. Only `.bops.json` may set it, at most 40 letters, digits, `.`, `_`, `/`, `-` and `<placeholder>` words that git accepts as a branch name (bops-onn). |
 | `lock.remote` | `origin` | every command that reads or writes claim refs, the ledger check (§3.0) and `doctor` (`BOPS_LOCK_REMOTE`), and forge inference (§7); the lock itself is unused under `lock.mode: none` |
 
 Other environment `bops` reads: `BEADS_ACTOR` (actor), `BOPS_MACHINE` (machine name, else the hostname), `BOPS_RUN` (a named run within the worktree, §3.4), `XDG_STATE_HOME` (§3.4), and `BOPS_INTEGRATION` / `BOPS_RACE_TRIALS` in tests.
