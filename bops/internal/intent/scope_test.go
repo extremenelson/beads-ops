@@ -109,3 +109,56 @@ func TestSyncKeepsAParkedStatusOnAHeldBead(t *testing.T) {
 		}
 	}
 }
+
+// A /bead-loop orchestrator that sets BOPS_RUN claims in a named run of the
+// main checkout, so a session started there is not that run: it neither
+// re-displays nor heartbeats the orchestrator's holds, and does not list
+// them as its own or as stranded (bops-4ez). A person's hand claim, note,
+// sync and release there still work, and only the orchestrator's run can
+// give its bead back.
+func TestNamedRunKeepsTheMainCheckoutsSessionsOff(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	n := bd.add("x-1")
+	bd.add("y-1")
+	a := client(t, remote, "A", bd)
+
+	t.Setenv("BOPS_RUN", "bead-loop")
+	loop := rigAt(t, a.dir, "LOOP", bd)
+	mustClaim(t, loop, "x-1")
+	sha := liveSHA(t, loop, "x-1")
+	n.Status, n.Assignee = "deferred", "" // a person parked it; the display drifted
+
+	t.Setenv("BOPS_RUN", "")
+	main := rigAt(t, a.dir, "A", bd)
+	bd.calls = nil
+	out, err := intent.SessionStart(bg, main.env)
+	if err != nil || len(out.Mine) != 0 || len(out.StrandedHolds) != 0 || len(out.LostClaims) != 0 {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if bd.wrote("x-1") || bd.count("heartbeat") != 0 || liveSHA(t, main, "x-1") != sha {
+		t.Errorf("session-start touched the orchestrator's hold: %v", bd.calls)
+	}
+	if n.Status != "deferred" || n.Assignee != "" {
+		t.Errorf("ledger = %+v, want it as the person left it", n)
+	}
+
+	mustClaim(t, main, "y-1")
+	if o, err := intent.Note(bg, main.env, "y-1", "hand work\n\nNEXT: finish"); err != nil || o.Outcome != intent.OutcomeNoted {
+		t.Fatalf("note: %+v, %v", o, err)
+	}
+	if _, err := intent.Sync(bg, main.env, true); err != nil {
+		t.Fatal(err)
+	}
+	if o, err := intent.Release(bg, main.env, "x-1", "abandoned"); err != nil || o.Outcome != intent.OutcomeRefused {
+		t.Fatalf("the checkout's run released the orchestrator's bead: %+v, %v", o, err)
+	}
+	if o, err := intent.Release(bg, main.env, "y-1", "abandoned"); err != nil || o.Outcome != intent.OutcomeReleased {
+		t.Fatalf("release y-1: %+v, %v", o, err)
+	}
+
+	t.Setenv("BOPS_RUN", "bead-loop")
+	loop = rigAt(t, a.dir, "LOOP", bd)
+	if o, err := intent.Release(bg, loop.env, "x-1", "abandoned"); err != nil || o.Outcome != intent.OutcomeReleased {
+		t.Fatalf("the orchestrator's run must still release its bead: %+v, %v", o, err)
+	}
+}

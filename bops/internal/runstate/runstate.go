@@ -22,9 +22,11 @@ import (
 	"time"
 )
 
-// Run is the persisted state for one worktree of a clone.
+// Run is the persisted state for one worktree of a clone, or for one named
+// run in a worktree (BOPS_RUN).
 type Run struct {
 	ID        string    `json:"id"`
+	Name      string    `json:"name,omitempty"` // BOPS_RUN; empty for the worktree's own run
 	Pool      string    `json:"pool,omitempty"`
 	Caps      []string  `json:"caps,omitempty"`
 	Machine   string    `json:"machine"`
@@ -89,7 +91,12 @@ func (h *Held) UnmarshalJSON(b []byte) error {
 // its lock file was not replaced (bops-exb). bops 0.4.0 to 0.4.3 does not, so
 // it refuses a version 4 file, and a prune runs only on a file already
 // stamped.
-const stateVersion = 4
+//
+// Version 5 adds named runs (BOPS_RUN): a run keyed by its worktree root and
+// "#run=<name>", with the name also in the run's name field (bops-4ez). A
+// bops before it would read that key as a removed worktree and offer the
+// run's live holds as stranded, so it refuses the file instead.
+const stateVersion = 5
 
 // Mode says whether a Store may be saved.
 type Mode int
@@ -118,13 +125,52 @@ type Hold struct {
 
 type state struct {
 	Version int             `json:"version"`
-	Runs    map[string]*Run `json:"runs"` // keyed by absolute worktree root
+	Runs    map[string]*Run `json:"runs"` // keyed by runKey
+}
+
+// runSep joins a worktree root and a run name in a state key. A worktree's
+// own run is keyed by its root alone, as before named runs existed.
+const runSep = "#run="
+
+// runKey is the state key of the run name in worktree; "" is its own run.
+func runKey(worktree, name string) string {
+	if name == "" {
+		return worktree
+	}
+	return worktree + runSep + name
+}
+
+// keyWorktree is the worktree root a state key belongs to.
+func keyWorktree(key string) string {
+	if i := strings.LastIndex(key, runSep); i >= 0 {
+		return key[:i]
+	}
+	return key
+}
+
+// runNamePattern is what BOPS_RUN may be: short, and plain enough to sit in
+// a state key and a message.
+var runNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+// RunName reads BOPS_RUN, the name of a run of its own within a worktree.
+// An orchestrator that claims from a checkout people also work in sets it,
+// so its holds are not the checkout's run and a session started there
+// neither re-displays nor heartbeats them (bops-4ez). Unset, a command is
+// the worktree's own run.
+func RunName() (string, error) {
+	n := os.Getenv("BOPS_RUN")
+	if n == "" || runNamePattern.MatchString(n) {
+		return n, nil
+	}
+	return "", fmt.Errorf("BOPS_RUN %q is not a run name: use up to 64 letters, digits, '.', '_' or '-', starting with a letter or digit", n)
 }
 
 // Store is one process's view of a clone's state file.
 type Store struct {
 	dir      string
 	worktree string
+	name     string // BOPS_RUN, or "" for the worktree's own run
+	key      string // the run's key in state.Runs (runKey)
 	st       state
 	run      *Run
 	locked   bool
@@ -173,7 +219,11 @@ func Open(start string, mode Mode) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{dir: dir, worktree: worktree}
+	name, err := RunName()
+	if err != nil {
+		return nil, err
+	}
+	s := &Store{dir: dir, worktree: worktree, name: name, key: runKey(worktree, name)}
 	if mode == Write {
 		if err := s.lock(); err != nil {
 			return nil, err
@@ -183,7 +233,7 @@ func Open(start string, mode Mode) (*Store, error) {
 		s.Close()
 		return nil, err
 	}
-	s.run = s.st.Runs[worktree]
+	s.run = s.st.Runs[s.key]
 	// Stamp an older file at once, not at this process's first write: from
 	// then on an older bops, which takes no bead lock, refuses the clone
 	// rather than run beside this one unserialized (bops-j9k). It comes
@@ -231,10 +281,10 @@ func (s *Store) stamp(mode Mode) error {
 	if s.st.Version < stateVersion && len(s.st.Runs) > 0 {
 		_ = s.write()
 	}
-	if fresh := s.st.Runs[s.worktree]; fresh != nil {
+	if fresh := s.st.Runs[s.key]; fresh != nil {
 		s.run = fresh
 	} else {
-		s.st.Runs[s.worktree] = s.run
+		s.st.Runs[s.key] = s.run
 	}
 	return nil
 }
@@ -243,7 +293,7 @@ func (s *Store) ensureRun() error {
 	if err := s.read(); err != nil {
 		return err
 	}
-	if s.st.Runs[s.worktree] != nil {
+	if s.st.Runs[s.key] != nil {
 		return nil
 	}
 	if !s.locked {
@@ -253,11 +303,11 @@ func (s *Store) ensureRun() error {
 		if err := s.read(); err != nil { // another process may have added it
 			return err
 		}
-		if s.st.Runs[s.worktree] != nil {
+		if s.st.Runs[s.key] != nil {
 			return nil
 		}
 	}
-	s.st.Runs[s.worktree] = &Run{ID: NewID(), Machine: hostname(), Actor: Actor(), StartedAt: time.Now().UTC()}
+	s.st.Runs[s.key] = &Run{ID: NewID(), Name: s.name, Machine: hostname(), Actor: Actor(), StartedAt: time.Now().UTC()}
 	return s.write()
 }
 
@@ -403,12 +453,12 @@ func (s *Store) refresh() error {
 	if s.run == nil {
 		return nil
 	}
-	if fresh := s.st.Runs[s.worktree]; fresh != nil {
+	if fresh := s.st.Runs[s.key]; fresh != nil {
 		pool, caps, actor := s.run.Pool, s.run.Caps, s.run.Actor
 		*s.run = *fresh
 		s.run.Pool, s.run.Caps, s.run.Actor = pool, caps, actor
 	}
-	s.st.Runs[s.worktree] = s.run
+	s.st.Runs[s.key] = s.run
 	return nil
 }
 
@@ -685,7 +735,7 @@ func (s *Store) Log(ev Event) {
 	_, _ = f.Write(append(b, '\n'))
 }
 
-// Run returns the run for this worktree.
+// Run returns the run this Store acts as: the worktree's own, or BOPS_RUN's.
 func (s *Store) Run() *Run { return s.run }
 
 // Worktree is the root of the worktree this Store's run belongs to.
@@ -694,7 +744,8 @@ func (s *Store) Worktree() string { return s.worktree }
 // Holds lists every bead held by any run in this clone, ordered by bead id.
 func (s *Store) Holds() []Hold {
 	out := []Hold{}
-	for worktree, r := range s.st.Runs {
+	for key, r := range s.st.Runs {
+		worktree := keyWorktree(key)
 		_, err := os.Stat(worktree)
 		for id, e := range r.Held {
 			out = append(out, Hold{ID: id, Run: r.ID, Worktree: worktree, Stranded: errors.Is(err, os.ErrNotExist), Entry: e})
@@ -722,9 +773,9 @@ func (s *Store) Save() error {
 	if !s.locked {
 		return errors.New("runstate: Save needs a Store opened with Write")
 	}
-	for worktree, r := range s.st.Runs {
-		if _, err := os.Stat(worktree); errors.Is(err, os.ErrNotExist) && len(r.Held) == 0 {
-			delete(s.st.Runs, worktree)
+	for key, r := range s.st.Runs {
+		if _, err := os.Stat(keyWorktree(key)); errors.Is(err, os.ErrNotExist) && len(r.Held) == 0 {
+			delete(s.st.Runs, key)
 		}
 	}
 	return s.write()
