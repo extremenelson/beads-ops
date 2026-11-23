@@ -3,6 +3,7 @@ package intent_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,8 +48,8 @@ func newEnv(f bdx.Runner) *intent.Env {
 
 func TestNextOrdersAndExplains(t *testing.T) {
 	f := &bdx.Fake{Responses: map[string][]byte{
-		"ready --json":                     []byte(readyJSON),
-		"list --status in_progress --json": []byte(inProgressJSON),
+		"ready --limit 0 --json":                     []byte(readyJSON),
+		"list --status in_progress --limit 0 --json": []byte(inProgressJSON),
 	}}
 	out, err := intent.Next(context.Background(), newEnv(f), intent.NextOpts{N: 5})
 	if err != nil {
@@ -70,8 +71,8 @@ func TestNextOrdersAndExplains(t *testing.T) {
 
 func TestNextIncludeUnworkableGivesReasons(t *testing.T) {
 	f := &bdx.Fake{Responses: map[string][]byte{
-		"ready --json":                     []byte(readyJSON),
-		"list --status in_progress --json": []byte(`[]`),
+		"ready --limit 0 --json":                     []byte(readyJSON),
+		"list --status in_progress --limit 0 --json": []byte(`[]`),
 	}}
 	out, err := intent.Next(context.Background(), newEnv(f), intent.NextOpts{N: 10, IncludeUnworkable: true})
 	if err != nil {
@@ -93,8 +94,8 @@ func TestNextIncludeUnworkableGivesReasons(t *testing.T) {
 
 func TestNextCapsAndPool(t *testing.T) {
 	f := &bdx.Fake{Responses: map[string][]byte{
-		"ready --json":                     []byte(readyJSON),
-		"list --status in_progress --json": []byte(`[]`),
+		"ready --limit 0 --json":                     []byte(readyJSON),
+		"list --status in_progress --limit 0 --json": []byte(`[]`),
 	}}
 	env := newEnv(f)
 	env.Run.Caps = []string{"gpu"}
@@ -174,8 +175,8 @@ func TestNextUsesTheConfiguredHoldWindow(t *testing.T) {
 		want string
 	}{{0, ""}, {30 * time.Minute, "x-1"}} { // updated 60 minutes before now
 		f := &bdx.Fake{Responses: map[string][]byte{
-			"ready --json":                     []byte(held),
-			"list --status in_progress --json": []byte(`[]`),
+			"ready --limit 0 --json":                     []byte(held),
+			"list --status in_progress --limit 0 --json": []byte(`[]`),
 		}}
 		env := newEnv(f)
 		env.HoldFor = tc.hold
@@ -395,7 +396,7 @@ func TestSyncRetriesOnlyOnRealLockErrors(t *testing.T) {
 }
 
 func TestNextWarnsWhenTheInProgressListingFails(t *testing.T) {
-	f := &bdx.Fake{Responses: map[string][]byte{"ready --json": []byte(readyJSON)}} // no list response, so it fails
+	f := &bdx.Fake{Responses: map[string][]byte{"ready --limit 0 --json": []byte(readyJSON)}} // no list response, so it fails
 	out, err := intent.Next(context.Background(), newEnv(f), intent.NextOpts{N: 5})
 	if err != nil {
 		t.Fatalf("a read must still answer: %v", err)
@@ -417,8 +418,8 @@ func ids(o *intent.NextOut) string {
 // it, so a hand session is never offered work the repo has frozen (bops-yja).
 func TestNextExcludesBlockingLabels(t *testing.T) {
 	f := &bdx.Fake{Responses: map[string][]byte{
-		"ready --json":                     []byte(readyJSON),
-		"list --status in_progress --json": []byte(inProgressJSON),
+		"ready --limit 0 --json":                     []byte(readyJSON),
+		"list --status in_progress --limit 0 --json": []byte(inProgressJSON),
 	}}
 	env := newEnv(f)
 	env.BlockingLabels = []string{"needs:gpu", "frozen"}
@@ -440,5 +441,44 @@ func TestNextExcludesBlockingLabels(t *testing.T) {
 		intent.LintEnv{BlockingLabels: []string{"frozen"}})
 	if r.Workable || len(r.Fails) != 1 || r.Fails[0].ID != "W15" {
 		t.Errorf("lint = %+v, want one W15 failure", r)
+	}
+}
+
+// cappedBD answers like bd does on a large ledger: `ready` returns at most
+// 100 rows and `list` at most 50, unless the call passes --limit 0 (bops-na4).
+type cappedBD struct{ ready, inProgress int }
+
+func (c cappedBD) Run(_ context.Context, args ...string) ([]byte, error) {
+	limit := map[string]int{"ready": 100, "list": 50}[args[0]]
+	for k := 0; k+1 < len(args); k++ {
+		if args[k] == "--limit" && args[k+1] == "0" {
+			limit = 1 << 30
+		}
+	}
+	rows := []string{}
+	add := func(n int, status, assignee string) {
+		for k := 0; k < n && len(rows) < limit; k++ {
+			rows = append(rows, fmt.Sprintf(`{"id":"%s-%d","title":"t","description":"d","acceptance_criteria":"ac","status":"%s","assignee":"%s","priority":2,"issue_type":"task","owner":"o","created_at":"2026-10-01T00:00:00Z","updated_at":"2026-10-01T00:00:00Z"}`, status, k, status, assignee))
+		}
+	}
+	switch args[0] {
+	case "ready":
+		add(c.ready, "open", "")
+	case "list":
+		add(c.inProgress, "in_progress", "someone")
+	}
+	return []byte("[" + strings.Join(rows, ",") + "]"), nil
+}
+
+func TestNextReadsEveryReadyBead(t *testing.T) {
+	out, err := intent.Next(context.Background(), newEnv(cappedBD{ready: 406, inProgress: 60}), intent.NextOpts{N: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Candidates) != 406 {
+		t.Fatalf("next saw %d of 406 ready beads; bd's default row cap is back", len(out.Candidates))
+	}
+	if len(out.Warnings) != 0 {
+		t.Errorf("warnings: %v", out.Warnings)
 	}
 }

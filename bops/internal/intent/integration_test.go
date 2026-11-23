@@ -107,7 +107,7 @@ func liveShow(t *testing.T, env *intent.Env, id string) *ledger.Issue {
 
 func liveReady(t *testing.T, env *intent.Env) []string {
 	t.Helper()
-	raw, err := env.BD.Run(context.Background(), "ready", "--json")
+	raw, err := env.BD.Run(context.Background(), "ready", "--limit", "0", "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
