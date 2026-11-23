@@ -14,13 +14,13 @@ bops next --include-unworkable --n 400 --json      # what bops sees today
 bops stale --json                                  # claims nobody is working
 ```
 
-That repository has no `.bops.json`, so every setting is at its default.
+That repository's `.bops.json` (committed 2026-11-19) sets `stale_minutes` to 240 and `blocking_labels` to `["frozen"]`. An earlier version of this note said it had none; that was wrong (bops-lvp).
 
 ## Finding 1: bops reads only the first 100 ready beads
 
 `bd ready --limit 0` returned **406** beads. `bops next --include-unworkable --n 400` returned **100** candidates, 18 of them workable.
 
-`intent.Next` runs `bd ready --json` with no `--limit`, and bd caps that output at 100 rows by default. Every other bd list call in bops already passes `--limit 0`. So `next`, and the `ready_count` that `session-start` builds on it, silently cover only the first 100 rows of the ready list.
+`intent.Next` runs `bd ready --json` with no `--limit`, and bd caps that output at 100 rows by default. `next`'s ordering step had the same gap: its `bd list --status in_progress` read capped at bd's default of 50 rows (also fixed in bops-na4). Every other bd list call in bops already passes `--limit 0`. So `next`, and the `ready_count` that `session-start` builds on it, silently cover only the first 100 rows of the ready list.
 
 A scratch build that passes `--limit 0` (nothing committed) saw all 406:
 
@@ -49,7 +49,7 @@ Reading the whole list, the 307 excluded beads fail on these reasons:
 - **16** state their criteria in the description under an "Acceptance" or "Done when" heading. Their criteria belong in the field, which `/bead-prep` drafts. Teaching W01 to parse descriptions would make lint depend on prose conventions.
 - The rest have no stated criteria at all, which is what W01 is for.
 
-**epic and W15 are right.** Agents work leaves, and `frozen` is a default blocking label.
+**epic and W15 are right.** Agents work leaves, and `frozen` is the label the repository's `.bops.json` lists in `blocking_labels`.
 
 No reason was judged too strict, so no filter-fix bead was filed.
 
@@ -57,11 +57,7 @@ No reason was judged too strict, so no filter-fix bead was filed.
 
 Of the 99 workable beads, **30** carry a label that development-collaboration's AGENTS.md tells agents never to take (`spec-blocked` 20, `not-slingable` 7, `needs-spec` 3). One more is of type `decision`, which that file also excludes. That leaves **69** beads an agent there may take.
 
-bops does not know these labels, because the repository has no `.bops.json`. The fix is configuration in that repository, not code in bops:
-
-```json
-{ "blocking_labels": ["not-slingable", "needs-spec", "spec-blocked", "convoy-exclude", "needs-land"] }
-```
+bops does not know these labels, because the repository's `.bops.json` lists only `frozen`, its protocol's one extra Blocking label, in `blocking_labels`. It leaves out the five labels every dispatch there excludes. The fix is configuration in that repository, not code in bops: `blocking_labels` should hold the five as well as `frozen`. development-collaboration-7g9t makes that change, and has the repository's suite check `blocking_labels` against both lists.
 
 bops has no setting for excluding the `decision` type. That one bead does not justify a new key yet.
 
