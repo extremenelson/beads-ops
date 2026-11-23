@@ -111,6 +111,7 @@ The git remote that holds the claim refs. It must be the same repository as the 
 |---|---|---|
 | `BEADS_ACTOR` | the actor written into claim refs and event comments | git `user.name`, then the OS user name |
 | `BOPS_MACHINE` | the machine name in `bops:claimed` comments and `stale` output | the hostname |
+| `BOPS_RUN` | names a run of its own within the worktree, apart from the worktree's run, so an orchestrator's claims are not a session's there ([SPEC §3.4](../../SPEC.md#34-per-machine-state-xdg_state_homebopsrepo-hash)); up to 64 letters, digits, `.`, `_` or `-` | unset: the worktree's run |
 | `XDG_STATE_HOME` | base of the per-machine state directory, `<base>/bops/<repo-hash>/` | `~/.local/state` |
 | `XDG_CONFIG_HOME` | base of the user config file | `~/.config` |
 | `BOPS_INTEGRATION=1` | tests only: run the live-ledger and two-replica suites | unset |

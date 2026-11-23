@@ -237,7 +237,7 @@ func TestLegacyHeldListStillLoads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), `"version": 4`) {
+	if !strings.Contains(string(b), `"version": 5`) {
 		t.Errorf("not migrated:\n%s", b)
 	}
 	if got := open(t, root, Read).Run().HeldIDs(); len(got) != 2 {
@@ -593,7 +593,7 @@ func TestOpenStampsAnOlderStateFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), `"version": 4`) {
+	if !strings.Contains(string(b), `"version": 5`) {
 		t.Fatalf("opening must stamp the version:\n%s", b)
 	}
 	for id, sha := range map[string]string{"x-1": "aaa", "x-2": "bbb"} {
@@ -606,13 +606,13 @@ func TestOpenStampsAnOlderStateFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := open(t, root, Write)
-	if b, _ := os.ReadFile(path); !strings.Contains(string(b), `"version": 4`) {
+	if b, _ := os.ReadFile(path); !strings.Contains(string(b), `"version": 5`) {
 		t.Fatalf("a write open must stamp the version too:\n%s", b)
 	}
 	w.Close()
 
 	// write always indents, so a rewrite of this compact file would show.
-	current := `{"version":4,"runs":{"` + s.worktree + `":{"id":"RUN","machine":"m","actor":"a","started_at":"2026-11-09T00:00:00Z"}}}`
+	current := `{"version":5,"runs":{"` + s.worktree + `":{"id":"RUN","machine":"m","actor":"a","started_at":"2026-11-09T00:00:00Z"}}}`
 	if err := os.WriteFile(path, []byte(current), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -710,7 +710,7 @@ func TestStampKeepsTheStoredActor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), `"version": 4`) || !strings.Contains(string(b), `"actor": "stored"`) || strings.Contains(string(b), "someone-else") {
+	if !strings.Contains(string(b), `"version": 5`) || !strings.Contains(string(b), `"actor": "stored"`) || strings.Contains(string(b), "someone-else") {
 		t.Fatalf("the stamp must keep the stored actor:\n%s", b)
 	}
 }
@@ -807,7 +807,7 @@ func TestStampKeepsItsRunWhenTheReReadLacksIt(t *testing.T) {
 		t.Fatal("the store must keep handing out its run")
 	}
 	b, _ := os.ReadFile(path)
-	if !strings.Contains(string(b), `"version": 4`) || !strings.Contains(string(b), `"SIB"`) || strings.Contains(string(b), run.ID) {
+	if !strings.Contains(string(b), `"version": 5`) || !strings.Contains(string(b), `"SIB"`) || strings.Contains(string(b), run.ID) {
 		t.Fatalf("the stamp must write only what it re-read:\n%s", b)
 	}
 }
@@ -835,7 +835,7 @@ func TestStampLeavesASiblingsEmptyActor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), `"version": 4`) || strings.Contains(string(b), "someone-else") {
+	if !strings.Contains(string(b), `"version": 5`) || strings.Contains(string(b), "someone-else") {
 		t.Fatalf("the stamp must not save this process's actor on any run:\n%s", b)
 	}
 }
@@ -847,7 +847,7 @@ func TestOpenDefaultsOnlyItsOwnEmptyActor(t *testing.T) {
 	root, stateHome := repo(t)
 	s := open(t, root, Read)
 	path := firstOrEmpty(stateFiles(t, stateHome))
-	stored := `{"version":4,"runs":{` +
+	stored := `{"version":5,"runs":{` +
 		`"` + s.worktree + `":{"id":"RUN","machine":"m","started_at":"2026-11-09T00:00:00Z"},` +
 		`"/elsewhere":{"id":"SIB","machine":"m","started_at":"2026-11-09T00:00:00Z"}}}`
 	if err := os.WriteFile(path, []byte(stored), 0o600); err != nil {
@@ -958,5 +958,119 @@ func TestLogRotatesWhenItsLockCannotBeTaken(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(path); !strings.Contains(string(b), "MINE") || len(b) > 1000 {
 		t.Fatalf("the line belongs in a fresh events.jsonl: %d bytes", len(b))
+	}
+}
+
+// BOPS_RUN gives a command a run of its own in a worktree, apart from the
+// worktree's run, and the same name finds the same run again (bops-4ez).
+func TestNamedRunIsApartFromItsWorktreesRun(t *testing.T) {
+	root, _ := repo(t)
+	own := open(t, root, Write)
+	own.Run().Hold("hand-1")
+	if err := own.Save(); err != nil {
+		t.Fatal(err)
+	}
+	own.Close()
+
+	t.Setenv("BOPS_RUN", "bead-loop")
+	named := open(t, root, Write)
+	if named.Run().ID == own.Run().ID || named.Run().Name != "bead-loop" {
+		t.Fatalf("BOPS_RUN must name a run of its own: %+v, worktree's is %s", named.Run(), own.Run().ID)
+	}
+	if named.Worktree() != own.Worktree() {
+		t.Fatalf("a named run belongs to its worktree: %s, want %s", named.Worktree(), own.Worktree())
+	}
+	if _, ok := named.Run().Held["hand-1"]; ok {
+		t.Fatal("a named run must not hold the worktree run's beads")
+	}
+	named.Run().Hold("loop-1")
+	if err := named.Save(); err != nil {
+		t.Fatal(err)
+	}
+	named.Close()
+
+	if again := open(t, root, Read); again.Run().ID != named.Run().ID {
+		t.Fatalf("the same BOPS_RUN must find the same run: %s, want %s", again.Run().ID, named.Run().ID)
+	}
+	t.Setenv("BOPS_RUN", "")
+	s := open(t, root, Read)
+	if s.Run().ID != own.Run().ID {
+		t.Fatalf("unset, a command is the worktree's run: %s, want %s", s.Run().ID, own.Run().ID)
+	}
+	runs := map[string]string{}
+	for _, h := range s.Holds() {
+		if h.Stranded {
+			t.Errorf("a live worktree's named run is not stranded: %+v", h)
+		}
+		runs[h.ID] = h.Run
+	}
+	if runs["hand-1"] != own.Run().ID || runs["loop-1"] != named.Run().ID {
+		t.Fatalf("holds = %v", runs)
+	}
+}
+
+func TestBadRunNameIsRefused(t *testing.T) {
+	root, _ := repo(t)
+	for _, bad := range []string{"-x", "a/b", "a b", "#run=x", strings.Repeat("a", 65)} {
+		t.Setenv("BOPS_RUN", bad)
+		if s, err := Open(root, Read); err == nil {
+			s.Close()
+			t.Errorf("BOPS_RUN %q was accepted", bad)
+		}
+	}
+}
+
+// A named run whose worktree is removed is stranded like any other, and
+// pruned once it holds nothing.
+func TestNamedRunOfARemovedWorktreeIsStranded(t *testing.T) {
+	root, stateHome := repo(t)
+	wt := worktree(t, root, "wt")
+	t.Setenv("BOPS_RUN", "loop")
+	s := open(t, wt, Write)
+	s.Run().Hold("x-1")
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	git(t, root, "worktree", "remove", "--force", wt)
+
+	t.Setenv("BOPS_RUN", "")
+	s = open(t, root, Write)
+	if holds := s.Holds(); len(holds) != 1 || !holds[0].Stranded {
+		t.Fatalf("want one stranded hold, got %+v", holds)
+	}
+	s.DropHold("x-1")
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	b, err := os.ReadFile(stateFiles(t, stateHome)[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "#run=loop") {
+		t.Errorf("an empty named run of a removed worktree must be pruned:\n%s", b)
+	}
+}
+
+// A version 4 file, the last before named runs, loads with its holds and is
+// stamped at version 5, which a bops that knows no named run refuses.
+func TestVersionFourStateLoadsAndIsStamped(t *testing.T) {
+	root, stateHome := repo(t)
+	s := open(t, root, Read)
+	path := firstOrEmpty(stateFiles(t, stateHome))
+	v4 := `{"version":4,"runs":{"` + s.worktree + `":{"id":"RUN","machine":"m","actor":"a","started_at":"2026-11-09T00:00:00Z","held":{"x-1":{"sha":"aaa","phase":"held"}}}}}`
+	if err := os.WriteFile(path, []byte(v4), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w := open(t, root, Write)
+	if w.Run().ID != "RUN" {
+		t.Fatalf("the worktree's run must be the stored one: %+v", w.Run())
+	}
+	if e, ok := w.Entry("x-1"); !ok || e.SHA != "aaa" {
+		t.Fatalf("hold lost: %+v %v", e, ok)
+	}
+	if b, _ := os.ReadFile(path); !strings.Contains(string(b), `"version": 5`) {
+		t.Fatalf("not stamped:\n%s", b)
 	}
 }
