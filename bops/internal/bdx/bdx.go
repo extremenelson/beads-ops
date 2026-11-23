@@ -13,8 +13,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/extremenelson/beads-ops/bops/internal/ledger"
 )
@@ -42,6 +45,8 @@ func (e Exec) Run(ctx context.Context, args ...string) ([]byte, error) {
 		return nil, ErrNotFound
 	}
 	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Cancel = func() error { return terminate(cmd.Process) }
+	cmd.WaitDelay = TermGrace
 	cmd.Env = GitEnv(os.Environ())
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
@@ -62,6 +67,20 @@ func (e Exec) Run(ctx context.Context, args ...string) ([]byte, error) {
 		return body, fmt.Errorf("bd %s: %w: %s", strings.Join(args, " "), err, msg)
 	}
 	return body, nil
+}
+
+// TermGrace is how long bd has to exit after SIGTERM, when a command's time
+// runs out, before it is killed. A kill can land inside a Dolt merge or
+// commit; SIGTERM first gives bd the chance to stop between steps
+// (bops-9rb). Whether bd uses it is not measured. Tests shorten it.
+var TermGrace = 5 * time.Second
+
+// terminate asks p to stop. Windows has no SIGTERM, so there it is killed.
+func terminate(p *os.Process) error {
+	if runtime.GOOS == "windows" {
+		return p.Kill()
+	}
+	return p.Signal(syscall.SIGTERM)
 }
 
 // foregroundMaintenance keeps git's automatic maintenance from detaching.

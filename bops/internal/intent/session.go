@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/extremenelson/beads-ops/bops/internal/lock"
@@ -35,6 +36,19 @@ const primeMax = 3000
 // without the full command reference (`bd prime` prints that on demand).
 var primeArgs = []string{"prime", "--mcp", "--max-memory-chars", "600"}
 
+// DefaultPullReserve is how much of session-start's budget (60 s, Claude
+// Code's default hook timeout) its pull leaves for the stale count, the
+// workable count and bd prime, so a slow pull still ends with a document
+// (bops-9rb).
+const DefaultPullReserve = 25 * time.Second
+
+func (e *Env) pullReserve() time.Duration {
+	if e.PullReserve > 0 {
+		return e.PullReserve
+	}
+	return DefaultPullReserve
+}
+
 // SessionStart pulls (never pushes), settles only this run's holds,
 // then reports what this run holds, how
 // many claims look stale, how much is workable, and bd's prime. A failed
@@ -50,7 +64,7 @@ func SessionStart(ctx context.Context, env *Env) (*SessionStartOut, error) {
 		out.Warnings = append(out.Warnings, lock.OffWarning)
 	}
 	var syncErr error
-	if s, err := syncAs(ctx, env, true, "session-start", true); err != nil {
+	if s, err := syncAs(ctx, env, syncOpts{noPush: true, name: "session-start", ownOnly: true, pullReserve: env.pullReserve()}); err != nil {
 		syncErr = errors.New("sync failed; the facts below are from this machine's last copy: " + firstLine(err.Error()))
 		if code := lock.CodeOf(err); code != "" { // e.g. remote_mismatch with no Dolt remote
 			syncErr = &lock.Error{Code: code, Err: syncErr}
