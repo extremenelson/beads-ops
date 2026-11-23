@@ -195,3 +195,20 @@ func TestCodexHooksAndFiles(t *testing.T) {
 		t.Error("the Claude Code fragment gained a statusMessage")
 	}
 }
+
+// The skill names no fixed staleness time, since a repo may set
+// stale_minutes, and says it is not for an agent whose orchestrator claims
+// for it (bops-c0p).
+func TestSkillNamesNoFixedStalenessTime(t *testing.T) {
+	skill := ccFiles(t, embedded(t))["skills/bops/SKILL.md"]
+	for _, bad := range []string{"120 minutes", "two hours", "2 hours"} {
+		if strings.Contains(skill, bad) {
+			t.Errorf("SKILL.md says %q; it must name stale_minutes instead", bad)
+		}
+	}
+	for _, want := range []string{"`stale_minutes`", "default 120", "/bead-loop", "docs/agent-protocol.md"} {
+		if !strings.Contains(skill, want) {
+			t.Errorf("SKILL.md lacks %q", want)
+		}
+	}
+}
