@@ -296,7 +296,7 @@ Pull, heartbeat, push — with the one retry
 
 Retry: on dolt lock, 1 time(s), after 5000 ms.
 
-Wraps: `git fetch --prune refs/bops/claims/*`, `bd dolt pull`, `bd heartbeat <id> (held claims)`, `bd update <id> --assignee '' --status open; bd label remove <id> run:<ulid> (this run's claim whose ref is gone and that nobody took)`, `bd dolt push`.
+Wraps: `git fetch --prune refs/bops/claims/*`, `bd dolt pull`, `bd update <id> --assignee <actor> --status in_progress --force, or --assignee alone on a blocked or deferred bead (this run's live claims whose display differs)`, `bd heartbeat <id> (this run's live claims only; another run's are settled against their refs but not re-displayed or heartbeat)`, `bd update <id> --assignee '' --status open; bd label remove <id> run:<ulid> (this run's claim whose ref is gone and that nobody took)`, `bd dolt push`.
 
 Output:
 
@@ -321,7 +321,7 @@ Orient a fresh agent session
 |---|---|---|---|
 | `--hook-json` | bool | `false` | Print the document as Claude Code SessionStart hook output ({hookSpecificOutput:{hookEventName,additionalContext}}) and always exit 0, so the harness injects it. |
 
-Wraps: `sync --no-push`, `stale (stale_minutes; count, all machines)`, `next (count of workable)`, `bd prime --mcp --max-memory-chars 600 (capped at 3000 bytes)`.
+Wraps: `sync --no-push, for this run's holds only (another run's stranded hold is listed, nothing else of another run's is touched)`, `stale (stale_minutes; count, all machines)`, `next (count of workable)`, `bd prime --mcp --max-memory-chars 600 (capped at 3000 bytes)`.
 
 Output:
 
