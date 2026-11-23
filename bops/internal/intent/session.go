@@ -35,7 +35,8 @@ const primeMax = 3000
 // without the full command reference (`bd prime` prints that on demand).
 var primeArgs = []string{"prime", "--mcp", "--max-memory-chars", "600"}
 
-// SessionStart pulls (never pushes), then reports what this run holds, how
+// SessionStart pulls (never pushes), settles only this run's holds,
+// then reports what this run holds, how
 // many claims look stale, how much is workable, and bd's prime. A failed
 // step is a warning and the rest still runs, so a hook always gets a
 // document; a failed sync makes the result ok:false.
@@ -49,7 +50,7 @@ func SessionStart(ctx context.Context, env *Env) (*SessionStartOut, error) {
 		out.Warnings = append(out.Warnings, lock.OffWarning)
 	}
 	var syncErr error
-	if s, err := syncAs(ctx, env, true, "session-start"); err != nil {
+	if s, err := syncAs(ctx, env, true, "session-start", true); err != nil {
 		syncErr = errors.New("sync failed; the facts below are from this machine's last copy: " + firstLine(err.Error()))
 		if code := lock.CodeOf(err); code != "" { // e.g. remote_mismatch with no Dolt remote
 			syncErr = &lock.Error{Code: code, Err: syncErr}

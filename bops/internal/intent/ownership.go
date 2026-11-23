@@ -296,7 +296,9 @@ func (e *Env) unpublished(ctx context.Context) bool {
 
 // display makes the ledger show that actor's run holds the bead, writing only
 // what differs, so a retry adds no duplicate comment and repeats no claim.
-func (e *Env) display(ctx context.Context, cur *ledger.Issue, actor, run string, comment bool) error {
+// With keepParked (sync's repair) a blocked or deferred status is left as
+// is; a claim always shows the bead in progress.
+func (e *Env) display(ctx context.Context, cur *ledger.Issue, actor, run string, comment, keepParked bool) error {
 	id := cur.ID
 	switch {
 	case cur.Status == "closed":
@@ -304,6 +306,14 @@ func (e *Env) display(ctx context.Context, cur *ledger.Issue, actor, run string,
 	case cur.Assignee == "" && (cur.Status == "open" || cur.Status == "ready"):
 		if _, err := e.BD.Run(ctx, "update", id, "--claim"); err != nil {
 			return err
+		}
+	case keepParked && (cur.Status == "blocked" || cur.Status == "deferred"):
+		// A person parked a held bead after the claim; sync repairs who holds
+		// it, never its status (bops-yr2).
+		if cur.Assignee != actor {
+			if _, err := e.BD.Run(ctx, "update", id, "--assignee", actor); err != nil {
+				return err
+			}
 		}
 	case cur.Assignee != actor || cur.Status != "in_progress":
 		if _, err := e.BD.Run(ctx, "update", id, "--assignee", actor, "--status", "in_progress", "--force"); err != nil {
@@ -549,7 +559,7 @@ func (e *Env) takeLedger(ctx context.Context, id, extra string, publish bool, ou
 	e.event("claim", id, "ledger_claim", OutcomeClaimed, "", nil)
 	cur, err := e.show(ctx, id)
 	if err == nil {
-		err = e.display(ctx, cur, e.Run.Actor, e.Run.ID, false)
+		err = e.display(ctx, cur, e.Run.Actor, e.Run.ID, false, false)
 	}
 	if err == nil {
 		err = e.addClaimComment(ctx, id, e.Run.Actor, e.Run.ID, extra)
@@ -641,7 +651,7 @@ func (e *Env) giveBack(ctx context.Context, id, sha, why string, out *ClaimOut) 
 }
 
 func (e *Env) publishClaim(ctx context.Context, cur *ledger.Issue, extra string, out *ClaimOut) error {
-	if err := e.display(ctx, cur, e.Run.Actor, e.Run.ID, false); err != nil {
+	if err := e.display(ctx, cur, e.Run.Actor, e.Run.ID, false, false); err != nil {
 		return err
 	}
 	if err := e.addClaimComment(ctx, cur.ID, e.Run.Actor, e.Run.ID, extra); err != nil {
@@ -1269,18 +1279,35 @@ func (e *Env) allHolds() []cloneHold {
 }
 
 // Sync reads the claims, pulls, settles every hold in this clone against its
-// ref, repairs the ledger display, and pushes.
+// ref, repairs the ledger display of this run's holds, and pushes. Another
+// run's live hold is checked but not re-displayed or heartbeat: its own run
+// does that, and a heartbeat from here would hide that run dying (bops-yr2).
 func Sync(ctx context.Context, env *Env, noPush bool) (*SyncOut, error) {
-	return syncAs(ctx, env, noPush, "sync")
+	return syncAs(ctx, env, noPush, "sync", false)
 }
 
 // syncAs is Sync with the command name its bead-lock lines carry, so
-// session-start's are told apart from sync's (bops-7uu).
-func syncAs(ctx context.Context, env *Env, noPush bool, name string) (*SyncOut, error) {
+// session-start's are told apart from sync's (bops-7uu). With ownOnly it
+// settles only this run's holds and writes nothing for any other's, only
+// listing a stranded one: session-start runs on every session start in any
+// checkout, so it must not touch work another run owns (bops-yr2).
+func syncAs(ctx context.Context, env *Env, noPush bool, name string, ownOnly bool) (*SyncOut, error) {
 	out := &SyncOut{StrandedHolds: []string{}, LostClaims: []string{}, Deferred: []string{}}
 	// The holds are read before the refs, so each hold's entry is no newer
 	// than the ref it is checked against (bops-yph).
 	holds := env.allHolds()
+	if ownOnly {
+		mine := holds[:0:0]
+		for _, h := range holds {
+			switch {
+			case h.run == env.Run.ID:
+				mine = append(mine, h)
+			case h.stranded:
+				out.StrandedHolds = append(out.StrandedHolds, h.id)
+			}
+		}
+		holds = mine
+	}
 	refs := map[string]lock.Ref{}
 	if env.LockOff {
 		out.Warnings = append(out.Warnings, lock.OffWarning)
@@ -1372,12 +1399,13 @@ func (e *Env) syncHeld(ctx context.Context, name string, h cloneHold, refs map[s
 // order matters: an unfinished write or delete must be settled before an
 // absent ref can be read as a lost claim.
 func (e *Env) syncHold(ctx context.Context, h cloneHold, refs map[string]lock.Ref, out *SyncOut) bool {
-	if e.LockOff { // no ref to settle against, so no hold is lost here
+	mine := h.run == e.Run.ID // only this run's live holds are re-displayed and heartbeat (bops-yr2)
+	if e.LockOff {            // no ref to settle against, so no hold is lost here
 		if h.stranded {
 			out.StrandedHolds = append(out.StrandedHolds, h.id)
 			return false
 		}
-		return true
+		return mine
 	}
 	ref, found := refs[h.id]
 	live := ""
@@ -1427,7 +1455,7 @@ func (e *Env) syncHold(ctx context.Context, h cloneHold, refs map[string]lock.Re
 		return false
 	}
 	if h.entry.Legacy() {
-		return true
+		return mine
 	}
 	if live != h.entry.SHA {
 		out.LostClaims = append(out.LostClaims, h.id)
@@ -1442,9 +1470,12 @@ func (e *Env) syncHold(ctx context.Context, h cloneHold, refs map[string]lock.Re
 		}
 		return false
 	}
+	if !mine {
+		return false // live, and its own run's sync repairs its display
+	}
 	cur, err := e.show(ctx, h.id)
 	if err == nil {
-		err = e.display(ctx, cur, ref.Actor, ref.Run, h.entry.LedgerPending)
+		err = e.display(ctx, cur, ref.Actor, ref.Run, h.entry.LedgerPending, true)
 	}
 	if err != nil {
 		out.Warnings = append(out.Warnings, h.id+": ledger display pending: "+err.Error())

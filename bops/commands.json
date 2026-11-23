@@ -132,7 +132,7 @@
       "intent": "Pull, heartbeat, push — with the one retry",
       "kind": "write",
       "args": { "no-push": { "type": "bool", "default": false } },
-      "wraps": ["git fetch --prune refs/bops/claims/*", "bd dolt pull", "bd heartbeat <id> (held claims)", "bd update <id> --assignee '' --status open; bd label remove <id> run:<ulid> (this run's claim whose ref is gone and that nobody took)", "bd dolt push"],
+      "wraps": ["git fetch --prune refs/bops/claims/*", "bd dolt pull", "bd update <id> --assignee <actor> --status in_progress --force, or --assignee alone on a blocked or deferred bead (this run's live claims whose display differs)", "bd heartbeat <id> (this run's live claims only; another run's are settled against their refs but not re-displayed or heartbeat)", "bd update <id> --assignee '' --status open; bd label remove <id> run:<ulid> (this run's claim whose ref is gone and that nobody took)", "bd dolt push"],
       "retry": { "on": "dolt lock", "times": 1, "after_ms": 5000 },
       "output": { "pulled": "bool", "pushed": "bool", "revision": "string", "unpublished": "int", "stranded_holds": "string[]", "lost_claims": "string[]", "deferred": "string[]", "warnings": "string[]?" },
       "surfaces": { "cc": ["skill"], "codex": ["skill"], "clj": "fn" }
@@ -142,7 +142,7 @@
       "intent": "Orient a fresh agent session",
       "kind": "read+sync",
       "args": { "hook-json": { "type": "bool", "default": false, "doc": "Print the document as Claude Code SessionStart hook output ({hookSpecificOutput:{hookEventName,additionalContext}}) and always exit 0, so the harness injects it." } },
-      "wraps": ["sync --no-push", "stale (stale_minutes; count, all machines)", "next (count of workable)", "bd prime --mcp --max-memory-chars 600 (capped at 3000 bytes)"],
+      "wraps": ["sync --no-push, for this run's holds only (another run's stranded hold is listed, nothing else of another run's is touched)", "stale (stale_minutes; count, all machines)", "next (count of workable)", "bd prime --mcp --max-memory-chars 600 (capped at 3000 bytes)"],
       "output": { "mine": "string[]", "lost_claims": "string[]", "stranded_holds": "string[]", "deferred": "string[]", "stale": "int", "ready_count": "int", "synced": "bool", "prime": "string", "warnings": "string[]" },
       "surfaces": { "cc": ["hook:SessionStart"], "codex": ["hook:SessionStart"], "clj": "fn" }
     },
