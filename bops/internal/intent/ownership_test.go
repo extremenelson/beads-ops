@@ -708,6 +708,72 @@ func TestPushGivesUpAfterFiveTries(t *testing.T) {
 	}
 }
 
+// rejectPushes makes bd's dolt push fail non-fast-forward the first n times,
+// as it does when another machine published between this one's pull and push.
+func rejectPushes(bd *fakeBD, n int) {
+	bd.fail = func(args []string) error {
+		if strings.Join(args, " ") == "dolt push" && n > 0 {
+			n--
+			return errors.New("non-fast-forward")
+		}
+		return nil
+	}
+}
+
+// Land and sync publish through pushLedger, so another machine's push between
+// their pull and push costs a pull and a retry, not the command (bops-bze).
+func TestLandAndSyncRetryARejectedPushAfterAPull(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		rejected int
+		pushes   int
+		ok       bool
+	}{
+		{"accepted on a retry", 3, 4, true},
+		{"gives up after five tries", 5, 5, false},
+	} {
+		t.Run("land "+tc.name, func(t *testing.T) {
+			remote, bd := bareRemote(t), newBD()
+			bd.add("x-1")
+			a := client(t, remote, "A", bd)
+			mustClaim(t, a, "x-1")
+			rejectPushes(bd, tc.rejected)
+			pushes, pulls := bd.count("dolt push"), bd.count("dolt pull")
+			out, err := intent.Land(bg, a.env, "x-1", intent.LandOpts{Ref: prRef, SHA: prSHA})
+			if got := bd.count("dolt push") - pushes; got != tc.pushes {
+				t.Errorf("pushes = %d, want %d", got, tc.pushes)
+			}
+			if got := bd.count("dolt pull") - pulls; got < tc.pushes-1 {
+				t.Errorf("pulls between pushes = %d, want at least %d", got, tc.pushes-1)
+			}
+			if tc.ok && (err != nil || out.Outcome != intent.OutcomeLanded) {
+				t.Errorf("%+v, %v", out, err)
+			}
+			if !tc.ok && (err == nil || !strings.Contains(err.Error(), "non-fast-forward")) {
+				t.Errorf("the last push error must be reported: %v", err)
+			}
+		})
+		t.Run("sync "+tc.name, func(t *testing.T) {
+			remote, bd := bareRemote(t), newBD()
+			bd.add("x-1")
+			a := client(t, remote, "A", bd)
+			mustClaim(t, a, "x-1")
+			rejectPushes(bd, tc.rejected)
+			pushes := bd.count("dolt push")
+			out, err := intent.Sync(bg, a.env, false)
+			if got := bd.count("dolt push") - pushes; got != tc.pushes {
+				t.Errorf("pushes = %d, want %d", got, tc.pushes)
+			}
+			if tc.ok && (err != nil || !out.Pushed) {
+				t.Errorf("%+v, %v", out, err)
+			}
+			if !tc.ok && (err == nil || out.Pushed) {
+				t.Errorf("a push that never went through must be reported: %+v, %v", out, err)
+			}
+		})
+	}
+}
+
 func TestOfflineClaimIsUnreachableWithNoLedgerWrite(t *testing.T) {
 	remote, bd := bareRemote(t), newBD()
 	bd.add("x-1")

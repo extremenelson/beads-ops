@@ -252,7 +252,9 @@ func (e *Env) ledgerHolder(cur *ledger.Issue) *Holder {
 }
 
 // pushLedger publishes local Dolt commits. Every bead shares one Dolt ref, so
-// ordinary work on other beads rejects a push until it pulls first.
+// ordinary work on other beads, on this machine or another, rejects a push
+// until it pulls first. Every command that publishes the ledger goes through
+// here, so none gives up on the first non-fast-forward (bops-bze).
 func (e *Env) pushLedger(ctx context.Context) error {
 	var err error
 	for try := 0; try < maxPushTries; try++ {
@@ -575,7 +577,7 @@ func (e *Env) takeLedger(ctx context.Context, id, extra string, publish bool, ou
 	if !publish {
 		return out, nil
 	}
-	if _, err := withLockRetry(ctx, e, "dolt", "push"); err != nil {
+	if err := e.pushLedger(ctx); err != nil {
 		out.Warnings = append(out.Warnings, "ledger not pushed: "+err.Error())
 	}
 	return out, nil
@@ -1351,7 +1353,7 @@ func syncAs(ctx context.Context, env *Env, o syncOpts) (*SyncOut, error) {
 	if noPush || !publish {
 		return out, nil
 	}
-	if _, err := withLockRetry(ctx, env, "dolt", "push"); err != nil {
+	if err := env.pushLedger(ctx); err != nil {
 		return out, err
 	}
 	out.Pushed = true

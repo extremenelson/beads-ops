@@ -620,3 +620,24 @@ func TestLockOffClaimWithADoltRemoteWarnsOnAFailedPull(t *testing.T) {
 		t.Errorf("warnings = %v: a ledger with a remote is published", out.Warnings)
 	}
 }
+
+// A lock-off claim publishes through pushLedger too, so a push another
+// machine's publish rejected is retried after a pull (bops-bze).
+func TestLockOffClaimRetriesARejectedPush(t *testing.T) {
+	bd := newBD()
+	bd.add("x-1")
+	bd.remotes = `[{"name":"origin","url":"git+https://example.com/ledger.git"}]`
+	r := lockOffRig(t, "A", bd)
+	rejectPushes(bd, 3)
+
+	out, err := intent.Claim(bg, r.env, "x-1", false)
+	if err != nil || out.Outcome != intent.OutcomeClaimed {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if bd.count("dolt push") != 4 {
+		t.Errorf("pushes = %d, want 4", bd.count("dolt push"))
+	}
+	if slices.ContainsFunc(out.Warnings, func(w string) bool { return strings.Contains(w, "ledger not pushed") }) {
+		t.Errorf("a push accepted on a retry must not warn: %v", out.Warnings)
+	}
+}
