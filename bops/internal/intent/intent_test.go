@@ -357,24 +357,26 @@ func (f *flaky) Run(ctx context.Context, args ...string) ([]byte, error) {
 	return f.Fake.Run(ctx, args...)
 }
 
+// The pull is the vehicle: Sync's push now pulls and retries on any rejection
+// through pushLedger (bops-bze), while its pull still retries only on a lock.
 func TestSyncRetriesOnlyOnRealLockErrors(t *testing.T) {
 	for _, tc := range []struct {
 		msg   string
 		tries int
 	}{
-		{"bd dolt push: database is locked by another process", 2},
+		{"bd dolt pull: database is locked by another process", 2},
 		{"The Dolt database is locked.", 2},
 		{"the database is locked by another dolt process", 2},
 		{"lock already held by another process", 2},
 		{"Error 1205: lock timeout exceeded", 2},
-		{"push rejected: blocked by a protection rule", 1},
+		{"pull rejected: blocked by a protection rule", 1},
 		{"clock skew detected", 1},
 		{"non-fast-forward", 1},
 	} {
 		t.Run(tc.msg, func(t *testing.T) {
 			calls := 0
 			f := &flaky{Fake: bdx.Fake{Responses: map[string][]byte{"dolt pull": []byte(``), "dolt push": []byte(``)}},
-				failFirst: "dolt push", msg: tc.msg, n: &calls}
+				failFirst: "dolt pull", msg: tc.msg, n: &calls}
 			remote := bareRemote(t)
 			dir := filepath.Join(t.TempDir(), "A")
 			git(t, filepath.Dir(dir), "clone", "-q", remote, dir)
@@ -383,13 +385,13 @@ func TestSyncRetriesOnlyOnRealLockErrors(t *testing.T) {
 				Lock: &lock.Lock{Git: lock.Exec{Dir: dir}, Journal: s, Run: "A", Actor: "tester"}}
 			out, err := intent.Sync(context.Background(), env, false)
 			if calls != tc.tries {
-				t.Errorf("push attempts = %d, want %d", calls, tc.tries)
+				t.Errorf("pull attempts = %d, want %d", calls, tc.tries)
 			}
 			if tc.tries == 2 && (err != nil || !out.Pushed) {
 				t.Errorf("%+v, %v", out, err)
 			}
 			if tc.tries == 1 && err == nil {
-				t.Error("the push failure must be reported")
+				t.Error("the pull failure must be reported")
 			}
 		})
 	}

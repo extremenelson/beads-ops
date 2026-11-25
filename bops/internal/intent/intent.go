@@ -670,7 +670,7 @@ func Land(ctx context.Context, env *Env, id string, o LandOpts) (*LandOut, error
 		out.Warnings = append(out.Warnings, w)
 		return out, nil
 	}
-	if _, err := env.BD.Run(ctx, "dolt", "push"); err != nil {
+	if err := env.pushLedger(ctx); err != nil {
 		return out, fmt.Errorf("landed locally; push failed: %w", err)
 	}
 	return out, nil
