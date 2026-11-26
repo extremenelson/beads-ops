@@ -32,6 +32,9 @@ func TestMCPArgv(t *testing.T) {
 		{"release", map[string]any{"id": "x-1", "reason": "done", "text": "why"}, []string{"release", "x-1", "--reason=done", "--file", "-", "--json"}, "why"},
 		{"release", map[string]any{"id": "x-1", "reason": "done"}, []string{"release", "x-1", "--reason=done", "--json"}, ""},
 		{"version", map[string]any{}, []string{"version", "--json"}, ""},
+		// An explicit null --only is an empty list (refused), never "no filter".
+		{"reap", map[string]any{"dry-run": false, "only": nil}, []string{"reap", "--dry-run=false", "--only=", "--json"}, ""},
+		{"reap", map[string]any{"dry-run": false}, []string{"reap", "--dry-run=false", "--json"}, ""},
 	} {
 		argv, in, err := mcpArgv(cmd(c.cmd), c.args)
 		got := ""
@@ -71,7 +74,7 @@ func TestGenMCPEnableWrites(t *testing.T) {
 		tools int
 	}{
 		{[]string{"gen", "mcp"}, exitVerdict, 7},
-		{[]string{"gen", "mcp", "--enable-writes"}, exitVerdict, 12},
+		{[]string{"gen", "mcp", "--enable-writes"}, exitVerdict, 13},
 		{[]string{"gen", "docs", "--enable-writes"}, exitUsage, -1},
 	} {
 		stdout, _ := os.CreateTemp(t.TempDir(), "out")
@@ -129,7 +132,7 @@ func TestServeMCP(t *testing.T) {
 			t.Fatalf("writes=%v: %d responses: %s", writes, len(resps), out)
 		}
 		tools := resps[1]["result"].(map[string]any)["tools"].([]any)
-		if want := map[bool]int{false: 7, true: 12}[writes]; len(tools) != want {
+		if want := map[bool]int{false: 7, true: 13}[writes]; len(tools) != want {
 			t.Errorf("writes=%v: %d tools, want %d", writes, len(tools), want)
 		}
 		res := resps[2]["result"].(map[string]any)

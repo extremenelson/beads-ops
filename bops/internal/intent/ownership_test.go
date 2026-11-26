@@ -29,6 +29,7 @@ var bg = context.Background()
 type bead struct {
 	Status, Assignee string
 	Labels, Comments []string
+	Notes            string
 	CommentTimes     []time.Time // created_at of Comments[i], when set
 	Metadata         json.RawMessage
 	Updated          time.Time
@@ -195,6 +196,9 @@ func (b *fakeBD) issue(id string, n *bead) map[string]any {
 		"created_at": "2026-10-01T00:00:00Z", "updated_at": n.Updated.Format(time.RFC3339)}
 	if n.Metadata != nil {
 		out["metadata"] = n.Metadata
+	}
+	if n.Notes != "" {
+		out["notes"] = n.Notes
 	}
 	if n.Heartbeat != nil {
 		out["heartbeat_at"] = n.Heartbeat.Format(time.RFC3339)

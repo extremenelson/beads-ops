@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -680,5 +681,51 @@ func TestDoctorAsksNothingWithoutBlockingLabels(t *testing.T) {
 		if len(c) > 0 && c[0] == "list" {
 			t.Fatalf("doctor listed beads with no blocking labels: %v", c)
 		}
+	}
+}
+
+// A bare `bops reap` must only preview: releasing claims is a person's call.
+func TestReapDefaultsToADryRun(t *testing.T) {
+	m, err := manifest.Parse(bops.ManifestJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, ok := m.Lookup("reap")
+	if !ok || c.Args["dry-run"].Default != true {
+		t.Fatalf("manifest reap dry-run default = %v", c.Args["dry-run"].Default)
+	}
+	stderr, _ := os.CreateTemp(t.TempDir(), "err")
+	if code := cmdReap(context.Background(), m, []string{"--bogus"}, true, stderr, stderr); code != exitUsage {
+		t.Errorf("unknown flag: exit %d, want %d", code, exitUsage)
+	}
+	// An empty --only (a preview that listed nothing) must not widen to every claim.
+	for _, only := range []string{"", ",", " , "} {
+		if code := cmdReap(context.Background(), m, []string{"--dry-run=false", "--only", only}, true, stderr, stderr); code != exitUsage {
+			t.Errorf("--only %q: exit %d, want %d", only, code, exitUsage)
+		}
+	}
+}
+
+// Text mode must show why claims were kept and what to follow up, and must
+// not pass terminal control sequences from ledger or ref text.
+func TestReapDetailsPrintsFollowUpsWithoutControlBytes(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reapDetails(f, &intent.ReapOut{
+		Released: []intent.ReapDone{{ID: "x-1", Detail: "(pending: run bops sync from this checkout)"}, {ID: "x-quiet"}},
+		Kept:     []intent.ReapKept{{ID: "x-2", Actor: "a", Evidence: []string{"mr https://h/p/-/merge_requests/1\x1b[31m"}}},
+		Failed:   []intent.ReapDone{{ID: "x-3", Outcome: "held", Detail: "this run now holds x-3", SavedTo: "/tmp/n.txt"}},
+	})
+	b, _ := os.ReadFile(f.Name())
+	got := string(b)
+	for _, want := range []string{"released x-1: (pending: run bops sync", "kept x-2", "failed x-3: held this run now holds x-3 (note text saved to /tmp/n.txt)"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "\x1b") || strings.Contains(got, "x-quiet") {
+		t.Errorf("control byte or a no-news release printed:\n%s", got)
 	}
 }

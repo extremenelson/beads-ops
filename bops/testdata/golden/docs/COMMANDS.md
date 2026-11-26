@@ -13,6 +13,7 @@ Exit codes: **0** = done, or a read's verdict; **1** = could not run: remote or 
 | `land` | Record that work reached its destination | write |
 | `sweep` | Close landed beads whose refs are merged | write |
 | `stale` | Claims nobody is working | read |
+| `reap` | Release stale claims that hold no work | write |
 | `lint` | Is this bead workable? | read |
 | `sync` | Pull, heartbeat, push — with the one retry | write |
 | `session-start` | Orient a fresh agent session | read+sync |
@@ -247,6 +248,89 @@ Output:
       "at": "string",
       "age_minutes": "int",
       "same_machine": "bool"
+    }
+  ],
+  "warnings": "string[]"
+}
+```
+
+## `bops reap`
+
+Release stale claims that hold no work
+
+| Arg | Type | Default | Doc |
+|---|---|---|---|
+| `--dry-run` | bool | `true` |  |
+| `--older-than` | duration | `stale_minutes` | Idle longer than this is stale, as for stale; shorter than stale_minutes is refused. |
+| `--only` | string? |  | Comma-separated bead ids, normally the ones a preview listed under would_release: act on these only. One that is no longer a stale claim is listed under skipped; an empty list is a usage error. A claim made outside bops (no run label, no ref) is released only when named here. |
+
+Preconditions: the claim lock is on (lock.mode is not none); a Dolt remote beside the lock remote (not with --dry-run); --older-than, when given, is at least stale_minutes.
+
+Never: release a claim labelled needs-land, with a merge request URL on the bead, held by a live worktree of this clone, or whose bead id is carried by a branch name (lock remote, origin, local, or a worktree's branch or directory); it is listed under kept with what was found, release anything when the ledger pull or the first branch listing fails; a later listing failure stops the run, listing the rest under skipped, release a claim made outside bops (no run label, no ref) unless --only names it, release a claim whose evidence appears after its takeover (this run keeps it, listed under failed with outcome held), start a takeover with less than 180 s of the command's time left (90 s for it, 30 s for the evidence re-read, 60 s for its release, each on its own clock; the rest are listed under skipped), release a claim refreshed since stale read it (claim --force re-checks under a lease), touch an orphan ref (a ref with no claim on the ledger).
+
+Wraps: `bd dolt pull (not with --dry-run)`, `stale --all-machines`, `git remote (when the lock remote is not origin)`, `git ls-remote --heads <lock remote> (and origin, when it exists)`, `git for-each-ref refs/heads refs/remotes (local branches, and other remotes as of their last fetch)`, `git worktree list --porcelain`, `bd show <id> --json`, `bd comments <id> --json`, `claim <id> --force`, `release <id> --reason abandoned (with a note)`.
+
+Output:
+
+```json
+{
+  "dry_run": "bool",
+  "released": [
+    {
+      "id": "string",
+      "run": "string",
+      "actor": "string",
+      "age_minutes": "int",
+      "same_machine": "bool",
+      "outcome": "string?",
+      "detail": "string?",
+      "saved_to": "string?"
+    }
+  ],
+  "would_release": [
+    {
+      "id": "string",
+      "run": "string",
+      "actor": "string",
+      "age_minutes": "int",
+      "same_machine": "bool",
+      "outcome": "string?",
+      "detail": "string?",
+      "saved_to": "string?"
+    }
+  ],
+  "failed": [
+    {
+      "id": "string",
+      "run": "string",
+      "actor": "string",
+      "age_minutes": "int",
+      "same_machine": "bool",
+      "outcome": "string?",
+      "detail": "string?",
+      "saved_to": "string?"
+    }
+  ],
+  "skipped": [
+    {
+      "id": "string",
+      "run": "string",
+      "actor": "string",
+      "age_minutes": "int",
+      "same_machine": "bool",
+      "outcome": "string?",
+      "detail": "string?",
+      "saved_to": "string?"
+    }
+  ],
+  "kept": [
+    {
+      "id": "string",
+      "run": "string",
+      "actor": "string",
+      "age_minutes": "int",
+      "same_machine": "bool",
+      "evidence": "string[]"
     }
   ],
   "warnings": "string[]"
