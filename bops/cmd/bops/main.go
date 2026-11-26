@@ -107,6 +107,8 @@ func run(args []string, stdout, stderr *os.File) int {
 		return cmdLint(ctx, m, rest, wantJSON, stdout, stderr)
 	case "stale":
 		return cmdStale(ctx, m, rest, wantJSON, stdout, stderr)
+	case "reap":
+		return cmdReap(ctx, m, rest, wantJSON, stdout, stderr)
 	case "session-start":
 		return cmdSessionStart(ctx, m, rest, wantJSON, stdout, stderr)
 	case "doctor":
@@ -131,6 +133,8 @@ func run(args []string, stdout, stderr *os.File) int {
 func budget(name string) time.Duration {
 	switch name {
 	case "sweep": // one forge call per landed bead
+		return 5 * time.Minute
+	case "reap": // a takeover and a release per stale claim
 		return 5 * time.Minute
 	case "sync":
 		return 2 * time.Minute

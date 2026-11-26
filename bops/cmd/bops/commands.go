@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/extremenelson/beads-ops/bops/internal/bdx"
 	"github.com/extremenelson/beads-ops/bops/internal/config"
@@ -548,6 +549,89 @@ func cmdStale(ctx context.Context, m *manifest.Manifest, args []string, asJSON b
 	defer store.Close()
 	out, err := intent.Stale(ctx, env, intent.StaleOpts{OlderThan: *older, AllMachines: *all})
 	return emit(m, "stale", asJSON, out, err, stdout, stderr)
+}
+
+func cmdReap(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
+	fs := newFlagSet("reap", stderr)
+	older := fs.Duration("older-than", 0, "idle longer than this is stale (default stale_minutes)")
+	dryRun := fs.Bool("dry-run", true, "report what would be released without releasing it")
+	only := fs.String("only", "", "comma-separated bead ids: act on these only")
+	fs.Bool("json", false, "")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 || *older < 0 {
+		fmt.Fprintln(stderr, "usage: bops reap [--older-than 2h] [--dry-run=false] [--only <id>,<id>]")
+		return exitUsage
+	}
+	env, store, err := newEnv(runstate.Read)
+	if err != nil {
+		return emit(m, "reap", asJSON, nil, err, stdout, stderr)
+	}
+	defer store.Close()
+	var ids []string
+	for _, id := range strings.Split(*only, ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	onlySet := false
+	fs.Visit(func(f *flag.Flag) { onlySet = onlySet || f.Name == "only" })
+	if onlySet && len(ids) == 0 {
+		// An empty list (a preview that listed nothing, a failed expansion)
+		// must not widen into every stale claim.
+		fmt.Fprintln(stderr, "bops reap: --only names no bead ids")
+		return exitUsage
+	}
+	out, err := intent.Reap(ctx, env, intent.ReapOpts{OlderThan: *older, DryRun: *dryRun, Only: ids})
+	code := emit(m, "reap", asJSON, out, err, stdout, stderr)
+	if !asJSON && out != nil {
+		reapDetails(stdout, out)
+	}
+	return code
+}
+
+func savedTo(p string) string {
+	if p == "" {
+		return ""
+	}
+	return "(note text saved to " + p + ")"
+}
+
+// reapDetails prints what printKV's id lists leave out: why each claim was
+// kept, and what to do about each one reap could not finish.
+func reapDetails(w io.Writer, out *intent.ReapOut) {
+	// Ledger and ref text can hold terminal control sequences; print none.
+	clean := func(s string) string {
+		return strings.Map(func(r rune) rune {
+			if unicode.IsControl(r) {
+				return '?'
+			}
+			return r
+		}, s)
+	}
+	where := func(same bool) string {
+		if same {
+			return "this machine"
+		}
+		return "another machine"
+	}
+	for _, k := range out.Kept {
+		fmt.Fprintf(w, "kept %s (%s, idle %dm): %s\n", clean(k.ID), where(k.Same), k.Age, clean(strings.Join(k.Evidence, "; ")))
+	}
+	for _, d := range out.WouldRelease {
+		fmt.Fprintf(w, "would release %s (%s, %s, idle %dm)\n", clean(d.ID), where(d.Same), clean(d.Actor), d.Age)
+	}
+	for _, d := range out.Released { // only what needs a follow-up: pending writes, saved text
+		if d.Detail != "" || d.SavedTo != "" {
+			fmt.Fprintf(w, "released %s: %s\n", clean(d.ID), clean(strings.TrimSpace(d.Detail+" "+savedTo(d.SavedTo))))
+		}
+	}
+	for _, list := range []struct {
+		name string
+		ds   []intent.ReapDone
+	}{{"failed", out.Failed}, {"skipped", out.Skipped}} {
+		for _, d := range list.ds {
+			fmt.Fprintf(w, "%s %s: %s\n", list.name, clean(d.ID), clean(strings.TrimSpace(d.Outcome+" "+d.Detail+" "+savedTo(d.SavedTo))))
+		}
+	}
 }
 
 func cmdLint(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {

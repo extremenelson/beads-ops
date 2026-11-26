@@ -450,6 +450,7 @@ git log -1 --format=%B refs/bops/seen/<id>     # run=, actor=, state=held|landin
 | Your own bead, from another of your machines (`claim --resume`) | You | Push the branch and `bops note` on the old machine if you can |
 | A stale claim of yours (`claim --force`) | You | Nothing: the old run is yours |
 | Another person's stale claim (`claim --force`) | Any developer | Try to reach the holder (the actor in the ref), and wait if they answer |
+| Stale claims that hold no visible work (`reap --dry-run=false --only`) | Any developer | Read the preview; the same as a `claim --force` of each |
 | Another person's abandoned landing (act as their actor, below) | A lead | Confirm the PR is closed unmerged and the holder is not coming back |
 | Deleting an orphan claim ref (below) | A lead | Confirm it is an orphan |
 
@@ -466,6 +467,21 @@ bops claim --force <id>      # refused before 120 minutes, and on a landing ref
 ```
 
 The old holder's next `bops sync` lists the bead in `lost_claims` and drops it. Its next `note`, `land` or `release` returns `lost`; a refused note's text is kept at `saved_to`.
+
+**Many dead claims at once (a loop run died).** `bops reap` previews them: each claim `bops stale --all-machines` lists is checked for work, and kept, listed with what was found, if it has any of:
+
+- a `needs-land` label (work left in a worktree, possibly on the holder's machine);
+- a merge request URL on the bead;
+- a hold of a live worktree of this clone;
+- a branch whose name carries the bead id (the whole id, its part after the prefix, or a parent's), on the lock remote, on `origin`, local, or checked out in a worktree of this clone, or a worktree directory so named (a detached worktree has only its directory);
+- no bops run at all: a claim made with plain `bd` (no `run:` label, no claim ref) is aged from the ledger only, so it is kept unless `--only` names it.
+
+Claims with none are listed under `would_release`, each with `same_machine`. Releasing them is the same takeover as above and needs the same decision: pass the previewed ids with `--only`, so a claim that went stale after the preview is not released unseen. The real run pulls the ledger, lists the branches and reads the evidence again before each `claim --force`, and once more after it; work that appears then keeps the claim with your run, listed under `failed` with what to run once you decide. A claim refreshed since the preview is refused and listed under `failed`; one no longer stale, or not reached before the command's time ran out, is listed under `skipped`. If the pull or the first branch listing fails, nothing is released; a later listing failure stops the run and lists the rest under `skipped`. An empty `--only` is refused rather than read as every claim. Each released bead carries `bops:hold` for its cooling-off and a note naming the old holder. Branches on other remotes, such as a fork, count as of their last fetch. It cannot see worktrees on other machines or in other clones on this one, so work left uncommitted there is not evidence; check the holder's machine first if you can. At a terminal it prints why each claim was kept and what to do about each one it could not finish.
+
+```bash
+bops reap                                     # preview: would_release and kept
+bops reap --dry-run=false --only <id>,<id>    # release those previewed ids
+```
 
 **Moving your own bead to another machine.** The claim belongs to the run that took it, on its machine, so a plain claim from your other machine is refused. On the old machine, if you can: push the branch and `bops note <id>` with a `NEXT:` paragraph. On the new machine, from a worktree on that branch:
 

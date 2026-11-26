@@ -34,6 +34,7 @@
    "land" {:id? true :text nil :opts {:forge :value, :ref :value, :sha :value, :verify :bool} :required #{:ref :sha}}
    "sweep" {:id? false :text nil :opts {:dry-run :bool, :forge :value} :required #{}}
    "stale" {:id? false :text nil :opts {:all-machines :bool, :older-than :value} :required #{}}
+   "reap" {:id? false :text nil :opts {:dry-run :bool, :older-than :value, :only :value} :required #{}}
    "lint" {:id? true :text nil :opts {:strict :bool} :required #{}}
    "sync" {:id? false :text nil :opts {:no-push :bool} :required #{}}
    "session-start" {:id? false :text nil :opts {:hook-json :bool} :required #{}}
@@ -52,6 +53,7 @@
    "land" [:map [:code {:optional true} [:maybe :string]] [:command :string] [:contract :int] [:error {:optional true} [:maybe :string]] [:holder {:optional true} [:maybe :map]] [:id :string] [:landed [:map [:at :string] [:ref :string] [:run :string] [:sha :string]]] [:ok :boolean] [:outcome :string] [:reason {:optional true} [:maybe :string]] [:warnings {:optional true} [:maybe [:vector :string]]]]
    "sweep" [:map [:closed [:vector :string]] [:code {:optional true} [:maybe :string]] [:command :string] [:contract :int] [:dry_run :boolean] [:error {:optional true} [:maybe :string]] [:ok :boolean] [:pending [:vector :string]] [:unknown [:vector :string]] [:warnings {:optional true} [:maybe [:vector :string]]] [:would_close [:vector :string]]]
    "stale" [:map [:code {:optional true} [:maybe :string]] [:command :string] [:contract :int] [:error {:optional true} [:maybe :string]] [:ok :boolean] [:orphans [:vector [:map [:actor :string] [:age_minutes :int] [:at :string] [:id :string] [:run :string] [:same_machine :boolean]]]] [:stale [:vector [:map [:actor :string] [:age_minutes :int] [:id :string] [:last_event_at :string] [:run :string] [:same_machine :boolean] [:source [:enum "ref" "ledger"]]]]] [:warnings [:vector :string]]]
+   "reap" [:map [:code {:optional true} [:maybe :string]] [:command :string] [:contract :int] [:dry_run :boolean] [:error {:optional true} [:maybe :string]] [:failed [:vector [:map [:actor :string] [:age_minutes :int] [:detail {:optional true} [:maybe :string]] [:id :string] [:outcome {:optional true} [:maybe :string]] [:run :string] [:same_machine :boolean] [:saved_to {:optional true} [:maybe :string]]]]] [:kept [:vector [:map [:actor :string] [:age_minutes :int] [:evidence [:vector :string]] [:id :string] [:run :string] [:same_machine :boolean]]]] [:ok :boolean] [:released [:vector [:map [:actor :string] [:age_minutes :int] [:detail {:optional true} [:maybe :string]] [:id :string] [:outcome {:optional true} [:maybe :string]] [:run :string] [:same_machine :boolean] [:saved_to {:optional true} [:maybe :string]]]]] [:skipped [:vector [:map [:actor :string] [:age_minutes :int] [:detail {:optional true} [:maybe :string]] [:id :string] [:outcome {:optional true} [:maybe :string]] [:run :string] [:same_machine :boolean] [:saved_to {:optional true} [:maybe :string]]]]] [:warnings [:vector :string]] [:would_release [:vector [:map [:actor :string] [:age_minutes :int] [:detail {:optional true} [:maybe :string]] [:id :string] [:outcome {:optional true} [:maybe :string]] [:run :string] [:same_machine :boolean] [:saved_to {:optional true} [:maybe :string]]]]]]
    "lint" [:map [:code {:optional true} [:maybe :string]] [:command :string] [:contract :int] [:error {:optional true} [:maybe :string]] [:fails [:vector [:map [:id :string] [:rule :string]]]] [:id :string] [:ok :boolean] [:passes [:vector :string]] [:warns [:vector [:map [:id :string] [:rule :string]]]] [:workable :boolean]]
    "sync" [:map [:code {:optional true} [:maybe :string]] [:command :string] [:contract :int] [:deferred [:vector :string]] [:error {:optional true} [:maybe :string]] [:lost_claims [:vector :string]] [:ok :boolean] [:pulled :boolean] [:pushed :boolean] [:revision :string] [:stranded_holds [:vector :string]] [:unpublished :int] [:warnings {:optional true} [:maybe [:vector :string]]]]
    "session-start" [:map [:code {:optional true} [:maybe :string]] [:command :string] [:contract :int] [:deferred [:vector :string]] [:error {:optional true} [:maybe :string]] [:lost_claims [:vector :string]] [:mine [:vector :string]] [:ok :boolean] [:prime :string] [:ready_count :int] [:stale :int] [:stranded_holds [:vector :string]] [:synced :boolean] [:warnings [:vector :string]]]
@@ -97,6 +99,8 @@
         (into (mapcat (fn [[k kind]]
                         (let [v (get opts k) flag (str "--" (name k))]
                           (cond
+                            ;; An explicit nil --only is an empty list (refused), never "no filter".
+                            (and (nil? v) (= command "reap") (= k :only) (contains? opts k)) [(str flag "=")]
                             (nil? v)       []
                             (= kind :bool) [(if v flag (str flag "=false"))]
                             (= kind :list) [flag (str/join "," v)]
@@ -158,6 +162,11 @@
   "Claims nobody is working. Runs `bops stale`; returns {:exit :doc :err}.\n   opts: :all-machines (bool); :older-than (duration)."
   ([cfg] (stale cfg {}))
   ([cfg opts] (call cfg "stale" nil opts)))
+
+(defn reap
+  "Release stale claims that hold no work. Runs `bops reap`; returns {:exit :doc :err}.\n   opts: :dry-run (bool); :older-than (duration); :only (string?)."
+  ([cfg] (reap cfg {}))
+  ([cfg opts] (call cfg "reap" nil opts)))
 
 (defn lint
   "Is this bead workable?. Runs `bops lint`; returns {:exit :doc :err}.\n   opts: :strict (bool)."
