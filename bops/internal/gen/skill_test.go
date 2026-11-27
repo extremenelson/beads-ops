@@ -243,9 +243,10 @@ func TestSkillNamesTheRepoBranchPattern(t *testing.T) {
 	}
 }
 
-// The longest pattern branch_pattern allows keeps the skill under its cap.
+// A pattern of the longest length branch_pattern allows keeps the skill under
+// its cap.
 func TestSkillUnderTheCapWithTheLongestBranchPattern(t *testing.T) {
-	files, err := gen.CCWith(embedded(t), gen.Options{Branch: strings.Repeat("a", 40)})
+	files, err := gen.CCWith(embedded(t), gen.Options{Branch: strings.Repeat("a", 35) + "/<id>"})
 	if err != nil {
 		t.Fatal(err)
 	}

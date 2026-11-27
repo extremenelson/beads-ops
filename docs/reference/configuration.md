@@ -33,7 +33,7 @@ A missing file is skipped. A file that exists must be one JSON object.
 | [`blocking_labels`](#blocking_labels) | list of bead labels | none | `BOPS_BLOCKING_LABELS` (comma-separated) | `next`, `lint` (W15), `claim` |
 | [`lock.remote`](#lockremote) | git remote name | `origin` | `BOPS_LOCK_REMOTE` | claim-ref commands, `doctor`, forge inference |
 | [`min_bops`](#min_bops) | bops release, `MAJOR.MINOR.PATCH` | none | only from `.bops.json` | every command but `guard`, `doctor` |
-| [`branch_pattern`](#branch_pattern) | branch name, at most 40 characters | `work/<id>` | only from `.bops.json` | `gen cc`, `gen codex` |
+| [`branch_pattern`](#branch_pattern) | branch name carrying `<id>`, at most 40 characters | `work/<id>` | only from `.bops.json` | `gen cc`, `gen codex` |
 | `lint.strict` | boolean | `false` | `BOPS_LINT_STRICT` | loaded and validated, **not applied yet**; use `bops lint --strict` |
 | `lint.disable` | list of rule ids | none | `BOPS_LINT_DISABLE` | loaded and validated, **not applied yet**. Only `.bops.json` may list `W15` |
 | `note.require_next` | boolean | `false` | `BOPS_NOTE_REQUIRE_NEXT` | loaded and validated, **not applied yet** |
@@ -93,7 +93,7 @@ A build with no version, such as `go install ./cmd/bops` from a clone, reports `
 
 ### `branch_pattern`
 
-The branch the generated agent skill names for a bead's worktree, in place of `work/<id>`, such as `"feat/<slug>-<id>"`. `bops gen cc` and `bops gen codex` read it from the `.bops.json` of the repo they run in, so regenerate the skill after changing it. bops itself creates no branch; the skill's commands do. It may use letters, digits, `.`, `_`, `/`, `-` and lowercase `<placeholder>` words, at most 40 characters, and nothing git refuses in a branch name (`..`, `//`, a leading `-` or `/`, a trailing `/`, `.` or `.lock`). Only `.bops.json` may set it, so every machine regenerates the same skill. A `bops` older than the release that adds it fails every command in that repo with `bad_config`, as for any unknown key.
+The branch the generated agent skill names for a bead's worktree, in place of `work/<id>`, such as `"feat/<slug>-<id>"`. `bops gen cc` and `bops gen codex` read it from the `.bops.json` of the repo they run in, so regenerate the skill after changing it. bops itself creates no branch; the skill's commands do. It may use letters, digits, `.`, `_`, `/`, `-` and lowercase `<placeholder>` words, at most 40 characters, and nothing git refuses in a branch name (`..`, `//`, a leading `-` or `/`, a component starting with `.` or ending in `.lock`, a trailing `/` or `.`). It must carry `<id>` bounded on each side by an end or one of `/ - _ .`, as in `work/<id>` or `feat/<slug>-<id>`: `bops reap` finds a bead's pushed work by the id as such a token in a branch name, so a branch named by `feat/<slug>` or `feat/<slug><id>` would be work `reap` cannot see, and it would release the claim as holding none. Write the bead id itself there, not a shortened or slugged form. Only `.bops.json` may set it, so every machine regenerates the same skill. A `bops` older than the release that adds it fails every command in that repo with `bad_config`, as for any unknown key.
 
 ### `forge`
 

@@ -418,7 +418,7 @@ func setString(c *Config, k key, v string) error {
 		*k.ref(c).(*string) = normalizeMin(v)
 	case kBranch:
 		if !validBranchPattern(v) {
-			return fmt.Errorf("%s: want a branch name of at most %d letters, digits, '.', '_', '/', '-' and <placeholder> words, such as work/<id>, got %q", k.path, maxBranchPattern, v)
+			return fmt.Errorf("%s: want a branch name of at most %d letters, digits, '.', '_', '/', '-' and <placeholder> words, with <id> bounded by an end or one of / - _ ., such as work/<id>, got %q", k.path, maxBranchPattern, v)
 		}
 		*k.ref(c).(*string) = v
 	case kStrings, kLabels:
