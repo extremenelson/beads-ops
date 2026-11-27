@@ -79,8 +79,10 @@ func SessionStart(ctx context.Context, env *Env) (*SessionStartOut, error) {
 		}
 	}
 
-	for id := range env.Run.Held {
-		out.Mine = append(out.Mine, id)
+	for id, h := range env.Run.Held {
+		if !h.Given() { // a release waiting on its push or ref delete is not a claim
+			out.Mine = append(out.Mine, id)
+		}
 	}
 	sort.Strings(out.Mine)
 

@@ -77,7 +77,7 @@ func TestPruneBeadLocksRemovesOnlyFreeUnheldFiles(t *testing.T) {
 	root, stateHome := repo(t)
 	s := open(t, root, Read)
 	path := firstOrEmpty(stateFiles(t, stateHome))
-	held := `{"version":5,"runs":{"` + s.worktree + `":{"id":"RUN","machine":"m","actor":"a","started_at":"2026-11-09T00:00:00Z","held":{"held-1":{"sha":"aaa","phase":"held"}}},` +
+	held := `{"version":6,"runs":{"` + s.worktree + `":{"id":"RUN","machine":"m","actor":"a","started_at":"2026-11-09T00:00:00Z","held":{"held-1":{"sha":"aaa","phase":"held"}}},` +
 		`"/elsewhere":{"id":"SIB","machine":"m","actor":"b","started_at":"2026-11-09T00:00:00Z","held":{"held-2":{"sha":"bbb","phase":"held"}}}}}`
 	if err := os.WriteFile(path, []byte(held), 0o600); err != nil {
 		t.Fatal(err)
@@ -190,7 +190,7 @@ func TestPruneBeadLocksKeepsAnUnsavedOwnHold(t *testing.T) {
 	root, stateHome := repo(t)
 	s := open(t, root, Read)
 	path := firstOrEmpty(stateFiles(t, stateHome))
-	if err := os.WriteFile(path, []byte(`{"version":5,"runs":{}}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"version":6,"runs":{}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	release, err := s.LockBead("mine-1")

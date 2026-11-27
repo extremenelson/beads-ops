@@ -53,11 +53,13 @@ func ClaimNext(ctx context.Context, env *Env) (*ClaimOut, error) {
 	// A retry whose first reply was lost must not take a second bead, and a
 	// run shared with an orchestrator must not be handed a bead another agent
 	// works: a run that already holds any bead is refused, naming them.
-	if len(env.Run.Held) > 0 {
-		held := make([]string, 0, len(env.Run.Held))
-		for id := range env.Run.Held {
+	held := make([]string, 0, len(env.Run.Held))
+	for id, h := range env.Run.Held {
+		if !h.Given() { // released, waiting on its push or ref delete
 			held = append(held, id)
 		}
+	}
+	if len(held) > 0 {
 		slices.Sort(held)
 		return &ClaimOut{Run: env.Run.ID, Outcome: OutcomeRefused, Warnings: []string{},
 			Reason: "this run already holds " + strings.Join(held, ", ") + ": work or release it, or claim by id"}, nil
