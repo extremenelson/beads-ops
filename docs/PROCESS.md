@@ -428,7 +428,7 @@ git log -1 --format=%B refs/bops/seen/<id>     # run=, actor=, state=held|landin
 
 `bops sync` fetches every claim ref the same way. The clone's own record of what it did is `~/.local/state/bops/*/events.jsonl`.
 
-**List what is stuck.** `bops stale` lists claims idle longer than `--older-than` (default 2h) with their actor, age and `same_machine`, and `orphans`: held claim refs, over the same age, whose bead shows no claim on the ledger. Age comes from the claim ref, which `note` refreshes; a claim with no ref is aged from the ledger. `--all-machines=false` keeps to this machine. Offline, it uses the refs from the last `sync` and says so in `warnings`.
+**List what is stuck.** `bops stale` lists claims idle longer than `--older-than` (default 2h) with their actor, age and `same_machine`, and `orphans`: held claim refs, over the same age, whose bead shows no claim on the ledger (`bops gc` deletes them). Age comes from the claim ref, which `note` refreshes; a claim with no ref is aged from the ledger. `--all-machines=false` keeps to this machine. Offline, it uses the refs from the last `sync` and says so in `warnings`.
 
 | Symptom | Cause | Do |
 |---|---|---|
@@ -452,7 +452,7 @@ git log -1 --format=%B refs/bops/seen/<id>     # run=, actor=, state=held|landin
 | Another person's stale claim (`claim --force`) | Any developer | Try to reach the holder (the actor in the ref), and wait if they answer |
 | Stale claims that hold no visible work (`reap --dry-run=false --only`) | Any developer | Read the preview; the same as a `claim --force` of each |
 | Another person's abandoned landing (act as their actor, below) | A lead | Confirm the PR is closed unmerged and the holder is not coming back |
-| Deleting an orphan claim ref (below) | A lead | Confirm it is an orphan |
+| Deleting an orphan claim ref, or a closed bead's (`gc --dry-run=false --only`, or by hand, below) | A lead | Read the preview, or confirm it is an orphan |
 
 Whoever takes over adds a comment to the bead saying who did it, whose claim it was (actor and run, from the ref), and why, so the displaced person finds it:
 
@@ -524,7 +524,14 @@ git log -1 --format=%B refs/bops/seen/<id>   # state=held, and the run is not on
 bd show <id> --json                           # no assignee, no run: label for that run
 ```
 
-Then either wait 120 minutes and `bops claim --force <id>`, or delete it now with a lease on the sha you read, so a ref that changed in the meantime is left alone:
+**Many leftover refs at once (beads closed with plain `bd close`).** A bead closed with `bd close` instead of `bops sweep` keeps its claim ref, held or landing, on the remote. `bops gc` previews every ref it would delete: the ref of each closed bead, and each orphan `bops stale --all-machines` lists (a bead missing from the ledger counts). It never deletes a ref whose bead is not closed and carries a claim by that run or actor, in progress or parked `blocked` or `deferred` (a parked one is listed under `kept`: `stale` lists its ref as an orphan, but it is held), nor a landing ref of a bead in progress, which is `sweep`'s. A closed bead's ref younger than `stale_minutes` and written later than 15 minutes before the bead's last ledger change is kept, since it may be a claim of a reopened bead whose ledger write is pending, on a machine whose clock differs. A ref whose bead cannot be read, for any reason but bd's `no issues found`, is left and listed under `failed` as `unread`. The real run refuses a Dolt remote on another repository than the lock remote's. The real run pulls the ledger and fetches the refs first, deleting nothing if either fails; then, under each bead's lock, it re-reads the bead from the ledger it pulled, and this clone's holds, keeps a ref that is no longer garbage or that a hold here names (listed under `kept`), and deletes with a lease on the sha it read, so a ref re-taken meanwhile is left alone (listed under `failed`). It writes nothing to the ledger. Afterwards `bops stale` lists no orphans.
+
+```bash
+bops gc                                     # preview: would_delete and kept
+bops gc --dry-run=false --only <id>,<id>    # delete those previewed refs
+```
+
+For a single orphan, either wait 120 minutes and `bops claim --force <id>`, or delete it now with a lease on the sha you read, so a ref that changed in the meantime is left alone:
 
 ```bash
 git push --no-verify --force-with-lease=refs/bops/claims/<id>:$(git rev-parse refs/bops/seen/<id>) origin :refs/bops/claims/<id>

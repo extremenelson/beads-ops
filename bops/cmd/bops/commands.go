@@ -566,15 +566,8 @@ func cmdReap(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 		return emit(m, "reap", asJSON, nil, err, stdout, stderr)
 	}
 	defer store.Close()
-	var ids []string
-	for _, id := range strings.Split(*only, ",") {
-		if id = strings.TrimSpace(id); id != "" {
-			ids = append(ids, id)
-		}
-	}
-	onlySet := false
-	fs.Visit(func(f *flag.Flag) { onlySet = onlySet || f.Name == "only" })
-	if onlySet && len(ids) == 0 {
+	ids, ok := onlyIDs(fs, *only)
+	if !ok {
 		// An empty list (a preview that listed nothing, a failed expansion)
 		// must not widen into every stale claim.
 		fmt.Fprintln(stderr, "bops reap: --only names no bead ids")
@@ -588,6 +581,91 @@ func cmdReap(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 	return code
 }
 
+func cmdGC(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
+	fs := newFlagSet("gc", stderr)
+	dryRun := fs.Bool("dry-run", true, "report what would be deleted without deleting it")
+	only := fs.String("only", "", "comma-separated bead ids: act on these only")
+	fs.Bool("json", false, "")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: bops gc [--dry-run=false] [--only <id>,<id>]")
+		return exitUsage
+	}
+	ids, ok := onlyIDs(fs, *only)
+	if !ok {
+		// An empty list (a preview that listed nothing, a failed expansion)
+		// must not widen into every ref.
+		fmt.Fprintln(stderr, "bops gc: --only names no bead ids")
+		return exitUsage
+	}
+	env, store, err := newEnv(runstate.Read)
+	if err != nil {
+		return emit(m, "gc", asJSON, nil, err, stdout, stderr)
+	}
+	defer store.Close()
+	out, err := intent.GC(ctx, env, intent.GCOpts{DryRun: *dryRun, Only: ids})
+	code := emit(m, "gc", asJSON, out, err, stdout, stderr)
+	if !asJSON && out != nil {
+		gcDetails(stdout, out)
+	}
+	return code
+}
+
+// onlyIDs splits --only into bead ids. It reports false when the flag was
+// given but names none.
+func onlyIDs(fs *flag.FlagSet, only string) ([]string, bool) {
+	var ids []string
+	for _, id := range strings.Split(only, ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	set := false
+	fs.Visit(func(f *flag.Flag) { set = set || f.Name == "only" })
+	return ids, !set || len(ids) > 0
+}
+
+// gcDetails prints what printKV's id lists leave out: why each ref is or is
+// not deleted.
+func gcDetails(w io.Writer, out *intent.GCOut) {
+	for _, list := range []struct {
+		name string
+		gs   []intent.GCRef
+	}{{"would delete", out.WouldDelete}, {"deleted", out.Deleted}, {"kept", out.Kept}, {"failed", out.Failed}, {"skipped", out.Skipped}} {
+		for _, g := range list.gs {
+			what := strings.TrimSpace(g.Why + " " + g.State)
+			if g.Run != "" {
+				what += ", run " + g.Run + " by " + orDashText(g.Actor)
+			}
+			line := fmt.Sprintf("%s %s", list.name, cleanText(g.ID))
+			if what != "" {
+				line += " (" + cleanText(what) + ")"
+			}
+			if g.Detail != "" {
+				line += ": " + cleanText(g.Detail)
+			}
+			fmt.Fprintln(w, line)
+		}
+	}
+}
+
+// cleanText replaces control characters: ledger and ref text can hold
+// terminal control sequences.
+func cleanText(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return '?'
+		}
+		return r
+	}, s)
+}
+
+func orDashText(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
 func savedTo(p string) string {
 	if p == "" {
 		return ""
@@ -598,15 +676,7 @@ func savedTo(p string) string {
 // reapDetails prints what printKV's id lists leave out: why each claim was
 // kept, and what to do about each one reap could not finish.
 func reapDetails(w io.Writer, out *intent.ReapOut) {
-	// Ledger and ref text can hold terminal control sequences; print none.
-	clean := func(s string) string {
-		return strings.Map(func(r rune) rune {
-			if unicode.IsControl(r) {
-				return '?'
-			}
-			return r
-		}, s)
-	}
+	clean := cleanText // ledger and ref text can hold terminal control sequences
 	where := func(same bool) string {
 		if same {
 			return "this machine"
