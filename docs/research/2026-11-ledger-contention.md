@@ -156,6 +156,7 @@ more. That was not measured.
 ## For the push-contention design
 
 The design that answers this section: [ledger push contention](../designs/ledger-push-contention.md).
+Its go/no-go measurement is [Same-row pulls on an unpushed claim display](#same-row-pulls-on-an-unpushed-claim-display-2026-11-27) below.
 
 What a structural fix has to beat, from the numbers above:
 
@@ -294,3 +295,210 @@ machines 0 and 1 on one host.
   ledger work per bead is the same, but the rate is far higher here. The
   numbers are a stress bound per writer, not a forecast of a working day.
 - bd 1.3.4 and bops `648d9a2` only.
+
+## Same-row pulls on an unpushed claim display (2026-11-27)
+
+> **Measured 2026-11-27** on the same Mac, bd 1.3.4 (Homebrew, embedded
+> Dolt), a local bare git repository as the remote, two clones of it. The
+> Dolt CLI 2.7.7 only read copies of a store. The first eight cases ran four
+> times with the same outcome in every row; `takeover-multi`, `park`,
+> `delete` and `delete-today` were added after review and ran once or twice.
+
+### Question
+
+The [push-contention design](../designs/ledger-push-contention.md) stops
+`claim` from pushing its ledger display, so the display stays unpushed for a
+whole claim-to-land session. Another machine that edits the same bead row in
+that window meets it at the claiming machine's next `bd dolt pull`. What does
+that pull do for each edit that can happen: which cell values survive, which
+side wins, does it stop for a person, and does the push after it succeed?
+
+### Answer
+
+- **No edit of a live bead stopped.** A takeover, a person's title,
+  priority or notes edit, parking it `blocked`, label changes, a `sweep`
+  close, a comment and an abandoned takeover: in each A's `bd dolt pull`
+  exited 0 and the `bd dolt push` after it exited 0. A claim display writes
+  `assignee`, `status`, `started_at`, `updated_at`, labels and a comment,
+  never `notes`, so the same-cell `notes` stop in
+  [MULTI-DEV-PLAN §6](../MULTI-DEV-PLAN.md#6-conflicts-and-recovery)
+  cannot come from it. (`note`'s `bd heartbeat` writes `heartbeat_at` to the
+  `leases` table, which Dolt ignores, so it is never pushed or merged.)
+- **Deleting the held bead stops the pull, and the design makes that more
+  likely.** A person's `bd delete` of the bead meets the claim display's row
+  change as a modify/delete conflict: `bd dolt pull` exits 1 ("merge
+  conflicts in issues require operator resolution; merge aborted"), and
+  every later pull and push from that clone fails the same way, so the
+  machine publishes nothing, for any bead, until a person resolves it.
+  Today's flow can stop the same way (`delete-today`: the display pushed at
+  once, then the holder writes the row again before any pull reaches its
+  clone), but today any pull in between (every `claim`, `sweep`, `reap`,
+  `sync` and `session-start` pulls) fast-forwards the delete into the
+  holder's clone instead, and only that bead's `land` or `release` fails
+  (not measured). Under the design the display stays unpushed, so the first
+  such pull stops. `--strategy theirs` kept the delete in `delete-today` but
+  failed with an error in `delete`; `--strategy ours` brought the bead back,
+  without its labels and comments in `delete-today` and without the seeded
+  label in `delete`; both left tables uncommitted, so a person resolving
+  with a strategy meets the commit gap below too. No resolution can be read
+  from the ref: the ref says the bead is held, the person meant to delete
+  it.
+- **bd settles the issue row field by field.** A field only one side changed
+  takes that side's value. A field both sides changed is settled
+  last-write-wins by time: the side with the newer `updated_at` wins, either
+  way round (in `takeover-first` the claim display was newer and won). bd
+  says which fields it settled in a `Notice: auto-merged issue <id>; ...`
+  line on the pull. Labels and comments are unioned, and a label removed on
+  one side stays removed.
+- **But bd 1.3.4 leaves the union uncommitted.** When the issue row needed
+  settling **and** the other side had added labels or comments (the
+  takeover cases; the person and close cases settled row fields too, but B
+  added no labels or comments there, and nothing was left), the other side's new labels and
+  comments were in A's merged view but only in its **working set**: the
+  merge commit, the one A's push publishes, does not have them. So after A's
+  push the remote shows B's takeover labels and comments as gone, and B's own
+  next pull removes them from B's ledger too. They come back only when A
+  next commits (a pull that merges something new did it in every run, and
+  in one hand check so did a bd write to another bead) and pushes that. A store lost before then loses them for good. `bd vc status`
+  does not show the uncommitted tables (the Dolt CLI's `dolt status` on a
+  copy of the store does), and `bd sql` does not run in embedded mode.
+- **`bd dolt commit` straight after the pull closes the gap.** With it, the
+  remote after A's push showed exactly A's merged view in every case that did not stop. When
+  the pull left nothing uncommitted it printed `Nothing to commit.` and
+  exited 0, so it is safe to run before every push. Before every push, not
+  only after bops's own pulls: on a machine of several agents, another
+  agent's first push try (which does not pull) can land between one agent's
+  pull and its commit, and a budget SIGTERM can stop a command between the
+  two.
+- **The abandoned takeover leaves a mixed row.** After A's pull the bead
+  shows `in_progress` (only A changed `status`: B's release put it back to
+  the base value `open`), no assignee (B's release was newer), labels
+  `run:<A's run>` and `bops:hold`, `updated_at` from **B's release**, and
+  B's `bops:released` as the newest `bops:` comment. So `stale` lists it
+  (it is `in_progress`) and ages it from the takeover's release, not from the
+  original claim, and `notClaimable` refuses it until `reap` releases it.
+
+### Results
+
+Clone A wrote a claim display (one `bd update --assignee devA --status
+in_progress --force --add-label run:runA`, then a `bops:claimed` comment) and
+did not push; 1.2 s later clone B made the edit and pushed it. "A's merged
+view" is what A's ledger shows after its pull; "remote" is what a pull on B
+shows after A's push. Every pull and push below exited 0 in every run, except in the two delete
+cases.
+
+| Case: B's edit | bd settled last-write-wins | A's merged view | Remote after A's push, no commit | Remote after A's push, with `bd dolt commit` |
+|---|---|---|---|---|
+| control: B edits another bead | nothing | A's display | as A's view | as A's view |
+| takeover: `--assignee devB --status in_progress --force --add-label run:runB`, `bops:claimed` comment | assignee, updated_at, started_at (B newer) | assignee devB, `in_progress`, `run:runA` and `run:runB`, both comments | assignee devB, **`run:runA` only, A's comment only** | as A's view |
+| person: `--title`, `--priority 1`, `--notes` | updated_at | A's display plus B's title, priority and notes | as A's view | as A's view |
+| labels: add `area:new`, remove `area:seed` | nothing | `area:new`, `run:runA`; `area:seed` gone | as A's view | as A's view |
+| close: `bd close --reason "merged via ..."`, as sweep does | status, updated_at, closed_at, close_reason (B newer) | `closed`, but assignee devA and `run:runA` stay | as A's view | as A's view |
+| comment: a person's comment | nothing | both comments | as A's view | as A's view |
+| takeover, then release `--reason abandoned` (assignee cleared, status open, `run:runB` removed, `bops:hold` added, `bops:released` comment) | assignee, updated_at, started_at (B newer) | `in_progress`, no assignee, `run:runA` and `bops:hold`, 3 comments, newest `bops:released`, updated_at of B's release | `in_progress`, no assignee, **`run:runA` only, A's comment only**, updated_at of B's release | as A's view |
+| takeover-first: B's takeover pushed before A writes its display | assignee, updated_at, started_at (**A newer**) | assignee devA, `run:runA` and `run:runB`, both comments | assignee devA, **`run:runA` only, A's comment only** | as A's view |
+| takeover-multi: as takeover, but both sides write today's display (`bd update --claim`, then `bd label add` and the comment; B sees the bead open, as a real `claim --force` there would), and A a `bd heartbeat` as `note` does | assignee, updated_at, started_at (B newer) | as takeover | as takeover | as A's view |
+| park: `bd update --status blocked` | status, updated_at (B newer) | assignee devA, `blocked`, `run:runA` | as A's view | as A's view |
+| delete: `bd delete --force` | **stops: exit 1, merge aborted; A's push then fails, and so does every later pull and push** | A's display, unmerged | the bead stays deleted | stops the same way |
+| delete-today: A's display pushed at once and B has it; B deletes; A writes the row again (`--notes`; land's record is a `--metadata` update of the same row) | **stops the same way** | as delete | as delete | not run |
+
+In the bold cells the missing rows came back once A wrote again and pushed;
+in the "A pull again" step a merging pull committed them too. The
+uncommitted tables after A's plain pull (no `--strategy`) were `comments`
+and `labels`, both `modified` (never `conflict`), in exactly the four
+takeover cases and none elsewhere. `takeover-multi` shows the outcome does not depend on the claim
+display being one `bd update`: today's multi-commit display behaves the
+same.
+
+What each row means for an unpushed claim display:
+
+- **Takeover.** The right holder wins the assignee, because a takeover comes
+  after the claim it takes over (the claim ref must be stale first), so long
+  as the machines' clocks agree. `takeover-first` shows the rule is by time,
+  not by side: a claiming machine whose clock runs ahead by more than the
+  gap would win the assignee back for a holder the ref has replaced. The ref
+  still decides ownership; the display would name the wrong holder until the
+  new holder's next display write or release. Ties within `updated_at`'s
+  one-second resolution were not measured. The old run's `run:` label stays
+  beside the new one until the new holder's `release` (which removes every
+  `run:` label) or a display write of its run.
+- **Person's edit and labels.** Merged cleanly: the person's fields and the
+  claim display both stand.
+- **Close.** The close wins, and the claim's assignee and `run:` label stay
+  on the closed bead. Only a bead reopened, claimed on one machine and
+  closed on another inside the window gets here. `display` skips closed
+  beads, but the holder's own `release` clears the assignee and `run:`
+  label (its display does not skip closed beads; `--reason done` also adds
+  `bops:landing` to the closed bead).
+- **Park.** The person's `blocked` wins and the claim's assignee and `run:`
+  label stay, which is what a person parking a held bead gets today; `sync`
+  keeps a parked status when it repairs a display.
+- **Delete.** See the Answer: a stop today's flow can also hit, which the
+  design makes more likely.
+- **Comment.** Both stand, committed.
+- **Abandoned takeover (the ghost display).** `reap` (which looks at every
+  machine's claims) lists it, aged from the takeover's release, and releases
+  it unless its evidence rules find work by the dead run (a pushed branch or
+  an open merge request); then it stays `in_progress` for a person, as an
+  idle claim does today. Plain `stale` shows it only on the dead holder's
+  machine unless asked for all machines.
+
+### Verdict for the design
+
+**Go, with one named resolution:** bops runs `bd dolt commit` before every
+`bd dolt push` it makes (so after every pull, too), so an auto-merged pull
+publishes what it merged. That is a bops fix, not a resolution from the
+ref. The one stop measured, a person deleting a bead an agent holds,
+cannot be resolved from the ref, and the design makes it more likely (any
+pull on the holder's machine during the session meets it, not only the
+holder's next row write). It is not counted as a likely case: on a bops
+ledger a person deletes a held bead only by mistake, and it can stop
+today's flow too. Because it stops every push from that machine, it must be
+reported with its runbook (step 4 makes a failed pull an event `status` and
+`doctor` report). A team that deletes held beads routinely should take
+that as the no-go and move to server mode. The commit gap
+exists today too, whenever a push retry's pull auto-merges a same-row edit,
+and a person's raw `bd dolt push` after such a pull still publishes the
+incomplete merge; the design only makes the window longer. bd should commit its union itself (an upstream
+report is worth filing); while bops supports bd 1.3.4, the commit stays in
+bops.
+
+### Method
+
+[`2026-11-ledger-contention.sh`](2026-11-ledger-contention.sh) `pulls`:
+
+```sh
+bash docs/research/2026-11-ledger-contention.sh pulls /tmp/pulls              # every case
+MEASURE_COMMIT=1 bash docs/research/2026-11-ledger-contention.sh pulls /tmp/pulls-c   # and each with bd dolt commit
+bash docs/research/2026-11-ledger-contention.sh pulls /tmp/pulls-t takeover   # one case
+```
+
+It isolates bd and bops state as `local` does. It seeds one bare remote with
+two beads, each labelled `area:seed`, then gives each case its own copy of
+that remote and two new clones (`git clone`, `bd bootstrap`) with their own
+`BEADS_ACTOR`. No bops runs: A and B make the bd calls bops makes, with the
+claim display in the single `bd update` the design proposes (in
+`takeover-multi`, the separate calls bops makes today). After A's pull
+and push it reads the remote from B, then B writes another bead and pushes, A
+pulls again, writes another bead and pushes, and B reads the remote once
+more. A case whose pull exits non-zero would run again from the start with
+`--strategy ours` and with `--strategy theirs`; only the delete cases did. Each step's row
+(exit, the tables a copy of the store shows uncommitted, the bead's
+assignee, status, labels, title, priority, notes, updated_at, closed_at,
+comment count and newest `bops:` comment, and bd's output) goes to
+`<workdir>/pulls.tsv`.
+
+### Limits
+
+- bd 1.3.4 embedded only; a newer bd may commit its union itself or settle
+  differently. Re-run `pulls` before relying on this on another bd.
+- One host, a local remote, B's edit 1.2 s after A's write. Clock skew
+  between real machines was not measured; settling by time assumes clocks
+  agree.
+- One edit per case, on one bead. Two edits of the same bead by B in one
+  window, a three-way meeting, dependency or parent edits and a `deferred`
+  park were not run.
+- bops was not in the loop: what `claim`, `land`, `release` and `sweep` do
+  with a merged row is read from their code, not measured.
+- The per-run `pulls.tsv` files are not committed; `pulls` reproduces them
+  in about five minutes with `MEASURE_COMMIT=1`.
