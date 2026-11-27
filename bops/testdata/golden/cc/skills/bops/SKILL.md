@@ -5,17 +5,17 @@ description: Work a beads issue through the bops loop (next, claim, note, land, 
 
 # bops: the work loop for a bead
 
-`bops` wraps `bd` in intent-level commands. Use it instead of raw `bd update --claim`. Every command prints JSON when piped: read `ok`, `outcome` and `code`; exit codes are at the end.
+`bops` wraps `bd` in intent-level commands. Every command prints JSON when piped: read `ok`, `outcome` and `code`; exit codes are at the end.
 
 An agent whose orchestrator claimed for it (`/bead-loop`) follows the orchestrator, not this skill. A repo protocol file (`docs/agent-protocol.md`) wins on branch, worktree, landing and sync.
 
-A claim is held by a git ref on `origin`, which is what makes it safe across machines. `claim`, `release` and `land` need the network. Raw `bd update --claim` bypasses the lock, so never use it for work another machine might pick up.
+A claim is held by a git ref on `origin`, which makes it safe across machines and which raw `bd update --claim` bypasses. `claim`, `release` and `land` need the network.
 
 ## The loop
 
 1. **Orient.** Run `bd list --status in_progress --json`. Work the bead the person named; otherwise unfinished work comes first. A bead assigned to your name may be another session's (agents share names): read `bd comments <id>`, and ask if unsure. `bops:landing` means the work is done and waiting on its PR.
 2. **Choose.** Run `bops next`. Take the first candidate unless you have a reason not to. `bops next` never claims for you. Read the bead with `bd show <id>` for its description and acceptance criteria.
-3. **Make a worktree, then claim inside it.** Your run identity belongs to the worktree, so the order matters:
+3. **Make a worktree, then claim inside it.** Your run identity belongs to the worktree:
    ```bash
    bd worktree create .worktrees/<id> --branch work/<id>
    cd .worktrees/<id>
@@ -54,7 +54,7 @@ Use `bops release <id> --reason <reason>`, with your explanation in a `bops note
 
 ## Closing
 
-Do not close beads yourself. `bops sweep` previews which landed beads have merged PRs, and `bops sweep --dry-run=false` closes them. A person or a scheduled job runs that. In beads-ops itself, rebuild first after a `bops/` change merges: `(cd bops && go install ./cmd/bops)`; `bops doctor` warns when it is older.
+Do not close beads yourself. `bops sweep` previews which landed beads have merged PRs, and `bops sweep --dry-run=false` closes them; a person or a scheduled job runs that. In beads-ops itself, rebuild first after a `bops/` change merges: `(cd bops && go install ./cmd/bops)`; `bops doctor` warns when it is older.
 
 ## When something goes wrong
 
@@ -69,7 +69,7 @@ Do not close beads yourself. `bops sweep` previews which landed beads have merge
 - **Moving machines:** after `bops note` and a branch push, the person runs `bops claim --resume <id>` from the new machine's worktree. Never in an autonomous loop.
 - **A reviewer asks for changes after `release --reason done`:** run `bops claim --resume <id>` from a worktree, then continue from step 4. Only the actor who landed it can.
 - **`bops sync` lists `stranded_holds`:** those beads were held by a removed worktree. If the work is abandoned, run `bops release <id> --reason abandoned` from any worktree of this clone.
-- **A bead looks abandoned:** `bops stale` lists idle claims and orphan refs; `bops reap` previews those with no visible work. Releasing them or `claim --force` is a person's call: report the list. Runbook: PROCESS §12.
+- **A bead looks abandoned:** `bops stale` lists idle claims and orphan refs; `bops reap` previews those with no visible work, `bops gc` the refs to delete. Acting on either, or `claim --force`, is a person's call: report the list. Runbook: PROCESS §12.
 
 ## Command reference (contract 1)
 
@@ -87,6 +87,7 @@ Exit codes: **0** done, or a read's verdict; **1** could not run: remote or ledg
 | `bops sweep [--dry-run] [--forge]` | write | Close landed beads whose refs are merged |
 | `bops stale [--all-machines] [--older-than]` | read | Claims nobody is working |
 | `bops reap [--dry-run] [--older-than] [--only]` | write | Release stale claims that hold no work |
+| `bops gc [--dry-run] [--only]` | write | Delete refs of closed beads and orphans |
 | `bops lint <id> [--strict]` | read | Is this bead workable? |
 | `bops sync [--no-push]` | write | Pull, heartbeat, push — with the one retry |
 | `bops doctor` | read | Can the claim lock work against its remote (lock.remote, default origin)? |

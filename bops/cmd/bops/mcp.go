@@ -93,8 +93,8 @@ func mcpArgv(c *manifest.Command, args map[string]any) ([]string, *string, error
 		v, given := args[an]
 		if v == nil {
 			given = false
-			if _, present := args[an]; present && c.Name == "reap" && an == "only" {
-				// An explicit null is an empty list, which reap refuses, never
+			if _, present := args[an]; present && (c.Name == "reap" || c.Name == "gc") && an == "only" {
+				// An explicit null is an empty list, which reap and gc refuse, never
 				// "no filter": a preview that listed nothing must not widen.
 				argv = append(argv, "--only=")
 				continue

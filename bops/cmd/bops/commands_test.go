@@ -729,3 +729,47 @@ func TestReapDetailsPrintsFollowUpsWithoutControlBytes(t *testing.T) {
 		t.Errorf("control byte or a no-news release printed:\n%s", got)
 	}
 }
+
+// A bare `bops gc` must only preview: deleting claim refs is a person's call.
+func TestGCDefaultsToADryRun(t *testing.T) {
+	m, err := manifest.Parse(bops.ManifestJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, ok := m.Lookup("gc")
+	if !ok || c.Args["dry-run"].Default != true {
+		t.Fatalf("manifest gc dry-run default = %v", c.Args["dry-run"].Default)
+	}
+	stderr, _ := os.CreateTemp(t.TempDir(), "err")
+	if code := cmdGC(context.Background(), m, []string{"--bogus"}, true, stderr, stderr); code != exitUsage {
+		t.Errorf("unknown flag: exit %d, want %d", code, exitUsage)
+	}
+	// An empty --only (a preview that listed nothing) must not widen to every ref.
+	for _, only := range []string{"", ",", " , "} {
+		if code := cmdGC(context.Background(), m, []string{"--dry-run=false", "--only", only}, true, stderr, stderr); code != exitUsage {
+			t.Errorf("--only %q: exit %d, want %d", only, code, exitUsage)
+		}
+	}
+}
+
+func TestGCDetailsPrintsEachRefWithoutControlBytes(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gcDetails(f, &intent.GCOut{
+		WouldDelete: []intent.GCRef{{ID: "x-1", Why: intent.GCClosed, State: "landing", Run: "R", Actor: "a"}},
+		Kept:        []intent.GCRef{{ID: "x-2", State: "held", Run: "R", Detail: "held by run R\x1b[31m"}},
+		Skipped:     []intent.GCRef{{ID: "x-3", Detail: "not a ref gc deletes now"}},
+	})
+	b, _ := os.ReadFile(f.Name())
+	got := string(b)
+	for _, want := range []string{"would delete x-1 (closed landing, run R by a)", "kept x-2 (held, run R by -): held by run R", "skipped x-3: not a ref gc deletes now"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "\x1b") {
+		t.Errorf("control byte printed:\n%s", got)
+	}
+}

@@ -14,6 +14,7 @@ Exit codes: **0** = done, or a read's verdict; **1** = could not run: remote or 
 | `sweep` | Close landed beads whose refs are merged | write |
 | `stale` | Claims nobody is working | read |
 | `reap` | Release stale claims that hold no work | write |
+| `gc` | Delete refs of closed beads and orphans | write |
 | `lint` | Is this bead workable? | read |
 | `sync` | Pull, heartbeat, push — with the one retry | write |
 | `session-start` | Orient a fresh agent session | read+sync |
@@ -332,6 +333,90 @@ Output:
       "age_minutes": "int",
       "same_machine": "bool",
       "evidence": "string[]"
+    }
+  ],
+  "warnings": "string[]"
+}
+```
+
+## `bops gc`
+
+Delete refs of closed beads and orphans
+
+| Arg | Type | Default | Doc |
+|---|---|---|---|
+| `--dry-run` | bool | `true` |  |
+| `--only` | string? |  | Comma-separated bead ids, normally the ones a preview listed under would_delete: act on these only. One whose ref is no longer one gc deletes is listed under skipped; one with no ref at all is a warning; an empty list is a usage error. |
+
+Preconditions: the claim lock is on (lock.mode is not none); a Dolt remote on the lock remote's repository (not with --dry-run).
+
+Never: delete a ref whose bead is not closed and carries a claim by the ref's run or actor (in progress, or parked blocked or deferred; a parked one is listed under kept), or a landing ref of a bead in progress (sweep's), delete an orphan younger than stale_minutes, or a closed bead's ref younger than stale_minutes written later than 15 minutes before the bead's last ledger change (a claim whose ledger write may be pending, allowing for clock skew); the latter is listed under kept, delete anything when the ledger pull or the ref fetch fails, delete a ref a hold of this clone names, or whose bead changed since gc read it (re-read from the ledger as pulled, under the bead lock; listed under kept), delete a ref re-taken since gc read it (the delete leases the sha it read; listed under failed), wait for a bead another bops process on this machine is working on (listed under failed), delete or keep a ref whose bead could not be read, or that the command's time ran out before judging (listed under failed), write the ledger.
+
+Wraps: `bd dolt pull (not with --dry-run)`, `git fetch --prune refs/bops/claims/* (not with --dry-run; stale's copy otherwise)`, `stale --all-machines`, `bd show <id> --json (each ref's bead; again under the bead lock)`, `git push (lease): delete the ref`.
+
+Output:
+
+```json
+{
+  "dry_run": "bool",
+  "deleted": [
+    {
+      "id": "string",
+      "run": "string",
+      "actor": "string",
+      "state": "held|landing",
+      "why": "closed|orphan?",
+      "age_minutes": "int",
+      "same_machine": "bool",
+      "detail": "string?"
+    }
+  ],
+  "would_delete": [
+    {
+      "id": "string",
+      "run": "string",
+      "actor": "string",
+      "state": "held|landing",
+      "why": "closed|orphan?",
+      "age_minutes": "int",
+      "same_machine": "bool",
+      "detail": "string?"
+    }
+  ],
+  "kept": [
+    {
+      "id": "string",
+      "run": "string",
+      "actor": "string",
+      "state": "held|landing",
+      "why": "closed|orphan?",
+      "age_minutes": "int",
+      "same_machine": "bool",
+      "detail": "string?"
+    }
+  ],
+  "failed": [
+    {
+      "id": "string",
+      "run": "string",
+      "actor": "string",
+      "state": "held|landing",
+      "why": "closed|orphan?",
+      "age_minutes": "int",
+      "same_machine": "bool",
+      "detail": "string?"
+    }
+  ],
+  "skipped": [
+    {
+      "id": "string",
+      "run": "string",
+      "actor": "string",
+      "state": "held|landing",
+      "why": "closed|orphan?",
+      "age_minutes": "int",
+      "same_machine": "bool",
+      "detail": "string?"
     }
   ],
   "warnings": "string[]"

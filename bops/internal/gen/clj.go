@@ -318,7 +318,7 @@ const cljCall = `
                         (let [v (get opts k) flag (str "--" (name k))]
                           (cond
                             ;; An explicit nil --only is an empty list (refused), never "no filter".
-                            (and (nil? v) (= command "reap") (= k :only) (contains? opts k)) [(str flag "=")]
+                            (and (nil? v) (#{"reap" "gc"} command) (= k :only) (contains? opts k)) [(str flag "=")]
                             (nil? v)       []
                             (= kind :bool) [(if v flag (str flag "=false"))]
                             (= kind :list) [flag (str/join "," v)]

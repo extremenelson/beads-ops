@@ -112,6 +112,8 @@ func run(args []string, stdout, stderr *os.File) int {
 		return cmdStale(ctx, m, rest, wantJSON, stdout, stderr)
 	case "reap":
 		return cmdReap(ctx, m, rest, wantJSON, stdout, stderr)
+	case "gc":
+		return cmdGC(ctx, m, rest, wantJSON, stdout, stderr)
 	case "session-start":
 		return cmdSessionStart(ctx, m, rest, wantJSON, stdout, stderr)
 	case "doctor":
@@ -139,7 +141,7 @@ func budget(name string) time.Duration {
 		return 5 * time.Minute
 	case "reap": // a takeover and a release per stale claim
 		return 5 * time.Minute
-	case "sync":
+	case "sync", "gc": // gc: one ref delete per closed or orphan ref
 		return 2 * time.Minute
 	case "claim", "release", "note", "land", "session-start", "doctor":
 		return time.Minute
