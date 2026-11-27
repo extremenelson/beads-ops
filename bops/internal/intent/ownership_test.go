@@ -720,6 +720,163 @@ func TestPushGivesUpAfterFiveTries(t *testing.T) {
 	}
 }
 
+// committedBeforeEachPush says whether every `bd dolt push` came straight
+// after a `bd dolt commit`, so a working set an auto-merged pull left behind
+// is in the commit the push publishes.
+func committedBeforeEachPush(t *testing.T, bd *fakeBD) {
+	t.Helper()
+	pushes := 0
+	for i, c := range bd.calls {
+		if strings.Join(c, " ") != "dolt push" {
+			continue
+		}
+		pushes++
+		if i == 0 || strings.Join(bd.calls[i-1], " ") != "dolt commit" {
+			t.Errorf("push %d (call %d) not preceded by bd dolt commit: %v", pushes, i, bd.calls[max(0, i-3):i+1])
+		}
+	}
+	if pushes == 0 {
+		t.Error("no push to check")
+	}
+}
+
+// Every push try commits first, the retries after a pull included, and on
+// every command that publishes the ledger.
+func TestEveryPushTryCommitsFirst(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	rejectPushes(bd, 3)
+	if out := mustClaim(t, a, "x-1"); out.LedgerPending {
+		t.Fatalf("%+v", out)
+	}
+	if bd.count("dolt push") != 4 || bd.count("dolt commit") != 4 {
+		t.Errorf("pushes=%d commits=%d, want 4 each", bd.count("dolt push"), bd.count("dolt commit"))
+	}
+	committedBeforeEachPush(t, bd)
+
+	bd.calls = nil
+	if out, err := intent.Sync(bg, a.env, false); err != nil || !out.Pushed {
+		t.Fatalf("sync: %+v, %v", out, err)
+	}
+	committedBeforeEachPush(t, bd)
+
+	bd.calls = nil
+	if out, err := intent.Release(bg, a.env, "x-1", "scope"); err != nil || out.LedgerPending {
+		t.Fatalf("release: %+v, %v", out, err)
+	}
+	committedBeforeEachPush(t, bd)
+}
+
+// A commit that fails is reported, and that try pushes nothing: pushing then
+// could publish a merge without the rows its pull left uncommitted.
+func TestAFailedCommitIsReportedAndNothingIsPushed(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	bd.calls = nil
+	bd.fail = func(args []string) error {
+		if strings.Join(args, " ") == "dolt commit" {
+			return errors.New("bd dolt commit: exit status 1: Error: failed to open database")
+		}
+		return nil
+	}
+	out, err := intent.Sync(bg, a.env, false)
+	if err == nil || out.Pushed || !strings.Contains(err.Error(), "commit") || !strings.Contains(err.Error(), "failed to open database") {
+		t.Errorf("a failed commit must be reported: %+v, %v", out, err)
+	}
+	if bd.count("dolt push") != 0 || bd.count("dolt commit") != 5 {
+		t.Errorf("pushes=%d commits=%d, want 0 and 5", bd.count("dolt push"), bd.count("dolt commit"))
+	}
+
+	// One failed commit costs one try; the next try commits and pushes.
+	bd.calls = nil
+	failed := false
+	bd.fail = func(args []string) error {
+		if strings.Join(args, " ") == "dolt commit" && !failed {
+			failed = true
+			return errors.New("bd dolt commit: exit status 1")
+		}
+		return nil
+	}
+	if out, err := intent.Sync(bg, a.env, false); err != nil || !out.Pushed {
+		t.Errorf("%+v, %v", out, err)
+	}
+	if bd.count("dolt push") != 1 || bd.count("dolt commit") != 2 {
+		t.Errorf("pushes=%d commits=%d, want 1 and 2", bd.count("dolt push"), bd.count("dolt commit"))
+	}
+	committedBeforeEachPush(t, bd)
+
+	// A commit failure stays in the error even when the later tries fail at
+	// their pull, as a pull over the same dirty working set would.
+	bd.calls = nil
+	bd.fail = func(args []string) error {
+		switch strings.Join(args, " ") {
+		case "dolt commit":
+			return errors.New("bd dolt commit: exit status 1: commit refused")
+		case "dolt pull":
+			if bd.count("dolt commit") > 0 {
+				return errors.New("bd dolt pull: exit status 1: uncommitted changes")
+			}
+		}
+		return nil
+	}
+	_, err = intent.Sync(bg, a.env, false)
+	if err == nil || !strings.Contains(err.Error(), "commit refused") || !strings.Contains(err.Error(), "uncommitted changes") {
+		t.Errorf("want both the pull's and the commit's error: %v", err)
+	}
+
+	// A commit that failed once and then went through is not blamed for a
+	// later push failure.
+	bd.calls = nil
+	bd.fail = func(args []string) error {
+		switch strings.Join(args, " ") {
+		case "dolt commit":
+			if bd.count("dolt commit") == 1 {
+				return errors.New("bd dolt commit: exit status 1: commit refused")
+			}
+		case "dolt push":
+			return errors.New("bd dolt push: exit status 1: remote unreachable")
+		}
+		return nil
+	}
+	_, err = intent.Sync(bg, a.env, false)
+	if err == nil || strings.Contains(err.Error(), "commit refused") || !strings.Contains(err.Error(), "remote unreachable") {
+		t.Errorf("want the push's error alone: %v", err)
+	}
+}
+
+// A pull that fails once the command's context is done ends the push tries
+// there, as a failed push or commit does.
+func TestPushTriesStopWhenAPullFailsAfterTheDeadline(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	ctx, cancel := context.WithCancel(bg)
+	defer cancel()
+	bd.calls = nil
+	bd.fail = func(args []string) error {
+		switch strings.Join(args, " ") {
+		case "dolt push":
+			return errors.New("non-fast-forward")
+		case "dolt pull":
+			if bd.count("dolt push") > 0 {
+				cancel()
+				return context.Canceled
+			}
+		}
+		return nil
+	}
+	if _, err := intent.Sync(ctx, a.env, false); err == nil {
+		t.Fatal("want an error")
+	}
+	if n := bd.count("dolt pull"); n != 2 { // sync's own, then one retry's
+		t.Errorf("pulls = %d, want 2", n)
+	}
+}
+
 // rejectPushes makes bd's dolt push fail non-fast-forward the first n times,
 // as it does when another machine published between this one's pull and push.
 func rejectPushes(bd *fakeBD, n int) {

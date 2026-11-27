@@ -77,7 +77,7 @@ Take this bead for this run
 
 Preconditions: an id, or --next and no id (--next takes neither --force nor --resume, and is refused while the run holds any bead); assignee is empty OR --force; status in (open, ready); no run: label; no label listed in blocking_labels (config; --force skips it, and a bead this run already holds answers held); the lock remote (lock.remote, default origin) matches the Dolt remote (lock.mode ref); no other bops process on this machine is working on the bead (waits up to 10 seconds, then ref_contention); --resume: the claim ref's actor is this run's, and its state is landing, or held with a machine= that is not this machine (a held ref with no machine= is refused).
 
-Wraps: `with --next: next's reads, then the steps below per candidate (bead wait 2 seconds)`, `git push refs/bops/claims/<id> (create-only)`, `bd dolt pull`, `bd update <id> --claim`, `bd label add <id> run:<ulid>`, `bd comments add <id>`, `bd dolt push`.
+Wraps: `with --next: next's reads, then the steps below per candidate (bead wait 2 seconds)`, `git push refs/bops/claims/<id> (create-only)`, `bd dolt pull`, `bd update <id> --claim`, `bd label add <id> run:<ulid>`, `bd comments add <id>`, `bd dolt commit, then bd dolt push (up to 5 tries, each after the first preceded by bd dolt pull)`.
 
 Output:
 
@@ -180,7 +180,7 @@ Preconditions: this run holds the bead and its ref still matches; done: the bead
 
 Effects by reason: `abandoned` → +bops:hold; `blocked` → status→blocked; `done` → none; await land/sweep; `human` → +needs-human; `scope` → +bops:hold.
 
-Wraps: `bd comments <id> --json (op id check, when not held)`, `git fetch refs/bops/claims/<id>`, `bd show <id> --json (done: the landed record)`, `git push (lease): state=landing on done, delete otherwise`, `bd update <id> --assignee ''`, `bd label remove <id> run:*`, `bd comments add <id> <event> (no text), or bd comments add <id> -f <file> (event line, then the --file text)`, `bd dolt push`.
+Wraps: `bd comments <id> --json (op id check, when not held)`, `git fetch refs/bops/claims/<id>`, `bd show <id> --json (done: the landed record)`, `git push (lease): state=landing on done, delete otherwise`, `bd update <id> --assignee ''`, `bd label remove <id> run:*`, `bd comments add <id> <event> (no text), or bd comments add <id> -f <file> (event line, then the --file text)`, `bd dolt commit, then bd dolt push (up to 5 tries, each after the first preceded by bd dolt pull)`.
 
 Output:
 
@@ -217,7 +217,7 @@ Preconditions: this run holds the bead and its ref still matches; no other bops 
 
 Never: merge, push a branch, close.
 
-Wraps: `bd comments <id> --json (op id check, when not held or a repeat)`, `bd update <id> --metadata @<file> (merge bops.landed)`, `bd comments add <id>`, `bd dolt push`.
+Wraps: `bd comments <id> --json (op id check, when not held or a repeat)`, `bd update <id> --metadata @<file> (merge bops.landed)`, `bd comments add <id>`, `bd dolt commit, then bd dolt push (up to 5 tries, each after the first preceded by bd dolt pull)`.
 
 Output:
 
@@ -250,7 +250,7 @@ Close landed beads whose refs are merged
 
 Never: skip a bops:landing bead with no landed record (it is listed under unknown), wait for a bead another bops process on this machine is working on (it is listed under unknown), close a bead that changed since sweep read it: re-held, resumed or given back (it is listed under pending).
 
-Wraps: `bd dolt pull`, `bd list --status in_progress --limit 0 --json`, `forge.is_merged(ref)`, `git fetch --prune refs/bops/claims/*`, `bd show <id> --json (under the bead lock)`, `git push (lease): delete the ref`, `bd close <id> --reason 'merged via <ref> (<sha>)'`, `bd label remove <id> bops:landing (after the close; a failure is a warning)`, `bd dolt push`.
+Wraps: `bd dolt pull`, `bd list --status in_progress --limit 0 --json`, `forge.is_merged(ref)`, `git fetch --prune refs/bops/claims/*`, `bd show <id> --json (under the bead lock)`, `git push (lease): delete the ref`, `bd close <id> --reason 'merged via <ref> (<sha>)'`, `bd label remove <id> bops:landing (after the close; a failure is a warning)`, `bd dolt commit, then bd dolt push (up to 5 tries, each after the first preceded by bd dolt pull)`.
 
 Output:
 
@@ -561,7 +561,7 @@ Pull, heartbeat, push — with the one retry
 
 Retry: on dolt lock, 1 time(s), after 5000 ms.
 
-Wraps: `git fetch --prune refs/bops/claims/*`, `bd dolt pull`, `bd update <id> --assignee <actor> --status in_progress --force, or --assignee alone on a blocked or deferred bead (this run's live claims whose display differs)`, `bd heartbeat <id> (this run's live claims only; another run's are settled against their refs but not re-displayed or heartbeat)`, `bd update <id> --assignee '' --status open; bd label remove <id> run:<ulid> (this run's claim whose ref is gone and that nobody took)`, `bd dolt push`.
+Wraps: `git fetch --prune refs/bops/claims/*`, `bd dolt pull`, `bd update <id> --assignee <actor> --status in_progress --force, or --assignee alone on a blocked or deferred bead (this run's live claims whose display differs)`, `bd heartbeat <id> (this run's live claims only; another run's are settled against their refs but not re-displayed or heartbeat)`, `bd update <id> --assignee '' --status open; bd label remove <id> run:<ulid> (this run's claim whose ref is gone and that nobody took)`, `bd dolt commit, then bd dolt push (up to 5 tries, each after the first preceded by bd dolt pull)`.
 
 Output:
 

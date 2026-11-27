@@ -1,7 +1,7 @@
 # Design: take the ledger push off the claim path
 
 Written 2026-11-27 from the [ledger contention measurements](../research/2026-11-ledger-contention.md) and one extra measurement below.
-Status: PROPOSED. Implementation is filed as separate work; nothing here is built yet. Step 1's go/no-go measurement is done: **go**, with `bd dolt commit` before every `bd dolt push` (step 1a; [results](../research/2026-11-ledger-contention.md#same-row-pulls-on-an-unpushed-claim-display-2026-11-27)).
+Status: PROPOSED. Implementation is filed as separate work. Step 1's go/no-go measurement is done: **go**, with `bd dolt commit` before every `bd dolt push` (step 1a, now built; [results](../research/2026-11-ledger-contention.md#same-row-pulls-on-an-unpushed-claim-display-2026-11-27)).
 Measured on: bd 1.3.4 (embedded Dolt), bops `648d9a2`, and the Dolt CLI 2.7.7 for the branch measurement.
 
 ## Problem
@@ -113,7 +113,7 @@ Under (a):
 Filed as separate work:
 
 1. Measure `bd dolt pull` on each same-row edit an unpushed claim display can meet (go/no-go for step 4). Done: go, with step 1a.
-   - **1a.** Run `bd dolt commit` before every `bd dolt push` bops makes, so an auto-merged pull publishes the labels and comments it merged (independent; it fixes today's push retries too; step 4 needs it).
+   - **1a.** Run `bd dolt commit` before every `bd dolt push` bops makes, so an auto-merged pull publishes the labels and comments it merged (independent; it fixes today's push retries too; step 4 needs it). Done: every push try in `pushLedger`, the one path all of bops's ledger pushes take, commits first; "Nothing to commit." (exit 0) passes, and a failed commit fails that try, pushes nothing, and stays in the error reported if no later try succeeds.
 2. Write each command's display in one `bd update` (independent).
 3. `gc` applies `reap`'s work-evidence checks before deleting an orphan ref or a closed bead's ref (independent; it also protects today's `ledger_pending` claims).
 4. Stop pushing from `claim`: a failed claim-path pull becomes a reported event; `land`, `release` and `sweep` log each ledger push's outcome and tries to `events.jsonl`, since the claim's `pending` count no longer sees push contention and the switch condition in MULTI-DEV-PLAN §1 must be restated over these; `status` and `doctor` report an unpublished or diverged local ledger, and tests show a late-arriving display is reaped or cleaned as described above (needs 1, 1a and 3).

@@ -388,7 +388,7 @@ func TestSyncRetriesOnlyOnRealLockErrors(t *testing.T) {
 	} {
 		t.Run(tc.msg, func(t *testing.T) {
 			calls := 0
-			f := &flaky{Fake: bdx.Fake{Responses: map[string][]byte{"dolt pull": []byte(``), "dolt push": []byte(``)}},
+			f := &flaky{Fake: bdx.Fake{Responses: map[string][]byte{"dolt pull": []byte(``), "dolt commit": []byte(``), "dolt push": []byte(``)}},
 				failFirst: "dolt pull", msg: tc.msg, n: &calls}
 			remote := bareRemote(t)
 			dir := filepath.Join(t.TempDir(), "A")
