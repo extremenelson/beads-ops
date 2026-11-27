@@ -68,6 +68,7 @@ func landRunner(show string) *metaRunner {
 	return &metaRunner{Fake: bdx.Fake{Responses: map[string][]byte{
 		"show x-1 --json":     []byte(show),
 		"comments x-1 --json": []byte(`[]`),
+		"dolt commit":         []byte(`Nothing to commit.`),
 		"dolt push":           []byte(``),
 	}}}
 }

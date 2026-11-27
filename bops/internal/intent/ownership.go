@@ -260,22 +260,50 @@ func (e *Env) ledgerHolder(cur *ledger.Issue) *Holder {
 // ordinary work on other beads, on this machine or another, rejects a push
 // until it pulls first. Every command that publishes the ledger goes through
 // here, so none gives up on the first non-fast-forward (bops-bze).
+//
+// Each try commits the working set before it pushes. On bd 1.3.4 a pull that
+// auto-merges a same-row edit leaves the other side's unioned labels and
+// comments uncommitted, and bd vc status does not show them, so a push
+// straight after it publishes a merge commit without them. bd dolt commit
+// exits 0 with "Nothing to commit." when the working set is clean; a commit
+// that fails is that try's error, and that try pushes nothing. If no try
+// succeeds and no commit succeeded after the last failed one, that commit
+// failure stays in the error returned even when a later try failed at its
+// pull (refused over the same dirty working set, say), so the cause is not
+// hidden behind its symptom.
 func (e *Env) pushLedger(ctx context.Context) error {
-	var err error
+	var err, commitFailed error
 	for try := 0; try < maxPushTries; try++ {
 		if try > 0 {
 			e.sleepFor(time.Duration(try) * 500 * time.Millisecond)
 			if _, pullErr := withLockRetry(ctx, e, "dolt", "pull"); pullErr != nil {
 				err = pullErr
+				if ctx.Err() != nil {
+					break
+				}
 				continue
 			}
 		}
+		if _, commitErr := withLockRetry(ctx, e, "dolt", "commit"); commitErr != nil {
+			err = fmt.Errorf("commit the ledger's working set before pushing it: %w", commitErr)
+			commitFailed = err
+			if ctx.Err() != nil {
+				break
+			}
+			continue
+		}
+		commitFailed = nil // this try committed; a later failure is not the commit's
 		if _, err = withLockRetry(ctx, e, "dolt", "push"); err == nil {
 			return nil
 		}
 		if ctx.Err() != nil {
 			break
 		}
+	}
+	if commitFailed != nil && err != commitFailed {
+		// Unlike errors.Join this adds no newline of its own; errors.Is
+		// still sees both.
+		return fmt.Errorf("%w; an earlier try: %w", err, commitFailed)
 	}
 	return err
 }
