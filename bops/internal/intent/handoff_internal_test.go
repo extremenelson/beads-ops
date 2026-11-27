@@ -77,3 +77,13 @@ func TestLastNote(t *testing.T) {
 		t.Errorf("paragraph: %q", got)
 	}
 }
+
+// A ledger label may hold anything, so the undo command a person is told to
+// paste quotes every arg that is not plainly safe.
+func TestShellWordsQuotesWhatTheLedgerMayHold(t *testing.T) {
+	got := shellWords([]string{"update", "x-1", "--assignee", "", "--add-label", "run:x;rm -rf ~", "--add-label", "it's", "--remove-label", "run:01ABC"})
+	want := `update x-1 --assignee '' --add-label 'run:x;rm -rf ~' --add-label 'it'\''s' --remove-label run:01ABC`
+	if got != want {
+		t.Errorf("got  %s\nwant %s", got, want)
+	}
+}

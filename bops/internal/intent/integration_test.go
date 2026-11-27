@@ -187,6 +187,112 @@ func TestLiveClaimAndRelease(t *testing.T) {
 	}
 }
 
+// recordBD records each real bd call.
+type recordBD struct {
+	bdx.Runner
+	calls [][]string
+}
+
+func (r *recordBD) Run(ctx context.Context, args ...string) ([]byte, error) {
+	r.calls = append(r.calls, args)
+	return r.Runner.Run(ctx, args...)
+}
+
+// Real bd takes the claim's assignee, status and labels in one update whose
+// --json output is the readback, and the claim's show lists the comments,
+// with the lock on and off alike.
+func TestLiveDisplayIsOneUpdate(t *testing.T) {
+	env, create := liveLedger(t)
+	ctx := context.Background()
+	for _, off := range []bool{false, true} {
+		rec := &recordBD{Runner: env.BD}
+		env.BD, env.LockOff = rec, off
+		id := create("one update")
+		if _, err := rec.Run(ctx, "label", "add", id, "bops:hold"); err != nil {
+			t.Fatal(err)
+		}
+		rec.calls = nil
+		out, err := intent.Claim(ctx, env, id, false)
+		if err != nil || out.Outcome != intent.OutcomeClaimed || !out.ReadbackOK {
+			t.Fatalf("lock off %v: claim: %+v, %v", off, out, err)
+		}
+		var updates, labels, reads, afterUpdate int
+		seen := false
+		for _, c := range rec.calls {
+			switch {
+			case c[0] == "update":
+				updates, seen = updates+1, true
+			case c[0] == "label":
+				labels++
+			case c[0] == "comments" && c[len(c)-1] == "--json" && len(c) == 3:
+				reads++
+			case c[0] == "show" && seen:
+				afterUpdate++
+			}
+		}
+		// With the lock on, this ledger has no Dolt remote, so the pull fails
+		// and the claim reads the comments separately; with the lock off the
+		// show carries them.
+		if updates != 1 || labels != 0 || (off && reads != 0) || reads > 1 || afterUpdate != 0 {
+			t.Errorf("lock off %v: calls = %v", off, rec.calls)
+		}
+		got := liveShow(t, env, id)
+		if got.Status != "in_progress" || got.Assignee != itActor || !slices.Equal(got.Labels, []string{"run:ITRUN"}) {
+			t.Errorf("lock off %v: display = %+v", off, got)
+		}
+		rec.calls = nil
+		if r, err := intent.Release(ctx, env, id, "scope"); err != nil || r.Outcome != intent.OutcomeReleased {
+			t.Fatalf("lock off %v: release: %+v, %v", off, r, err)
+		}
+		if n := slices.IndexFunc(rec.calls, func(c []string) bool { return c[0] == "label" }); n >= 0 {
+			t.Errorf("lock off %v: release calls = %v", off, rec.calls)
+		}
+		got = liveShow(t, env, id)
+		if got.Status != "open" || got.Assignee != "" || !slices.Equal(got.Labels, []string{"bops:hold"}) {
+			t.Errorf("lock off %v: released display = %+v", off, got)
+		}
+		env.BD = rec.Runner
+	}
+}
+
+// A lost bd update --claim writes none of the labels that ride on it: the
+// lock-off claim relies on that.
+func TestLiveLostClaimWritesNoLabels(t *testing.T) {
+	env, create := liveLedger(t)
+	ctx := context.Background()
+	id := create("lost claim")
+	if _, err := env.BD.Run(ctx, "update", id, "--assignee", "someone-else", "--status", "in_progress", "--add-label", "run:OTHER"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.BD.Run(ctx, "update", id, "--claim", "--add-label", "run:ITRUN", "--remove-label", "run:OTHER", "--json"); err == nil {
+		t.Fatal("a claim on another actor's bead should fail")
+	}
+	got := liveShow(t, env, id)
+	if got.Assignee != "someone-else" || !slices.Equal(got.Labels, []string{"run:OTHER"}) {
+		t.Errorf("a lost claim changed the bead: %+v", got)
+	}
+}
+
+// Real bd reads --remove-label as CSV: a stale run: label with a quote in it
+// must not stop the release's one update.
+func TestLiveQuotedRunLabelDoesNotStopRelease(t *testing.T) {
+	env, create := liveLedger(t)
+	ctx := context.Background()
+	id := create("quoted label")
+	if out, err := intent.Claim(ctx, env, id, false); err != nil || out.Outcome != intent.OutcomeClaimed {
+		t.Fatalf("claim: %+v, %v", out, err)
+	}
+	if _, err := env.BD.Run(ctx, "label", "add", id, `run:x"y`); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := intent.Release(ctx, env, id, "scope"); err != nil || out.Outcome != intent.OutcomeReleased || out.LedgerPending {
+		t.Fatalf("release: %+v, %v", out, err)
+	}
+	if got := liveShow(t, env, id); !slices.Equal(got.Labels, []string{"bops:hold"}) || got.Assignee != "" {
+		t.Errorf("released display = %+v", got)
+	}
+}
+
 func TestLiveNote(t *testing.T) {
 	env, create := liveLedger(t)
 	ctx := context.Background()

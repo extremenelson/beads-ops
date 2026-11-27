@@ -36,6 +36,10 @@ type Issue struct {
 	LeaseExpiresAt     *time.Time      `json:"lease_expires_at,omitempty"`
 	HeartbeatAt        *time.Time      `json:"heartbeat_at,omitempty"`
 	Metadata           json.RawMessage `json:"metadata,omitempty"`
+	// Comments is what `bd show --include-comments` adds; CommentsRead says
+	// the show asked for them, so an empty list means the bead has none.
+	Comments     []Comment `json:"comments,omitempty"`
+	CommentsRead bool      `json:"-"`
 
 	// Gate fields (issue_type gate, from `bd gate list --json`): what the
 	// gate waits on. AwaitID is null for human and timer gates; Timeout is
@@ -47,6 +51,11 @@ type Issue struct {
 	BlockedBy []string `json:"blocked_by,omitempty"`
 	// DependencyType is the edge type, from `bd dep list <id> --json`.
 	DependencyType string `json:"dependency_type,omitempty"`
+}
+
+// Comment is one comment as `bd show --include-comments` lists it.
+type Comment struct {
+	Text string `json:"text"`
 }
 
 // Landed is one entry of metadata.bops.landed (SPEC §3.3).

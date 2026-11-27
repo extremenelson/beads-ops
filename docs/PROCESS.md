@@ -506,8 +506,7 @@ The old run is displaced as by a takeover: its next `bops sync` lists the bead i
 **A ledger claim with no ref.** The assignee and `run:` label are set but there is no claim ref: a raw `bd update --claim`, a claim made before the lock, or a ref deleted with no new holder. A plain claim refuses it and `--force` waits 120 minutes from `updated_at`. When the ref of a `bops` claim is deleted and nobody takes the bead, the holder's next `bops sync` returns it to the pool by itself and lists it in `lost_claims`. For a raw `bd` claim, or a holder whose clone is gone, if the assignee is you, clear the display yourself instead of waiting:
 
 ```bash
-bd update <id> --assignee '' --status open
-bd label remove <id> run:<ulid>
+bd update <id> --assignee '' --status open --remove-label run:<ulid>
 bops sync                                   # publish it
 ```
 
