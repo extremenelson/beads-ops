@@ -27,6 +27,7 @@ Start with the tutorial if you're new. Use the reference when you know what you 
 - [ADR 0001](adr/0001-derived-read-model-not-write-path.md). A graph layer is a derived read model, never a write path (amended for the claim lock).
 - [ADR 0002](adr/0002-go-reference-implementation.md). One manifest-driven CLI, Go reference implementation.
 - [Claim-lock design](designs/bops-claim-lock-v0.1.0.md). The v0.1.0 design, review rounds and measurements.
+- [Ledger push contention design](designs/ledger-push-contention.md). Why the claim stops pushing the ledger, against server mode, per-machine Dolt branches and refs-only claim state.
 - [Research snapshots](research/). Dated investigations behind the ADRs, each with a "status as of" header.
 
 ## Plans
