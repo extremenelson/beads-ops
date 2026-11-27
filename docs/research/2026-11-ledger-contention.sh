@@ -25,6 +25,18 @@
 #       release (lost writes).
 #   measure report <workdir>...
 #       Latency and failure tables from one or more workdirs' results.
+#   measure pulls  <workdir> [case...]
+#       Same-row pulls: for each case, on a new local bare remote and two
+#       clones, clone A writes a claim display and does not push, clone B
+#       edits the same bead and pushes, then A runs bd dolt pull and
+#       bd dolt push, and the remote is read again after each side's next
+#       write. A case whose pull stops runs again with --strategy ours and
+#       theirs; with MEASURE_COMMIT=1 every case runs again with
+#       bd dolt commit between A's pull and its push. Needs dolt on PATH.
+#       Results: <workdir>/pulls.tsv and <workdir>/cases/<case>/. Cases
+#       (default all): control takeover person labels close comment
+#       takeover-release takeover-first takeover-multi park delete
+#       delete-today.
 #
 # Env: MEASURE_DELAY_MS (default 0, whole milliseconds) sleeps before every
 # git fetch, push and ls-remote, bops's claim-ref traffic and the git calls
@@ -57,7 +69,7 @@ common() {
 	"$REAL_GIT" -C "$W" rev-parse --is-inside-work-tree >/dev/null 2>&1 && die "$W is inside a git work tree: use a scratch directory"
 	for f in "$W"/* "$W"/.[!.]*; do
 		case ${f##*/} in
-		bin | config | state | tmp | seed | m[0-9]* | verify | verify.tsv | verify.c | calls.tsv | started | finished | shape | origin.git | setup.log) ;;
+		bin | config | state | tmp | seed | m[0-9]* | verify | verify.tsv | verify.c | calls.tsv | started | finished | shape | origin.git | setup.log | cases | pulls.tsv) ;;
 		*) die "$W holds $f, which this script did not make: use a new directory" ;;
 		esac
 	done
@@ -368,6 +380,202 @@ report() {
 				printf "%-8s %6.2f %6.2f %6.2f %6.2f\n", c, wall[c] / n[c], pl[c] / n[c], ps[c] / n[c], ot[c] / n[c] } }' "${results[@]}" "${calls[@]}"
 }
 
+# ------------------------------------------------------------ same-row pulls
+#
+# What bd dolt pull does when a claim display that was never pushed meets an
+# edit of the same bead row from another clone. Clone A plays the claiming
+# machine, clone B another machine; each has its own BEADS_ACTOR. No bops
+# runs: the writes are the bd calls bops makes (the claim display in the one
+# update the design proposes). Each case has its own copy of the seeded
+# remote. The dolt CLI only reads copies of A's store, to name the tables a
+# pull left uncommitted (bd 1.3.4 has no bd sql in embedded mode, and
+# bd vc status does not list them).
+
+PULL_CASES="control takeover person labels close comment takeover-release takeover-first takeover-multi park delete delete-today"
+
+# pc_claim DIR ID RUN ACTOR MACHINE: a claim display in one update and its
+# bops:claimed comment.
+pc_claim() {
+	(cd "$1" && BEADS_ACTOR=$4 q bd update "$2" --assignee "$4" --status in_progress --force --add-label "run:$3" &&
+		BEADS_ACTOR=$4 q bd comments add "$2" "bops:claimed run=$3 actor=$4 machine=$5")
+}
+
+# pc_claim_multi DIR ID RUN ACTOR MACHINE: today's claim display, one bd
+# call per change (bd update --claim, then the run: label and the comment),
+# and the heartbeat bops note writes in the unpushed window.
+pc_claim_multi() {
+	(cd "$1" && BEADS_ACTOR=$4 q bd update "$2" --claim &&
+		BEADS_ACTOR=$4 q bd label add "$2" "run:$3" &&
+		BEADS_ACTOR=$4 q bd comments add "$2" "bops:claimed run=$3 actor=$4 machine=$5" &&
+		BEADS_ACTOR=$4 q bd heartbeat "$2")
+}
+
+# pc_release DIR ID RUN ACTOR: release --reason abandoned's display.
+pc_release() {
+	(cd "$1" && BEADS_ACTOR=$4 q bd update "$2" --assignee "" --status open &&
+		BEADS_ACTOR=$4 q bd label remove "$2" "run:$3" &&
+		BEADS_ACTOR=$4 q bd label add "$2" bops:hold &&
+		BEADS_ACTOR=$4 q bd comments add "$2" "bops:released run=$3 reason=abandoned op=measure")
+}
+
+# pc_snap DIR ID: what the bead shows in DIR, '|'-separated: assignee status
+# labels title priority notes updated_at closed_at comments newest-bops-comment.
+pc_snap() {
+	local c i
+	c=$(cd "$1" && bd comments "$2" --json 2>/dev/null) && i=$(cd "$1" && bd show "$2" --json 2>/dev/null) &&
+		[ -n "$c" ] && [ -n "$i" ] || { echo unreadable; return; }
+	printf '%s' "$i" | jq -er --argjson c "$c" '(if type == "array" then .[0] else . end) as $i |
+		[($i.assignee // ""), $i.status, (($i.labels // []) | sort | join(",")), $i.title, ($i.priority | tostring),
+		 ($i.notes // ""), $i.updated_at, ($i.closed_at // ""), ($c | length | tostring),
+		 ([$c[] | select(.text | test("^bops:")) | .text] | last // "")] | join("|")' 2>/dev/null || echo unreadable
+}
+
+# pc_dirty DIR: the tables a copy of DIR's Dolt store shows uncommitted, as
+# table:status (status modified, conflict, ...), "none", or "err" when the
+# Dolt CLI cannot read the store.
+pc_dirty() {
+	local t="$W/tmp/dirty" out
+	rm -rf "$t"
+	cp -R "$1/.beads/embeddeddolt/beads" "$t" 2>/dev/null || { echo err; return; }
+	if out=$(cd "$t" && dolt sql -r csv -q 'select table_name, status from dolt_status' 2>/dev/null); then
+		printf '%s\n' "$out" | awk -F, 'NR > 1 && NF {s = s (s == "" ? "" : ",") $1 ":" $2} END {print (s == "" ? "none" : s)}'
+	else
+		echo err
+	fi
+	rm -rf "$t"
+}
+
+# pc_row CASEDIR STEP EXIT SIDE OUTFILE: one row of pulls.tsv.
+pc_row() {
+	local d=$1
+	printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${d##*/}" "$2" "$3" "$( [ -n "$4" ] && pc_dirty "$d/$4" || echo)" \
+		"$( [ -n "$4" ] && pc_snap "$d/$4" "$(cat "$d/id")" || echo)" \
+		"$( [ -n "$5" ] && tr '\n\r\t' '   ' <"$5" | sed 's/  */ /g' | cut -c1-400 || echo)" >>"$W/pulls.tsv"
+}
+
+# pc_after CASEDIR [MODE]: A pulls and pushes; B reads the remote; then B
+# writes another bead and pushes, A pulls again, writes another bead and
+# pushes, and B reads the remote once more. MODE ours or theirs is the first
+# pull's --strategy; MODE commit runs bd dolt commit between that pull and
+# its push. Returns the first pull's exit.
+pc_after() {
+	local d=$1 mode=${2:-} st='' rc first other
+	case $mode in ours | theirs) st=$mode ;; esac
+	other=$(cat "$d/other")
+	(cd "$d/A" && BEADS_ACTOR=devA bd dolt pull ${st:+--strategy "$st"}) >"$d/out" 2>&1
+	first=$?
+	pc_row "$d" "A pull${st:+ --strategy $st}" "$first" A "$d/out"
+	if [ "$mode" = commit ]; then
+		(cd "$d/A" && BEADS_ACTOR=devA bd dolt commit) >"$d/out" 2>&1
+		pc_row "$d" "A bd dolt commit" "$?" A "$d/out"
+	fi
+	(cd "$d/A" && BEADS_ACTOR=devA bd dolt push) >"$d/out" 2>&1
+	pc_row "$d" "A push" "$?" "" "$d/out"
+	(cd "$d/B" && BEADS_ACTOR=devB bd dolt pull) >"$d/out" 2>&1
+	pc_row "$d" "B pull: remote after A's push" "$?" B "$d/out"
+	(cd "$d/B" && BEADS_ACTOR=devB bd comments add "$other" "unrelated write on B" && BEADS_ACTOR=devB bd dolt push) >"$d/out" 2>&1
+	rc=$?
+	(cd "$d/A" && BEADS_ACTOR=devA bd dolt pull) >>"$d/out" 2>&1
+	pc_row "$d" "A pull again (B push $rc)" "$?" A "$d/out"
+	(cd "$d/A" && BEADS_ACTOR=devA bd comments add "$other" "unrelated write on A" && BEADS_ACTOR=devA bd dolt push) >"$d/out" 2>&1
+	pc_row "$d" "A next write and push" "$?" A "$d/out"
+	(cd "$d/B" && BEADS_ACTOR=devB bd dolt pull) >"$d/out" 2>&1
+	pc_row "$d" "B pull: remote after A's next push" "$?" B "$d/out"
+	return "$first"
+}
+
+# pc_case NAME [MODE]: one case on its own copy of the seeded remote, run by
+# pc_after in MODE. Returns A's first pull's exit.
+pc_case() {
+	local name=$1 st=${2:-} d="$W/cases/$1${2:+.$2}" id other side
+	rm -rf "$d"
+	mkdir -p "$d"
+	cp -R "$W/origin.git" "$d/origin.git"
+	for side in A B; do
+		q git clone -q "$d/origin.git" "$d/$side"
+		(cd "$d/$side" && q bd bootstrap --yes && chmod 700 .beads) || exit 1
+	done
+	id=$(cd "$d/A" && bd list --json --all --limit 0 | jq -r '.[] | select(.title == "contention 0000") | .id')
+	other=$(cd "$d/A" && bd list --json --all --limit 0 | jq -r '.[] | select(.title == "contention 0001") | .id')
+	[ -n "$id" ] && [ -n "$other" ] || die "$name: no seeded beads"
+	echo "$id" >"$d/id"
+	echo "$other" >"$d/other"
+	# Setup steps exit the script on failure (q's die only ends its subshell),
+	# so a write that did not happen is never measured as a clean pull.
+	if [ "$name" = delete-today ]; then
+		# Today's order: A's claim display is pushed at once and B has it when
+		# a person deletes the bead; A then writes the row again (land's
+		# landed record updates the same row) and meets the delete at its
+		# next pull.
+		pc_claim "$d/A" "$id" runA devA machineA || exit 1
+		(cd "$d/A" && BEADS_ACTOR=devA q bd dolt push && cd "$d/B" && BEADS_ACTOR=devB q bd dolt pull) || exit 1
+		(cd "$d/B" && BEADS_ACTOR=devB q bd delete "$id" --force && BEADS_ACTOR=devB q bd dolt push) || exit 1
+		sleep 1.2
+		(cd "$d/A" && BEADS_ACTOR=devA q bd update "$id" --notes "landed") || exit 1
+	elif [ "$name" = takeover-first ]; then
+		# B's takeover reaches the remote before A writes its display (A has
+		# not pulled since), so A's write is the later one.
+		pc_claim "$d/B" "$id" runB devB machineB || exit 1
+		(cd "$d/B" && BEADS_ACTOR=devB q bd dolt push) || exit 1
+		sleep 1.2
+		pc_claim "$d/A" "$id" runA devA machineA || exit 1
+	else
+		if [ "$name" = takeover-multi ]; then
+			pc_claim_multi "$d/A" "$id" runA devA machineA || exit 1
+		else
+			pc_claim "$d/A" "$id" runA devA machineA || exit 1
+		fi
+		sleep 1.2 # B's writes carry a later updated_at, as they would
+		case $name in
+		control) (cd "$d/B" && BEADS_ACTOR=devB q bd update "$other" --title "contention 0001 renamed") ;;
+		takeover) pc_claim "$d/B" "$id" runB devB machineB ;;
+		# B sees the bead open and unassigned, so a real claim --force writes
+		# today's display there too.
+		takeover-multi) pc_claim_multi "$d/B" "$id" runB devB machineB ;;
+		park) (cd "$d/B" && BEADS_ACTOR=devB q bd update "$id" --status blocked) ;;
+		delete) (cd "$d/B" && BEADS_ACTOR=devB q bd delete "$id" --force) ;;
+		person) (cd "$d/B" && BEADS_ACTOR=devB q bd update "$id" --title "renamed by a person" --priority 1 --notes "a person's note") ;;
+		labels) (cd "$d/B" && BEADS_ACTOR=devB q bd label add "$id" area:new && BEADS_ACTOR=devB q bd label remove "$id" area:seed) ;;
+		close) (cd "$d/B" && BEADS_ACTOR=devB q bd close "$id" --reason "merged via https://example.invalid/mr/1 ($(printf '%040x' 1))") ;;
+		comment) (cd "$d/B" && BEADS_ACTOR=devB q bd comments add "$id" "a person's comment") ;;
+		takeover-release)
+			pc_claim "$d/B" "$id" runB devB machineB &&
+				sleep 1.2 &&
+				pc_release "$d/B" "$id" runB devB
+			;;
+		esac || exit 1
+		(cd "$d/B" && BEADS_ACTOR=devB q bd dolt push) || exit 1
+	fi
+	pc_row "$d" "A before pull" "" A ""
+	pc_row "$d" "B before pull" "" B ""
+	pc_after "$d" "$st"
+}
+
+# pulls [CASE...]: seed one remote with two beads, each labelled area:seed,
+# then run each case.
+pulls() {
+	local c
+	command -v dolt >/dev/null || die "dolt not on PATH (pulls reads copies of a store with it)"
+	for c in "$@"; do
+		case " $PULL_CASES " in *" $c "*) ;; *) die "unknown case '$c' (cases: $PULL_CASES)" ;; esac
+	done
+	[ -e "$W/origin.git" ] && die "$W already holds a run: use a new directory"
+	q git init -q --bare "$W/origin.git"
+	(seed "$W/origin.git" 2) || exit 1
+	(cd "$W/seed" && ids=$(bd list --json --all --limit 0 | jq -er '.[].id') && [ "$(printf '%s\n' "$ids" | wc -l)" -eq 2 ] &&
+		for b in $ids; do q bd label add "$b" area:seed; done && q bd dolt push) || die "cannot label the seeded beads"
+	printf 'case\tstep\texit\tuncommitted\tassignee|status|labels|title|priority|notes|updated_at|closed_at|comments|newest bops: comment\toutput\n' >"$W/pulls.tsv"
+	[ $# -gt 0 ] || set -- $PULL_CASES
+	# A pull that stops is run again from the start with each strategy. With
+	# MEASURE_COMMIT=1 each case also runs again with bd dolt commit after
+	# the pull.
+	for c in "$@"; do
+		pc_case "$c" || { pc_case "$c" ours; pc_case "$c" theirs; }
+		[ "${MEASURE_COMMIT:-0}" = 1 ] && pc_case "$c" commit
+	done
+	awk -F'\t' '{printf "%-18s %-36s %-4s %-18s %s\n%57s%s\n", $1, $2, $3, $4, $5, "", $6}' "$W/pulls.tsv"
+}
+
 cmd=${1:-}
 shift || true
 case $cmd in
@@ -403,6 +611,12 @@ verify)
 report)
 	[ $# -ge 1 ] || die "usage: report <workdir>..."
 	report "$@"
+	;;
+pulls)
+	[ $# -ge 1 ] || die "usage: pulls <workdir> [case...]"
+	common "$1"
+	shift
+	pulls "$@"
 	;;
 *) awk 'NR > 1 && !/^#/ {exit} NR > 1 {sub(/^# ?/, ""); print}' "$0"; exit 2 ;;
 esac
