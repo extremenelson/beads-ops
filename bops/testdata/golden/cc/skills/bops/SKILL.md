@@ -90,7 +90,7 @@ Exit codes: **0** done, or a read's verdict; **1** could not run: remote or ledg
 | `bops stale [--all-machines] [--older-than]` | read | Claims nobody is working |
 | `bops status [--mine] [--older-than] [--stale]` | read | Every claim on every machine |
 | `bops reap [--forge] [--older-than] [--only]` | preview | Release stale claims that hold no work |
-| `bops gc [--only]` | preview | Delete refs of closed beads and orphans |
+| `bops gc [--forge] [--only]` | preview | Delete claim refs nothing needs |
 | `bops lint <id> [--strict]` | read | Is this bead workable? |
 | `bops sync [--no-push]` | write | Pull, heartbeat, push — with the one retry |
 | `bops doctor` | read | Can the claim lock work against its remote (lock.remote, default origin)? |

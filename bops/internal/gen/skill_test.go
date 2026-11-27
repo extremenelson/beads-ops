@@ -81,7 +81,7 @@ func TestSkillListsReapAndGCAsPreviewOnly(t *testing.T) {
 			s := string(f.Data)
 			for _, want := range []string{
 				"| `bops reap [--forge] [--older-than] [--only]` | preview |",
-				"| `bops gc [--only]` | preview |",
+				"| `bops gc [--forge] [--only]` | preview |",
 				"| `bops sweep [--dry-run] [--forge]` | write |",
 				"Only a person acts (`--dry-run=false --only`, reap `<id>@<run>`, gc `<id>`)",
 			} {

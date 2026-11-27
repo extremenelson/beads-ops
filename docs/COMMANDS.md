@@ -16,7 +16,7 @@ Exit codes: **0** = done, or a read's verdict; **1** = could not run: remote or 
 | `stale` | Claims nobody is working | read |
 | `status` | Every claim on every machine | read |
 | `reap` | Release stale claims that hold no work | write |
-| `gc` | Delete refs of closed beads and orphans | write |
+| `gc` | Delete claim refs nothing needs | write |
 | `lint` | Is this bead workable? | read |
 | `sync` | Pull, heartbeat, push — with the one retry | write |
 | `session-start` | Orient a fresh agent session | read+sync |
@@ -434,20 +434,21 @@ Output:
 
 ## `bops gc`
 
-Delete refs of closed beads and orphans
+Delete claim refs nothing needs
 
 | Arg | Type | Default | Doc |
 |---|---|---|---|
 | `--dry-run` | bool | `true` |  |
+| `--forge` | enum: auto \| github \| gitlab \| none | `auto` | Forge searched, as reap searches it, for open or merged merge requests naming the bead of an orphan, or of a closed bead whose ref is newer than its last ledger change, that shows no other work; none searches nothing, with a warning. |
 | `--only` | string? |  | Comma-separated bead ids, normally the ones a preview listed under would_delete: act on these only. One whose ref is no longer one gc deletes is listed under skipped; one with no ref at all is a warning; an empty list is a usage error. |
 
 Agents: preview only. The MCP tool refuses `dry-run: false`, and the generated skills tell the agent to leave the real run to a person (instructions only: an agent with a shell can still type it). `--dry-run=false` is a person's, at the CLI.
 
 Preconditions: the claim lock is on (lock.mode is not none); a Dolt remote on the lock remote's repository (not with --dry-run).
 
-Never: delete a ref whose bead is not closed and carries a claim by the ref's run or actor (in progress, or parked blocked or deferred; a parked one is listed under kept), or a landing ref of a bead in progress (sweep's), delete an orphan younger than stale_minutes, or a closed bead's ref younger than stale_minutes written later than 15 minutes before the bead's last ledger change (a claim whose ledger write may be pending, allowing for clock skew); the latter is listed under kept, delete anything when the ledger pull or the ref fetch fails, delete a ref a hold of this clone names, or whose bead changed since gc read it (re-read from the ledger as pulled, under the bead lock; listed under kept), delete a ref re-taken since gc read it (the delete leases the sha it read; listed under failed), wait for a bead another bops process on this machine is working on (listed under failed), delete or keep a ref whose bead could not be read, or that the command's time ran out before judging (listed under failed), write the ledger.
+Never: delete the ref of an orphan, or of a closed bead whose ref is newer than its last ledger change, when the bead shows work as reap reads it (needs-land, a merge request on the bead, a live hold of this clone, a branch naming the bead, or a merge request the forge finds); it is listed under kept with what was found, and the check is repeated under the bead lock on a fresh branch listing before the delete (a real run asks the forge only then, once per ref), delete such a ref when the forge search fails, takes longer than 20 s, or returns a full page without a match (kept as forge unanswered; a failed or timed-out search also warns, naming --forge none), when its evidence cannot be read (kept, saying so), or when the branches cannot be listed (listed under failed), delete a ref whose bead is not closed and carries a claim by the ref's run or actor (in progress, or parked blocked or deferred; a parked one is listed under kept), or a landing ref of a bead in progress (sweep's), delete an orphan younger than stale_minutes, or a closed bead's ref younger than stale_minutes written later than 15 minutes before the bead's last ledger change (a claim whose ledger write may be pending, allowing for clock skew); the latter is listed under kept, delete anything when the ledger pull or the ref fetch fails, delete a ref a hold of this clone names, or whose bead changed since gc read it (re-read from the ledger as pulled, under the bead lock; listed under kept), delete a ref re-taken since gc read it (the delete leases the sha it read; listed under failed), wait for a bead another bops process on this machine is working on (listed under failed), delete or keep a ref whose bead could not be read, or that the command's time ran out before judging (listed under failed), write the ledger.
 
-Wraps: `bd dolt pull (not with --dry-run)`, `git fetch --prune refs/bops/claims/* (not with --dry-run; stale's copy otherwise)`, `stale --all-machines`, `bd show <id> --json (each ref's bead; again under the bead lock)`, `git push (lease): delete the ref`.
+Wraps: `bd dolt pull (not with --dry-run)`, `git fetch --prune refs/bops/claims/* (not with --dry-run; stale's copy otherwise)`, `stale --all-machines`, `bd show <id> --json (each ref's bead; again under the bead lock)`, `git ls-remote --heads, git for-each-ref, git worktree list --porcelain and bd comments <id> --json (reap's work evidence, for an orphan or a closed bead whose ref is newer than its last ledger change; again under the bead lock)`, `forge search for <id> in titles and descriptions, as reap's, for such a ref with no other evidence (a preview before judging it; a real run under the bead lock only)`, `git push (lease): delete the ref`.
 
 Output:
 

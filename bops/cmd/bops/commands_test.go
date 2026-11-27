@@ -745,6 +745,9 @@ func TestGCDefaultsToADryRun(t *testing.T) {
 		t.Fatalf("manifest gc dry-run default = %v", c.Args["dry-run"].Default)
 	}
 	stderr, _ := os.CreateTemp(t.TempDir(), "err")
+	if code := cmdGC(context.Background(), m, []string{"--forge", "bogus"}, true, stderr, stderr); code != exitUsage {
+		t.Errorf("unknown forge: exit %d, want %d", code, exitUsage)
+	}
 	if code := cmdGC(context.Background(), m, []string{"--bogus"}, true, stderr, stderr); code != exitUsage {
 		t.Errorf("unknown flag: exit %d, want %d", code, exitUsage)
 	}
