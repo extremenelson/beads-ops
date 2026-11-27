@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -517,5 +518,267 @@ func TestReapPreviewOfNamedClaims(t *testing.T) {
 	if reapIDs(out.WouldRelease) != "x-plain" || len(out.Kept) != 1 || out.Kept[0].ID != "x-work" ||
 		reapIDs(out.Skipped) != "x-gone" || !out.Negative() || bdB.wrote("x-plain") {
 		t.Fatalf("%+v", out)
+	}
+}
+
+// pushFails makes every `bd dolt push` fail while *down is set, and records
+// whether the claim ref was still there each time a push landed.
+func pushFails(t *testing.T, bd *fakeBD, a *rig, id string, down *bool, refAtPush *[]string) {
+	t.Helper()
+	bd.fail = func(args []string) error {
+		if args[0] == "dolt" && args[1] == "push" {
+			if *down {
+				return errors.New("remote down")
+			}
+			*refAtPush = append(*refAtPush, liveSHA(t, a, id))
+		}
+		return nil
+	}
+}
+
+// A reap whose takeover and release pushes both fail must not leave the ref
+// gone while the remote ledger still shows the old holder: the ref stays,
+// release pending, until a sync's push lands, and only then goes.
+func TestReapKeepsTheRefUntilTheReleasePushLands(t *testing.T) {
+	a, b, bdB := reapWorld(t, "x-1")
+	down := true
+	var refAtPush []string
+	pushFails(t, bdB, a, "x-1", &down, &refAtPush)
+
+	out, err := intent.Reap(bg, b.env, intent.ReapOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reapIDs(out.Released) != "x-1" || !strings.Contains(out.Released[0].Detail, "pending: run bops sync") || !out.Negative() ||
+		out.Released[0].SavedTo != "" { // the note is in the local ledger; the push carries it
+		t.Fatalf("%+v", out)
+	}
+	if bdB.count("dolt push") < 2 { // the takeover's and the release's
+		t.Fatalf("pushes = %d, want the takeover's and the release's tried", bdB.count("dolt push"))
+	}
+	sha := liveSHA(t, a, "x-1")
+	if sha == "" {
+		t.Fatal("the claim ref was deleted while the remote ledger may still show the old holder")
+	}
+	if e, ok := b.store.Entry("x-1"); !ok || !e.ReleasePending || e.SHA != sha {
+		t.Fatalf("journal = %+v, %v; want release pending on the live ref", e, ok)
+	}
+	if n := bdB.beads["x-1"]; n.Status != "open" || n.Assignee != "" {
+		t.Errorf("local ledger = %+v, want released", n)
+	}
+
+	// A sync that cannot push, or is told not to, keeps the ref too.
+	if _, err := intent.Sync(bg, b.env, false); err == nil {
+		t.Fatal("sync pushed through a down remote")
+	}
+	s, err := intent.Sync(bg, b.env, true)
+	if err != nil || liveSHA(t, a, "x-1") == "" || len(s.LostClaims) != 0 {
+		t.Fatalf("sync --no-push: %+v, %v; ref %q", s, err, liveSHA(t, a, "x-1"))
+	}
+
+	down = false
+	s, err = intent.Sync(bg, b.env, false)
+	if err != nil || len(s.LostClaims) != 0 {
+		t.Fatalf("sync: %+v, %v", s, err)
+	}
+	if liveSHA(t, a, "x-1") != "" {
+		t.Error("sync pushed the release but left the claim ref")
+	}
+	if len(refAtPush) == 0 || refAtPush[0] == "" {
+		t.Errorf("ref at the first push that landed = %q, want it still there", refAtPush)
+	}
+	if _, ok := b.store.Entry("x-1"); ok {
+		t.Error("hold kept after the release finished")
+	}
+	if n := bdB.beads["x-1"]; n.Status != "open" || n.Assignee != "" || slices.Contains(n.Labels, "run:B") {
+		t.Errorf("sync showed the released claim again: %+v", n)
+	}
+}
+
+// Another command on the bead finishes the pending release first, as sync does.
+func TestReapPendingReleaseIsFinishedByTheNextCommandOnTheBead(t *testing.T) {
+	a, b, bdB := reapWorld(t, "x-1")
+	down := true
+	var refAtPush []string
+	pushFails(t, bdB, a, "x-1", &down, &refAtPush)
+	if out, err := intent.Reap(bg, b.env, intent.ReapOpts{}); err != nil || len(out.Released) != 1 {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if out, err := intent.Release(bg, b.env, "x-1", "abandoned"); err == nil || out.Outcome != intent.OutcomeError || liveSHA(t, a, "x-1") == "" {
+		t.Fatalf("release with the remote down: %+v, %v", out, err)
+	}
+	down = false
+	out, err := intent.Release(bg, b.env, "x-1", "abandoned")
+	if err != nil || out.Outcome != intent.OutcomeRefused || !strings.Contains(out.Detail, "had not finished") {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if liveSHA(t, a, "x-1") != "" || len(refAtPush) == 0 || refAtPush[0] == "" {
+		t.Errorf("ref %q; ref at push %q", liveSHA(t, a, "x-1"), refAtPush)
+	}
+}
+
+// A release whose local ledger write fails has not happened: reap keeps the
+// claim and says so, and the ref stays with it.
+func TestReapKeepsTheClaimWhenTheReleaseCannotWriteTheLedger(t *testing.T) {
+	a, b, bdB := reapWorld(t, "x-1")
+	bdB.fail = func(args []string) error {
+		if args[0] == "comments" && args[1] == "add" && args[2] == "x-1" && slices.Contains(args, "-f") {
+			return errors.New("dolt: database is locked")
+		}
+		return nil
+	}
+	out, err := intent.Reap(bg, b.env, intent.ReapOpts{})
+	if err == nil || len(out.Failed) != 1 || !strings.Contains(out.Failed[0].Detail, "this run now holds x-1") || out.Failed[0].SavedTo == "" {
+		t.Fatalf("err = %v, out = %+v", err, out)
+	}
+	if liveSHA(t, a, "x-1") == "" {
+		t.Fatal("ref deleted by a release that did not happen")
+	}
+	if e, ok := b.store.Entry("x-1"); !ok || e.ReleasePending || !e.LedgerPending {
+		t.Fatalf("journal = %+v, %v; want the claim kept, ledger pending", e, ok)
+	}
+}
+
+// Takeover, evidence re-read and release run under one hold of the bead's
+// lock: no sync or other bops process in the clone can act between them.
+func TestReapHoldsTheBeadLockFromTakeoverToRelease(t *testing.T) {
+	_, b, bdB := reapWorld(t, "x-1")
+	var free []string
+	bdB.fail = func(args []string) error {
+		n := bdB.beads["x-1"]
+		if !slices.Contains(n.Labels, "run:B") && !strings.Contains(strings.Join(n.Comments, "\n"), "run=B reason=abandoned") {
+			return nil // before the takeover's display, or after the release's
+		}
+		if unlock, err := b.store.LockBead("x-1"); err == nil {
+			unlock()
+			free = append(free, strings.Join(args, " "))
+		}
+		return nil
+	}
+	out, err := intent.Reap(bg, b.env, intent.ReapOpts{})
+	if err != nil || reapIDs(out.Released) != "x-1" {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if len(free) > 0 {
+		t.Errorf("bead lock free between takeover and release, at: %v", free)
+	}
+}
+
+// reap judges claims from the ledger claims write: a Dolt remote on another
+// repository is refused before the pull, as claim refuses it.
+func TestReapRefusesALedgerOnAnotherRepository(t *testing.T) {
+	a, b, bdB := reapWorld(t, "x-1")
+	bdB.remotes = `[{"name":"origin","url":"git+https://example.invalid/other/repo.git"}]`
+	bdB.calls = nil
+	if _, err := intent.Reap(bg, b.env, intent.ReapOpts{}); err == nil {
+		t.Fatal("reap ran against a ledger on another repository")
+	}
+	if bdB.count("dolt pull") != 0 || bdB.wrote("x-1") || liveSHA(t, a, "x-1") == "" {
+		t.Errorf("reap pulled or wrote: %v", bdB.calls)
+	}
+}
+
+// When the pushes land, the release's push still comes before the ref delete.
+func TestReapPushesTheReleaseBeforeDeletingTheRef(t *testing.T) {
+	a, b, bdB := reapWorld(t, "x-1")
+	down := false
+	var refAtPush []string
+	pushFails(t, bdB, a, "x-1", &down, &refAtPush)
+	inner := bdB.fail
+	marked := false // the release's push runs with release_pending already written
+	bdB.fail = func(args []string) error {
+		if args[0] == "dolt" && args[1] == "push" && strings.Contains(strings.Join(bdB.beads["x-1"].Comments, "\n"), "reason=abandoned") {
+			e, _ := b.store.Entry("x-1")
+			marked = e.ReleasePending
+		}
+		return inner(args)
+	}
+	out, err := intent.Reap(bg, b.env, intent.ReapOpts{})
+	if !marked {
+		t.Error("release_pending not written before the release's push: a crash during it would leave a live claim")
+	}
+	if err != nil || reapIDs(out.Released) != "x-1" || strings.Contains(out.Released[0].Detail, "pending") || out.Negative() {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if len(refAtPush) < 2 || slices.Contains(refAtPush, "") {
+		t.Fatalf("ref at each push = %q, want live at the takeover's and the release's", refAtPush)
+	}
+	if liveSHA(t, a, "x-1") != "" {
+		t.Error("ref left after a release whose push landed")
+	}
+}
+
+// A hold released but waiting on its push is no claim of the run's: not
+// listed as mine, and no reason for claim --next to refuse.
+func TestAPendingReleaseIsNotAClaimOfTheRun(t *testing.T) {
+	a, b, bdB := reapWorld(t, "x-1")
+	down := true
+	var refAtPush []string
+	pushFails(t, bdB, a, "x-1", &down, &refAtPush)
+	if out, err := intent.Reap(bg, b.env, intent.ReapOpts{}); err != nil || len(out.Released) != 1 {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	ss, err := intent.SessionStart(bg, b.env)
+	if err != nil || slices.Contains(ss.Mine, "x-1") {
+		t.Fatalf("session-start: mine = %v, %v", ss.Mine, err)
+	}
+	cn, err := intent.ClaimNext(bg, b.env)
+	if cn != nil && strings.Contains(cn.Reason, "already holds") {
+		t.Fatalf("claim --next refused for a released bead: %+v, %v", cn, err)
+	}
+}
+
+// A pending release whose ref another machine took over meanwhile is that
+// machine's claim now: finishing it drops the hold and pushes nothing.
+func TestAPendingReleaseTakenOverIsDroppedNotPushed(t *testing.T) {
+	a, b, bdB := reapWorld(t, "x-1")
+	down := true
+	var refAtPush []string
+	pushFails(t, bdB, a, "x-1", &down, &refAtPush)
+	if out, err := intent.Reap(bg, b.env, intent.ReapOpts{}); err != nil || len(out.Released) != 1 {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	takeOver(t, a, "x-1")
+	newSHA := liveSHA(t, a, "x-1")
+	down = false
+	bdB.calls = nil
+	if _, err := intent.Sync(bg, b.env, true); err != nil { // --no-push: pushes nothing itself
+		t.Fatal(err)
+	}
+	if rel, err := intent.Release(bg, b.env, "x-1", "abandoned"); err != nil || rel.Outcome != intent.OutcomeLost {
+		t.Fatalf("release: %+v, %v; want lost", rel, err)
+	}
+	if bdB.count("dolt push") != 0 {
+		t.Errorf("pushed a moot release over the new holder's claim: %v", bdB.calls)
+	}
+	if liveSHA(t, a, "x-1") != newSHA {
+		t.Error("the new holder's ref was touched")
+	}
+	if _, ok := b.store.Entry("x-1"); ok {
+		t.Error("hold kept after its ref was taken over")
+	}
+}
+
+// One failed push in a sync is not retried for every other pending release.
+func TestSyncTriesOnePendingReleasePushPerRun(t *testing.T) {
+	a, b, bdB := reapWorld(t, "x-1", "x-2")
+	down := true
+	var refAtPush []string
+	pushFails(t, bdB, a, "x-1", &down, &refAtPush)
+	if out, err := intent.Reap(bg, b.env, intent.ReapOpts{}); err != nil || len(out.Released) != 2 {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	bdB.calls = nil
+	s, err := intent.Sync(bg, b.env, false)
+	if err == nil {
+		t.Fatal("sync pushed through a down remote")
+	}
+	// One pending release's push (5 tries) and sync's own (5 tries); the
+	// second pending release is not tried, only warned about.
+	if pushes := bdB.count("dolt push"); pushes != 10 || liveSHA(t, a, "x-1") == "" || liveSHA(t, a, "x-2") == "" {
+		t.Fatalf("pushes %d, refs %q %q", pushes, liveSHA(t, a, "x-1"), liveSHA(t, a, "x-2"))
+	}
+	if !strings.Contains(strings.Join(s.Warnings, "\n"), "failed earlier in this sync") {
+		t.Errorf("warnings = %v", s.Warnings)
 	}
 }

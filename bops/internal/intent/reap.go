@@ -57,11 +57,14 @@ type ReapOut struct {
 	Warnings     []string   `json:"warnings"`
 	// namedKept counts ids --only named that a real run kept on evidence.
 	namedKept int
+	// pending counts releases whose ledger push did not land: their refs
+	// stay until a sync from this checkout pushes them.
+	pending int
 }
 
 // Negative reports a run that left a claim it meant to release.
 func (o *ReapOut) Negative() bool {
-	return o != nil && (len(o.Failed) > 0 || len(o.Skipped) > 0 || o.namedKept > 0)
+	return o != nil && (len(o.Failed) > 0 || len(o.Skipped) > 0 || o.namedKept > 0 || o.pending > 0)
 }
 
 // ReapNotSeen is printed by every reap: a worktree on another machine, and
@@ -124,7 +127,9 @@ func Reap(ctx context.Context, env *Env, o ReapOpts) (*ReapOut, error) {
 		}
 	}
 	if !o.DryRun {
-		if err := env.noLedgerRemote(ctx); err != nil {
+		// The ledger must be the one claims write: one on another repository
+		// would judge the claims and their evidence from the wrong beads.
+		if err := env.checkRemote(ctx); err != nil {
 			return out, err
 		}
 		if _, err := withLockRetry(ctx, env, "dolt", "pull"); err != nil {
@@ -208,6 +213,9 @@ func Reap(ctx context.Context, env *Env, o ReapOpts) (*ReapOut, error) {
 			failures = append(failures, fmt.Errorf("%s: %w", c.ID, err))
 		}
 		if d.Outcome == OutcomeReleased {
+			if strings.Contains(d.Detail, reapPending) {
+				out.pending++
+			}
 			out.Released = append(out.Released, d)
 		} else {
 			out.Failed = append(out.Failed, d)
@@ -249,6 +257,13 @@ func (e *Env) evidenceOrUnread(ctx context.Context, id string, branches []workBr
 // another machine recorded; if any appears, this run keeps the claim and says
 // so. The takeover and release run on their own clock, which Reap checked was
 // there, so the command's deadline cannot cut them apart.
+//
+// All three steps run under one hold of the bead's lock, so no sync or other
+// bops process in this clone acts on the claim between them. The release
+// deletes the claim ref only once its ledger push has landed; if the push
+// fails the ref stays, marked release pending, and the next sync (or command
+// on the bead) from this clone pushes and then deletes it. So no machine sees
+// the ref gone while the remote ledger still shows the old holder.
 func (e *Env) reapOne(ctx context.Context, c StaleClaim, d *ReapDone, warnings *[]string) error {
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), takeoverClock)
 	defer cancel()
@@ -268,9 +283,17 @@ func (e *Env) reapOne(ctx context.Context, c StaleClaim, d *ReapDone, warnings *
 		}
 		return "; this run now holds " + c.ID + "; once decided, run `bops release " + c.ID + " --reason abandoned` from this checkout"
 	}
+	var lockWarnings []string
+	unlock, err := e.holdBead(rctx, "reap", c.ID, &lockWarnings)
+	warn(lockWarnings)
+	if err != nil {
+		d.Outcome, d.Detail = OutcomeError, "takeover: "+lock.Scrub(err.Error())
+		return err
+	}
+	defer unlock()
 	// Reap reads the evidence itself once the takeover is done, so it
-	// takes over through claimOne, which leaves the handoff unread.
-	cl, err := claimOne(rctx, e, c.ID, true)
+	// takes over through claimLocked, which leaves the handoff unread.
+	cl, err := claimLocked(rctx, e, c.ID, true, &ClaimOut{ID: c.ID, Run: e.Run.ID, Warnings: []string{}})
 	if cl != nil {
 		warn(cl.Warnings)
 	}
@@ -303,14 +326,20 @@ func (e *Env) reapOne(ctx context.Context, c StaleClaim, d *ReapDone, warnings *
 		orDash(c.Actor), orDash(c.Run), c.AgeMinutes)
 	relctx, relcancel := context.WithTimeout(context.WithoutCancel(ctx), releaseClock)
 	defer relcancel()
-	rel, err := ReleaseWithText(relctx, e, c.ID, "abandoned", note)
+	rel, err := releaseKeepingRef(relctx, e, c.ID, "abandoned", note)
 	if rel != nil {
 		warn(rel.Warnings)
 		d.Outcome, d.Detail, d.SavedTo = rel.Outcome, rel.Detail, rel.SavedTo
-		pending = pending || rel.LedgerPending || rel.RefPending
+		if rel.Outcome == OutcomeReleased {
+			// The release's own push carries the takeover's commit too, so
+			// only the release decides whether anything still waits.
+			pending = rel.LedgerPending || rel.RefPending
+		} else {
+			pending = pending || rel.LedgerPending || rel.RefPending
+		}
 	}
 	if pending {
-		d.Detail = strings.TrimSpace(d.Detail + " (pending: run bops sync from this checkout)")
+		d.Detail = strings.TrimSpace(d.Detail + " " + reapPending)
 	}
 	if err != nil || d.Outcome != OutcomeReleased {
 		if d.Outcome == "" {
@@ -323,6 +352,22 @@ func (e *Env) reapOne(ctx context.Context, c StaleClaim, d *ReapDone, warnings *
 	}
 	return err
 }
+
+// releaseKeepingRef is ReleaseWithText under a bead lock the caller holds,
+// keeping the claim ref until the release's ledger push lands.
+func releaseKeepingRef(ctx context.Context, e *Env, id, reason, text string) (*ReleaseOut, error) {
+	out, err := newRelease(e, id, reason, text, "")
+	if err != nil {
+		return nil, err
+	}
+	out, err = releaseLocked(ctx, e, out, text, true)
+	out.keepText(text)
+	return out, err
+}
+
+// reapPending marks a release, or takeover, whose ledger or ref write waits on
+// a sync from this checkout.
+const reapPending = "(pending: run bops sync from this checkout)"
 
 func orDash(s string) string {
 	if s == "" {

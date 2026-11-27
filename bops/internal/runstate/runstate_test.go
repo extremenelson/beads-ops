@@ -237,7 +237,7 @@ func TestLegacyHeldListStillLoads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), `"version": 5`) {
+	if !strings.Contains(string(b), `"version": 6`) {
 		t.Errorf("not migrated:\n%s", b)
 	}
 	if got := open(t, root, Read).Run().HeldIDs(); len(got) != 2 {
@@ -561,6 +561,34 @@ func TestConfirmClearsADeleteThatNeverFinished(t *testing.T) {
 	}
 }
 
+// A release waiting on its ledger push survives a reopen, and a confirmed
+// write (a claim again) clears it, as it clears a pending delete.
+func TestReleasePendingPersistsAndConfirmClearsIt(t *testing.T) {
+	root, _ := repo(t)
+	s := open(t, root, Read)
+	if err := s.Confirm("x-1", "aaa"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetReleasePending("x-1", true); err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := open(t, root, Read).Entry("x-1"); !e.ReleasePending || e.SHA != "aaa" {
+		t.Fatalf("reopened entry = %+v", e)
+	}
+	if err := s.SetReleasePending("x-none", true); err == nil {
+		t.Error("marked a bead no run holds release pending, which nothing would finish")
+	}
+	if _, ok := s.Entry("x-none"); ok {
+		t.Error("SetReleasePending made an entry for a bead not held")
+	}
+	if err := s.Confirm("x-1", "bbb"); err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := s.Entry("x-1"); e.ReleasePending || e.SHA != "bbb" {
+		t.Fatalf("entry = %+v", e)
+	}
+}
+
 // Every id the claim contract accepts names a lock file, the longest too.
 func TestLockBeadTakesTheLongestValidID(t *testing.T) {
 	root, _ := repo(t)
@@ -593,7 +621,7 @@ func TestOpenStampsAnOlderStateFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), `"version": 5`) {
+	if !strings.Contains(string(b), `"version": 6`) {
 		t.Fatalf("opening must stamp the version:\n%s", b)
 	}
 	for id, sha := range map[string]string{"x-1": "aaa", "x-2": "bbb"} {
@@ -606,13 +634,13 @@ func TestOpenStampsAnOlderStateFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := open(t, root, Write)
-	if b, _ := os.ReadFile(path); !strings.Contains(string(b), `"version": 5`) {
+	if b, _ := os.ReadFile(path); !strings.Contains(string(b), `"version": 6`) {
 		t.Fatalf("a write open must stamp the version too:\n%s", b)
 	}
 	w.Close()
 
 	// write always indents, so a rewrite of this compact file would show.
-	current := `{"version":5,"runs":{"` + s.worktree + `":{"id":"RUN","machine":"m","actor":"a","started_at":"2026-11-09T00:00:00Z"}}}`
+	current := `{"version":6,"runs":{"` + s.worktree + `":{"id":"RUN","machine":"m","actor":"a","started_at":"2026-11-09T00:00:00Z"}}}`
 	if err := os.WriteFile(path, []byte(current), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -710,7 +738,7 @@ func TestStampKeepsTheStoredActor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), `"version": 5`) || !strings.Contains(string(b), `"actor": "stored"`) || strings.Contains(string(b), "someone-else") {
+	if !strings.Contains(string(b), `"version": 6`) || !strings.Contains(string(b), `"actor": "stored"`) || strings.Contains(string(b), "someone-else") {
 		t.Fatalf("the stamp must keep the stored actor:\n%s", b)
 	}
 }
@@ -807,7 +835,7 @@ func TestStampKeepsItsRunWhenTheReReadLacksIt(t *testing.T) {
 		t.Fatal("the store must keep handing out its run")
 	}
 	b, _ := os.ReadFile(path)
-	if !strings.Contains(string(b), `"version": 5`) || !strings.Contains(string(b), `"SIB"`) || strings.Contains(string(b), run.ID) {
+	if !strings.Contains(string(b), `"version": 6`) || !strings.Contains(string(b), `"SIB"`) || strings.Contains(string(b), run.ID) {
 		t.Fatalf("the stamp must write only what it re-read:\n%s", b)
 	}
 }
@@ -835,7 +863,7 @@ func TestStampLeavesASiblingsEmptyActor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), `"version": 5`) || strings.Contains(string(b), "someone-else") {
+	if !strings.Contains(string(b), `"version": 6`) || strings.Contains(string(b), "someone-else") {
 		t.Fatalf("the stamp must not save this process's actor on any run:\n%s", b)
 	}
 }
@@ -847,7 +875,7 @@ func TestOpenDefaultsOnlyItsOwnEmptyActor(t *testing.T) {
 	root, stateHome := repo(t)
 	s := open(t, root, Read)
 	path := firstOrEmpty(stateFiles(t, stateHome))
-	stored := `{"version":5,"runs":{` +
+	stored := `{"version":6,"runs":{` +
 		`"` + s.worktree + `":{"id":"RUN","machine":"m","started_at":"2026-11-09T00:00:00Z"},` +
 		`"/elsewhere":{"id":"SIB","machine":"m","started_at":"2026-11-09T00:00:00Z"}}}`
 	if err := os.WriteFile(path, []byte(stored), 0o600); err != nil {
@@ -1054,7 +1082,7 @@ func TestNamedRunOfARemovedWorktreeIsStranded(t *testing.T) {
 }
 
 // A version 4 file, the last before named runs, loads with its holds and is
-// stamped at version 5, which a bops that knows no named run refuses.
+// stamped at the current version, which a bops that knows no named run refuses.
 func TestVersionFourStateLoadsAndIsStamped(t *testing.T) {
 	root, stateHome := repo(t)
 	s := open(t, root, Read)
@@ -1070,7 +1098,7 @@ func TestVersionFourStateLoadsAndIsStamped(t *testing.T) {
 	if e, ok := w.Entry("x-1"); !ok || e.SHA != "aaa" {
 		t.Fatalf("hold lost: %+v %v", e, ok)
 	}
-	if b, _ := os.ReadFile(path); !strings.Contains(string(b), `"version": 5`) {
+	if b, _ := os.ReadFile(path); !strings.Contains(string(b), `"version": 6`) {
 		t.Fatalf("not stamped:\n%s", b)
 	}
 }

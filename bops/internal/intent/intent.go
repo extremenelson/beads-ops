@@ -61,6 +61,7 @@ type Env struct {
 type HoldStore interface {
 	Holds() []runstate.Hold
 	SetLedgerPending(id string, pending bool) error
+	SetReleasePending(id string, pending bool) error
 	Log(ev runstate.Event)
 	// LockBead, Refresh and Matches serialize work on one bead among the
 	// bops processes sharing this clone (bops-yph).
@@ -150,23 +151,57 @@ func (e *Env) lockEvent(cmd, id, outcome string, waited, held *time.Duration) {
 		WaitedMS: ms(waited), HeldMS: ms(held)})
 }
 
+// errReleasePush marks a pending release whose ledger push failed.
+var errReleasePush = errors.New("ledger push failed")
+
 // finishRelease finishes a release of id whose ref delete never completed,
 // as sync would, before a command acts on the bead: such a hold was given
-// away, and treating it as held would take the bead back (bops-yph). It
-// reports whether it removed the hold. The caller holds the bead's lock.
+// away, and treating it as held would take the bead back (bops-yph). A
+// release whose ledger push has not landed (reap's) is pushed first, and its
+// ref deleted only once the push has. It reports whether it removed the hold.
+// The caller holds the bead's lock.
 func (e *Env) finishRelease(ctx context.Context, id string) (bool, error) {
+	finished, _, err := e.settleRelease(ctx, id)
+	return finished, err
+}
+
+// settleRelease is finishRelease that also returns, for a pending release
+// whose ref another run took meanwhile, that run as the holder: the hold is
+// dropped and nothing is pushed or deleted for it.
+func (e *Env) settleRelease(ctx context.Context, id string) (bool, *Holder, error) {
 	if e.LockOff || e.Lock == nil {
-		return false, nil
+		return false, nil, nil
 	}
 	h, ok := e.Lock.Journal.Entry(id)
-	if !ok || !h.DeletePending {
-		return false, nil
+	if !ok || !h.Given() {
+		return false, nil, nil
+	}
+	if h.ReleasePending && !h.DeletePending {
+		ref, err := e.Lock.Read(ctx, id)
+		if err != nil {
+			return false, nil, err
+		}
+		if ref == nil || ref.SHA != h.SHA {
+			if err := e.Lock.Journal.Drop(id); err != nil {
+				return false, nil, err
+			}
+			e.event("release", id, "ref_check", OutcomeLost, "", nil)
+			holder := e.holder(ref)
+			if holder == nil {
+				holder = &Holder{}
+			}
+			return true, holder, nil
+		}
+		if err := e.pushLedger(ctx); err != nil {
+			return false, nil, fmt.Errorf("a release of %s is on this machine's ledger but not on the remote yet, so its claim ref stays until a ledger push lands: %w: %w", id, errReleasePush, err)
+		}
+		e.event("release", id, "ledger", "pushed", h.SHA, nil)
 	}
 	if _, err := e.Lock.Delete(ctx, id, h.SHA); err != nil {
-		return false, err
+		return false, nil, err
 	}
 	e.event("release", id, "ref_delete", "finished", h.SHA, nil)
-	return true, nil
+	return true, nil, nil
 }
 
 func (e *Env) sleepFor(d time.Duration) {

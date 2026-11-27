@@ -49,7 +49,15 @@ type Entry struct {
 	Phase         string `json:"phase"`
 	LedgerPending bool   `json:"ledger_pending,omitempty"`
 	DeletePending bool   `json:"delete_pending,omitempty"`
+	// ReleasePending is a release written to the local ledger whose push has
+	// not landed: the ref stays until it has, so no other machine sees the
+	// ref gone while the remote ledger still shows a claim.
+	ReleasePending bool `json:"release_pending,omitempty"`
 }
+
+// Given reports whether the hold was released and waits only on its ledger
+// push or ref delete: it is no claim of this run's any more.
+func (e Entry) Given() bool { return e.DeletePending || e.ReleasePending }
 
 // Legacy reports whether the entry was taken before the lock existed.
 func (e Entry) Legacy() bool { return e.Phase == PhaseHeld && e.SHA == "" }
@@ -96,7 +104,12 @@ func (h *Held) UnmarshalJSON(b []byte) error {
 // "#run=<name>", with the name also in the run's name field (bops-4ez). A
 // bops before it would read that key as a removed worktree and offer the
 // run's live holds as stranded, so it refuses the file instead.
-const stateVersion = 5
+//
+// Version 6 adds release_pending to a hold: a release written to the local
+// ledger whose push has not landed (reap's). A bops before it would read
+// such a hold as a live claim, show it again and heartbeat it, and drop the
+// flag on its next write, so it refuses the file instead.
+const stateVersion = 6
 
 // Mode says whether a Store may be saved.
 type Mode int
@@ -511,7 +524,7 @@ func (s *Store) Confirm(id, sha string) error {
 		e := r.Held[id]
 		// A confirmed write supersedes a delete that never finished: the ref
 		// is this claim now, and sync must not go on to delete it.
-		e.SHA, e.Intended, e.Phase, e.DeletePending = sha, "", PhaseHeld, false
+		e.SHA, e.Intended, e.Phase, e.DeletePending, e.ReleasePending = sha, "", PhaseHeld, false, false
 		r.put(id, e)
 	})
 }
@@ -555,6 +568,24 @@ func (s *Store) SetLedgerPending(id string, pending bool) error {
 			r.Held[id] = e
 		}
 	})
+}
+
+// SetReleasePending records whether a release of id waits on its ledger push.
+// Marking a bead no run here holds is an error: nothing would finish it.
+func (s *Store) SetReleasePending(id string, pending bool) error {
+	found := false
+	err := s.update(func() {
+		r := s.holder(id)
+		if e, ok := r.Held[id]; ok {
+			found = true
+			e.ReleasePending = pending
+			r.Held[id] = e
+		}
+	})
+	if err == nil && !found && pending {
+		err = fmt.Errorf("no hold of %s to mark release pending", id)
+	}
+	return err
 }
 
 // Drop forgets id for every run in this clone.

@@ -462,6 +462,11 @@ func claimOne(ctx context.Context, env *Env, id string, force bool) (*ClaimOut, 
 		return out.fail(err)
 	}
 	defer unlock()
+	return claimLocked(ctx, env, id, force, out)
+}
+
+// claimLocked is claimOne once the bead's lock is held.
+func claimLocked(ctx context.Context, env *Env, id string, force bool, out *ClaimOut) (*ClaimOut, error) {
 	if _, err := env.finishRelease(ctx, id); err != nil {
 		return out.fail(err)
 	}
@@ -973,6 +978,9 @@ type ReleaseOut struct {
 	Warnings      []string `json:"warnings,omitempty"`
 	OpID          string   `json:"op_id,omitempty"`
 	Replayed      bool     `json:"replayed,omitempty"` // op_id was already recorded; nothing written
+	// committed is set once the release, its text included, is written to
+	// the local ledger, where the next push publishes it.
+	committed bool
 }
 
 // Negative reports a run that worked and an answer of no.
@@ -1025,15 +1033,34 @@ func ReleaseWithText(ctx context.Context, env *Env, id, reason, text string) (*R
 // must finish (sync would otherwise keep a claim given back on the ledger).
 func ReleaseOp(ctx context.Context, env *Env, id, reason, text, op string) (*ReleaseOut, error) {
 	out, err := releaseWithText(ctx, env, id, reason, text, op)
-	// Text from stdin must outlive a release that did not run, or whose
-	// ledger write did not (sync settles the claim but never the comment).
-	if out != nil && text != "" && (out.Outcome != OutcomeReleased || out.LedgerPending) {
-		out.SavedTo = saveText("release", text, &out.Warnings)
-	}
+	out.keepText(text)
 	return out, err
 }
 
+// keepText saves text from stdin, which must outlive a release that did not
+// run, or whose ledger write did not (sync settles the claim but never the
+// comment).
+func (o *ReleaseOut) keepText(text string) {
+	if o != nil && text != "" && !o.committed && (o.Outcome != OutcomeReleased || o.LedgerPending) {
+		o.SavedTo = saveText("release", text, &o.Warnings)
+	}
+}
+
 func releaseWithText(ctx context.Context, env *Env, id, reason, text, op string) (*ReleaseOut, error) {
+	out, err := newRelease(env, id, reason, text, op)
+	if err != nil {
+		return nil, err
+	}
+	unlock, err := env.holdBead(ctx, "release", id, &out.Warnings)
+	if err != nil {
+		return out.fail(err)
+	}
+	defer unlock()
+	return releaseLocked(ctx, env, out, text, false)
+}
+
+// newRelease checks a release's arguments and derives its op id.
+func newRelease(env *Env, id, reason, text, op string) (*ReleaseOut, error) {
 	if !contains(ReleaseReasons, reason) {
 		return nil, fmt.Errorf("release: reason must be one of %s", strings.Join(ReleaseReasons, "|"))
 	}
@@ -1047,15 +1074,23 @@ func releaseWithText(ctx context.Context, env *Env, id, reason, text, op string)
 	if err != nil {
 		return nil, err
 	}
-	out := &ReleaseOut{ID: id, Reason: reason, Warnings: []string{}, OpID: op}
-	unlock, err := env.holdBead(ctx, "release", id, &out.Warnings)
+	return &ReleaseOut{ID: id, Reason: reason, Warnings: []string{}, OpID: op}, nil
+}
+
+// releaseLocked is a release once the bead's lock is held. With keepRef a
+// release whose ledger push fails keeps the claim ref, marked release pending
+// in the journal, until a later push lands (finishRelease, sync); a local
+// ledger write that fails keeps the claim, ledger pending, and is an error.
+// Without it the ref is deleted either way and sync pushes the ledger later.
+func releaseLocked(ctx context.Context, env *Env, out *ReleaseOut, text string, keepRef bool) (*ReleaseOut, error) {
+	id, reason, op := out.ID, out.Reason, out.OpID
+	finished, lost, err := env.settleRelease(ctx, id)
 	if err != nil {
 		return out.fail(err)
 	}
-	defer unlock()
-	finished, err := env.finishRelease(ctx, id)
-	if err != nil {
-		return out.fail(err)
+	if lost != nil {
+		out.Outcome, out.Holder = OutcomeLost, lost
+		return out, nil
 	}
 	entry, ok := env.holdFor(id)
 	if finished || !ok {
@@ -1117,7 +1152,28 @@ func releaseWithText(ctx context.Context, env *Env, id, reason, text, op string)
 			out.Warnings = append(out.Warnings, w)
 		}
 	}
-	if err := env.releaseDisplay(ctx, id, reason, text, op, publish); err != nil {
+	if keepRef && publish && !env.LockOff && !entry.Legacy() && reason != "done" && env.Store != nil {
+		if err := env.releaseDisplay(ctx, id, reason, text, op, false); err != nil {
+			// Not released: the claim stands, and sync shows it again.
+			env.setLedgerPending(id, true)
+			env.event("release", id, "ledger", OutcomeError, sha, err)
+			return out.fail(err)
+		}
+		// Write-ahead: a process killed during the push leaves the hold
+		// marked, so sync finishes the release rather than show the claim
+		// again and heartbeat it.
+		if err := env.Store.SetReleasePending(id, true); err != nil {
+			env.setLedgerPending(id, true)
+			return out.fail(&lock.Error{Code: lock.CodeJournal, Err: err})
+		}
+		out.committed = true // the text is in the local ledger; the push carries it
+		if err := env.pushLedger(ctx); err != nil {
+			out.Outcome, out.LedgerPending, out.RefPending = OutcomeReleased, true, true
+			out.Warnings = append(out.Warnings, "ledger push pending: the claim ref stays until it lands; bops sync from this checkout pushes it and then deletes the ref: "+lock.Scrub(err.Error()))
+			env.event("release", id, "ledger", "pending", sha, err)
+			return out, nil
+		}
+	} else if err := env.releaseDisplay(ctx, id, reason, text, op, publish); err != nil {
 		out.LedgerPending = true
 		out.Warnings = append(out.Warnings, "ledger display pending: "+err.Error())
 		env.event("release", id, "ledger", "pending", sha, err)
@@ -1322,7 +1378,10 @@ type SyncOut struct {
 	// this machine was working on them, or they changed while it ran. The
 	// next sync checks them (bops-yph).
 	Deferred []string `json:"deferred"`
-	Warnings []string `json:"warnings,omitempty"`
+	// pushFailed is set once a pending release's ledger push failed in this
+	// sync, so the rest are not retried against a remote that just refused.
+	pushFailed bool
+	Warnings   []string `json:"warnings,omitempty"`
 }
 
 type cloneHold struct {
@@ -1443,7 +1502,7 @@ func syncAs(ctx context.Context, env *Env, o syncOpts) (*SyncOut, error) {
 		out.Pulled = true
 	}
 	for _, h := range holds {
-		env.syncHeld(ctx, name, h, refs, out)
+		env.syncHeld(ctx, name, h, refs, !noPush && publish, out)
 	}
 	env.pruneBeadLocks(name)
 	if noPush || !publish {
@@ -1453,6 +1512,16 @@ func syncAs(ctx context.Context, env *Env, o syncOpts) (*SyncOut, error) {
 		return out, err
 	}
 	out.Pushed = true
+	if out.pushFailed {
+		// That push carried the releases an earlier one could not: their
+		// refs go now, not at the next sync.
+		out.pushFailed = false
+		for _, h := range env.allHolds() {
+			if h.entry.ReleasePending && !h.entry.DeletePending && (!ownOnly || h.run == env.Run.ID) {
+				env.syncHeld(ctx, name, h, refs, true, out)
+			}
+		}
+	}
 	return out, nil
 }
 
@@ -1496,7 +1565,7 @@ func (e *Env) pruneBeadLocks(cmd string) {
 // working on, or one whose entry changed since this sync read the holds (so
 // the refs fetched after may predate it), is left for the next sync
 // (bops-yph).
-func (e *Env) syncHeld(ctx context.Context, name string, h cloneHold, refs map[string]lock.Ref, out *SyncOut) {
+func (e *Env) syncHeld(ctx context.Context, name string, h cloneHold, refs map[string]lock.Ref, push bool, out *SyncOut) {
 	unlock, err := e.lockBead(ctx, name, h.id, &out.Warnings, 0)
 	if lock.CodeOf(err) == lock.CodeContention {
 		out.Deferred = append(out.Deferred, h.id)
@@ -1515,7 +1584,7 @@ func (e *Env) syncHeld(ctx context.Context, name string, h cloneHold, refs map[s
 			return
 		}
 	}
-	if e.syncHold(ctx, h, refs, out) {
+	if e.syncHold(ctx, h, refs, push, out) {
 		// Under the lock, so a bead released meanwhile is not heartbeat.
 		_, _ = e.BD.Run(ctx, "heartbeat", h.id) // best effort; the ref decides ownership
 	}
@@ -1523,10 +1592,17 @@ func (e *Env) syncHeld(ctx context.Context, name string, h cloneHold, refs map[s
 
 // syncHold settles one hold and reports whether it is still live here. The
 // order matters: an unfinished write or delete must be settled before an
-// absent ref can be read as a lost claim.
-func (e *Env) syncHold(ctx context.Context, h cloneHold, refs map[string]lock.Ref, out *SyncOut) bool {
+// absent ref can be read as a lost claim. A release waiting on its ledger
+// push is pushed, and its ref deleted, only when push is set.
+func (e *Env) syncHold(ctx context.Context, h cloneHold, refs map[string]lock.Ref, push bool, out *SyncOut) bool {
 	mine := h.run == e.Run.ID // only this run's live holds are re-displayed and heartbeat (bops-yr2)
 	if e.LockOff {            // no ref to settle against, so no hold is lost here
+		if h.entry.Given() { // released under the lock, which is off now: nothing left to settle
+			if err := e.Lock.Journal.Drop(h.id); err != nil {
+				out.Warnings = append(out.Warnings, h.id+": "+err.Error())
+			}
+			return false
+		}
 		if h.stranded {
 			out.StrandedHolds = append(out.StrandedHolds, h.id)
 			return false
@@ -1569,6 +1645,25 @@ func (e *Env) syncHold(ctx context.Context, h cloneHold, refs map[string]lock.Re
 			return false
 		}
 		h.entry, _ = e.Lock.Journal.Entry(h.id)
+	}
+	if h.entry.ReleasePending && !h.entry.DeletePending {
+		if !push || out.pushFailed {
+			why := "run bops sync without --no-push to push it" // a ref lock always has a Dolt remote to push to
+			if out.pushFailed {
+				why = "the ledger push failed earlier in this sync; retry once the remote is reachable"
+			}
+			out.Warnings = append(out.Warnings, h.id+": released on this machine's ledger only, so its claim ref stays; "+why)
+			return false
+		}
+		_, lost, err := e.settleRelease(ctx, h.id)
+		if err != nil {
+			out.Warnings = append(out.Warnings, h.id+": "+lock.Scrub(err.Error()))
+			out.pushFailed = errors.Is(err, errReleasePush)
+		}
+		if lost != nil {
+			out.LostClaims = append(out.LostClaims, h.id)
+		}
+		return false
 	}
 	if h.entry.DeletePending {
 		if _, err := e.Lock.Delete(ctx, h.id, h.entry.SHA); err != nil {
