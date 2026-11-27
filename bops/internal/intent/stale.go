@@ -63,26 +63,7 @@ func Stale(ctx context.Context, env *Env, o StaleOpts) (*StaleOut, error) {
 		o.OlderThan = env.staleAfter()
 	}
 	out := &StaleOut{Stale: []StaleClaim{}, Orphans: []Orphan{}, Warnings: []string{}}
-	refs := map[string]lock.Ref{}
-	if env.LockOff {
-		out.Warnings = append(out.Warnings, lock.OffWarning) // every claim ages from the ledger
-	} else if env.Lock != nil {
-		if err := env.Lock.Fetch(ctx); err != nil {
-			out.Warnings = append(out.Warnings, "claim refs are as of the last sync: "+lock.Scrub(err.Error()))
-		}
-		seen, err := env.Lock.Seen(ctx)
-		if err != nil {
-			return nil, err
-		}
-		for _, r := range seen {
-			refs[r.ID] = r
-		}
-	}
-	raw, err := env.BD.Run(ctx, "list", "--status", "in_progress", "--limit", "0", "--json")
-	if err != nil {
-		return nil, err
-	}
-	issues, err := ledger.DecodeIssues(raw)
+	refs, issues, _, err := env.claimSnapshot(ctx, &out.Warnings)
 	if err != nil {
 		return nil, err
 	}
@@ -110,21 +91,14 @@ func Stale(ctx context.Context, env *Env, o StaleOpts) (*StaleOut, error) {
 			}
 			c.Run, c.Actor, c.LastEventAt, c.Source = r.Run, r.Actor, r.At, "ref"
 		} else {
-			c.LastEventAt, c.Source = i.UpdatedAt, "ledger"
-			if i.HeartbeatAt != nil && i.HeartbeatAt.After(c.LastEventAt) {
-				c.LastEventAt = *i.HeartbeatAt
-			}
+			c.LastEventAt, c.Source = ledgerActivity(i, nil), "ledger"
 			if c.LastEventAt.After(cutoff) {
 				continue // already fresh; a comment can only make it fresher
 			}
 			if comments, err = env.comments(ctx, i.ID); err != nil {
 				return nil, err
 			}
-			for _, cm := range comments {
-				if strings.HasPrefix(cm.Text, "bops:") && cm.CreatedAt.After(c.LastEventAt) {
-					c.LastEventAt = cm.CreatedAt
-				}
-			}
+			c.LastEventAt = ledgerActivity(i, comments)
 		}
 		if c.LastEventAt.After(cutoff) {
 			continue
@@ -160,6 +134,53 @@ func Stale(ctx context.Context, env *Env, o StaleOpts) (*StaleOut, error) {
 	sort.Slice(out.Stale, func(a, b int) bool { return out.Stale[a].ID < out.Stale[b].ID })
 	sort.Slice(out.Orphans, func(a, b int) bool { return out.Orphans[a].ID < out.Orphans[b].ID })
 	return out, nil
+}
+
+// claimSnapshot fetches the claim refs (keeping the last sync's copy, with a
+// warning, when the fetch fails) and reads every in-progress bead. refs is
+// empty under lock.mode none, which adds its warning. fetched is false when
+// the fetch failed or was not tried.
+func (e *Env) claimSnapshot(ctx context.Context, warnings *[]string) (refs map[string]lock.Ref, issues []ledger.Issue, fetched bool, err error) {
+	refs = map[string]lock.Ref{}
+	if e.LockOff {
+		*warnings = append(*warnings, lock.OffWarning) // every claim ages from the ledger
+	} else if e.Lock != nil {
+		if err := e.Lock.Fetch(ctx); err != nil {
+			*warnings = append(*warnings, "claim refs are as of the last sync: "+lock.Scrub(err.Error()))
+		} else {
+			fetched = true
+		}
+		seen, err := e.Lock.Seen(ctx)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		for _, r := range seen {
+			refs[r.ID] = r
+		}
+	}
+	raw, err := e.BD.Run(ctx, "list", "--status", "in_progress", "--limit", "0", "--json")
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if issues, err = ledger.DecodeIssues(raw); err != nil {
+		return nil, nil, false, err
+	}
+	return refs, issues, fetched, nil
+}
+
+// ledgerActivity is the last sign of life of a claim with no ref: the latest
+// of updated_at, heartbeat_at and its newest bops: comment.
+func ledgerActivity(i *ledger.Issue, comments []bdComment) time.Time {
+	at := i.UpdatedAt
+	if i.HeartbeatAt != nil && i.HeartbeatAt.After(at) {
+		at = *i.HeartbeatAt
+	}
+	for _, cm := range comments {
+		if strings.HasPrefix(cm.Text, "bops:") && cm.CreatedAt.After(at) {
+			at = cm.CreatedAt
+		}
+	}
+	return at
 }
 
 type bdComment struct {

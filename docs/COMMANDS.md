@@ -14,6 +14,7 @@ Exit codes: **0** = done, or a read's verdict; **1** = could not run: remote or 
 | `land` | Record that work reached its destination | write |
 | `sweep` | Close landed beads whose refs are merged | write |
 | `stale` | Claims nobody is working | read |
+| `status` | Every claim on every machine | read |
 | `reap` | Release stale claims that hold no work | write |
 | `gc` | Delete refs of closed beads and orphans | write |
 | `lint` | Is this bead workable? | read |
@@ -286,6 +287,46 @@ Output:
       "at": "string",
       "age_minutes": "int",
       "same_machine": "bool"
+    }
+  ],
+  "warnings": "string[]"
+}
+```
+
+## `bops status`
+
+Every claim on every machine
+
+| Arg | Type | Default | Doc |
+|---|---|---|---|
+| `--mine` | bool | `false` | Only claims made on this machine (same_machine: a run of this clone, or a ref or bops:claimed comment naming this machine). |
+| `--older-than` | duration | `stale_minutes` | Idle longer than this is stale, as for stale. |
+| `--stale` | bool | `false` | Only stale, orphan and unknown claims (unknown: staleness could not be judged, so it may be stale). A held ref that is stale and does not match its ledger claim is one orphan row, where stale lists it under both. |
+
+Never: write the ledger or a ref, call a claim stale when stale would not: a ref whose state or at is unreadable or whose at is in the future, or a no-ref claim whose comments could not be read, is unknown, ask the forge: branch and mr are inferred from branch names and the ledger, as claim --force's previous infers them.
+
+Wraps: `git fetch --prune refs/bops/claims/* (the last sync's copy if offline, with a warning)`, `bd list --status in_progress --limit 0 --json`, `bd comments <id> --json`, `git ls-remote --heads <lock remote> (and origin)`, `git for-each-ref refs/heads refs/remotes`.
+
+Output:
+
+```json
+{
+  "claims": [
+    {
+      "id": "string",
+      "title": "string?",
+      "state": "live|stale|landing|orphan|unknown",
+      "actor": "string",
+      "machine": "string?",
+      "run": "string",
+      "age_minutes": "int?",
+      "idle_minutes": "int?",
+      "last_event_at": "string?",
+      "last_note_minutes": "int?",
+      "branch": "string?",
+      "mr": "string?",
+      "same_machine": "bool",
+      "source": "ref|ledger|ref+ledger"
     }
   ],
   "warnings": "string[]"

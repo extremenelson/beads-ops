@@ -69,6 +69,40 @@
       }
     },
     {
+      "name": "status",
+      "title": "bops status",
+      "description": "Every claim on every machine. Runs `bops status --json` and returns its JSON document; exit 3 (a negative verdict, ok:false) is a result, not an error.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "Only to continue a paginated result: the cursor the previous page gave. Other arguments are then ignored.",
+            "type": "string"
+          },
+          "mine": {
+            "default": false,
+            "description": "Only claims made on this machine (same_machine: a run of this clone, or a ref or bops:claimed comment naming this machine).",
+            "type": "boolean"
+          },
+          "older-than": {
+            "default": "stale_minutes",
+            "description": "Idle longer than this is stale, as for stale.",
+            "type": "string"
+          },
+          "stale": {
+            "default": false,
+            "description": "Only stale, orphan and unknown claims (unknown: staleness could not be judged, so it may be stale). A held ref that is stale and does not match its ledger claim is one orphan row, where stale lists it under both.",
+            "type": "boolean"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true
+      }
+    },
+    {
       "name": "lint",
       "title": "bops lint",
       "description": "Is this bead workable?. Runs `bops lint --json` and returns its JSON document; exit 3 (a negative verdict, ok:false) is a result, not an error.",

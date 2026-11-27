@@ -13,6 +13,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"text/tabwriter"
 	"time"
 	"unicode"
 
@@ -131,16 +132,17 @@ func printKV(w *os.File, v any) {
 	sort.Strings(keys)
 	for _, k := range keys {
 		switch x := m[k].(type) {
-		case []any:
+		case []any: // items are cleaned: ids from ref names and warnings from command output can hold line breaks
+
 			var parts []string
 			for _, e := range x {
 				if o, ok := e.(map[string]any); ok {
 					if id, ok := o["id"].(string); ok {
-						parts = append(parts, id)
+						parts = append(parts, cleanText(id))
 						continue
 					}
 				}
-				parts = append(parts, fmt.Sprint(e))
+				parts = append(parts, cleanText(fmt.Sprint(e)))
 			}
 			fmt.Fprintf(w, "%s=%s\n", k, strings.Join(parts, ","))
 		case map[string]any:
@@ -610,6 +612,66 @@ func cmdStale(ctx context.Context, m *manifest.Manifest, args []string, asJSON b
 	return emit(m, "stale", asJSON, out, err, stdout, stderr)
 }
 
+func cmdStatus(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
+	fs := newFlagSet("status", stderr)
+	older := fs.Duration("older-than", 0, "idle longer than this is stale (default stale_minutes)")
+	mineOnly := fs.Bool("mine", false, "only claims made on this machine")
+	staleOnly := fs.Bool("stale", false, "only stale, orphan and unknown claims")
+	fs.Bool("json", false, "")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 || *older < 0 {
+		fmt.Fprintln(stderr, "usage: bops status [--mine] [--stale] [--older-than 2h]")
+		return exitUsage
+	}
+	env, store, err := newEnv(runstate.Read)
+	if err != nil {
+		return emit(m, "status", asJSON, nil, err, stdout, stderr)
+	}
+	defer store.Close()
+	out, err := intent.Status(ctx, env, intent.StatusOpts{OlderThan: *older, Mine: *mineOnly, Stale: *staleOnly})
+	code := emit(m, "status", asJSON, out, err, stdout, stderr)
+	if !asJSON && out != nil {
+		statusTable(stdout, out)
+	}
+	return code
+}
+
+// statusTable prints the board as a table, after printKV's id list.
+func statusTable(w io.Writer, out *intent.StatusOut) {
+	if len(out.Claims) == 0 {
+		return
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tSTATE\tHOLDER\tMACHINE\tRUN\tAGE\tIDLE\tNOTE\tBRANCH\tMR")
+	for _, c := range out.Claims {
+		machine := c.Machine
+		if c.SameMachine {
+			machine += "*"
+		}
+		machine = orDashText(machine)
+		cells := []string{c.ID, c.State, orDashText(c.Actor), machine, orDashText(c.Run),
+			minutesText(c.AgeMinutes), minutesText(c.IdleMinutes), minutesText(c.LastNoteMinutes), orDashText(c.Branch), orDashText(c.MR)}
+		for k := range cells {
+			cells[k] = cleanText(cells[k]) // a tab, a control rune, becomes ? and cannot shift the columns
+		}
+		fmt.Fprintln(tw, strings.Join(cells, "\t"))
+	}
+	_ = tw.Flush()
+	fmt.Fprintln(w, "(* this machine; ages are since the claim, the last sign of life and the last note)")
+}
+
+// minutesText is a minute count as 45m, 3h05m or 2d04h, or - when unknown.
+func minutesText(p *int) string {
+	switch {
+	case p == nil:
+		return "-"
+	case *p < 60:
+		return fmt.Sprintf("%dm", *p)
+	case *p < 24*60:
+		return fmt.Sprintf("%dh%02dm", *p/60, *p%60)
+	}
+	return fmt.Sprintf("%dd%02dh", *p/(24*60), *p%(24*60)/60)
+}
+
 func cmdReap(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
 	fs := newFlagSet("reap", stderr)
 	older := fs.Duration("older-than", 0, "idle longer than this is stale (default stale_minutes)")
@@ -711,11 +773,24 @@ func gcDetails(w io.Writer, out *intent.GCOut) {
 // terminal control sequences.
 func cleanText(s string) string {
 	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
+		if unicode.IsControl(r) || hidesText(r) {
 			return '?'
 		}
 		return r
 	}, s)
+}
+
+// hidesText reports a rune that reorders or hides the text around it: the
+// bidi controls, zero-width space, the line and paragraph separators. Joiners
+// (U+200C, U+200D), which scripts and emoji need, are left alone.
+func hidesText(r rune) bool {
+	switch {
+	case r == 0x061C, r == 0x200B, r == 0x200E, r == 0x200F, r == 0x2028, r == 0x2029, r == 0xFEFF:
+		return true
+	case r >= 0x202A && r <= 0x202E, r >= 0x2066 && r <= 0x2069:
+		return true
+	}
+	return false
 }
 
 func orDashText(s string) string {

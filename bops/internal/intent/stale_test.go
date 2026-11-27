@@ -48,6 +48,8 @@ func staleWorld(t *testing.T) (a *rig, bd *fakeBD, now time.Time) {
 		t.Fatal(err)
 	}
 	w.Close() // B's store rereads it before each write
+	// B's refs name its machine, as a real run's would.
+	b.env.Lock.Machine = "far"
 	at := func(r *rig, when time.Time) { r.env.Lock.Now = func() time.Time { return when } }
 
 	mustClaim(t, a, "x-live")

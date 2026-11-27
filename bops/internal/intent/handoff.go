@@ -59,31 +59,17 @@ func (e *Env) fillPrevious(ctx context.Context, cur *ledger.Issue, p *Previous, 
 	warn := func(what string, err error) {
 		*warnings = append(*warnings, "previous attempt: "+what+" not read: "+lock.Scrub(err.Error()))
 	}
-	var texts []string
-	if landed, err := cur.Landed(); err != nil {
+	landed, err := cur.Landed()
+	if err != nil {
 		warn("landed metadata", err)
-	} else if len(landed) > 0 {
-		p.MR = landed[len(landed)-1].Ref
 	}
 	comments, err := e.comments(ctx, cur.ID)
 	if err != nil {
 		warn("comments", err)
 	} else {
 		p.LastNote, p.NoteRun = lastNote(comments, p.Run)
-		for _, c := range comments {
-			texts = append(texts, c.Text)
-		}
 	}
-	if p.MR == "" {
-		// Newest first: comments are oldest first, and notes are older
-		// than any comment only by convention, so they come last.
-		texts = append([]string{cur.Notes}, texts...)
-		for k := len(texts) - 1; k >= 0 && p.MR == ""; k-- {
-			if urls := mrURL.FindAllString(texts[k], -1); len(urls) > 0 {
-				p.MR = urls[len(urls)-1]
-			}
-		}
-	}
+	p.MR = newestMR(landed, cur.Notes, comments)
 	if e.LockOff || e.Lock == nil {
 		return
 	}
@@ -97,6 +83,26 @@ func (e *Env) fillPrevious(ctx context.Context, cur *ledger.Issue, p *Previous, 
 		here = strings.TrimSpace(res.Stdout) // empty on a detached HEAD
 	}
 	p.Branch = pickBranch(branches, cur.ID, here)
+}
+
+// newestMR is the newest landed ref, or else the newest merge request URL in
+// the comments or, last, the notes.
+func newestMR(landed []ledger.Landed, notes string, comments []bdComment) string {
+	if len(landed) > 0 {
+		return landed[len(landed)-1].Ref
+	}
+	// Newest first: comments are oldest first, and notes are older than any
+	// comment only by convention, so they come last.
+	texts := []string{notes}
+	for _, c := range comments {
+		texts = append(texts, c.Text)
+	}
+	for k := len(texts) - 1; k >= 0; k-- {
+		if urls := mrURL.FindAllString(texts[k], -1); len(urls) > 0 {
+			return urls[len(urls)-1]
+		}
+	}
+	return ""
 }
 
 // lastNote returns the handoff paragraph of the newest bops note by run, or
