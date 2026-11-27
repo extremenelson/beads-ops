@@ -56,6 +56,9 @@ type ReapDone struct {
 	Outcome string `json:"outcome,omitempty"`
 	Detail  string `json:"detail,omitempty"`
 	SavedTo string `json:"saved_to,omitempty"`
+	// moved is a takeover refused or lost because the claim changed since
+	// it was judged.
+	moved bool
 }
 
 // ReapOut is the `reap` output.
@@ -69,6 +72,11 @@ type ReapOut struct {
 	Warnings     []string   `json:"warnings"`
 	// namedKept counts ids --only named that a real run kept on evidence.
 	namedKept int
+	// moved counts skipped claims --only did not name whose takeover found
+	// the claim changed since it was judged (released, taken or refreshed by
+	// someone else): nothing was left undone, so they do not make the run
+	// negative.
+	moved int
 	// pending counts releases whose ledger push did not land: their refs
 	// stay until a sync from this checkout pushes them.
 	pending int
@@ -76,7 +84,7 @@ type ReapOut struct {
 
 // Negative reports a run that left a claim it meant to release.
 func (o *ReapOut) Negative() bool {
-	return o != nil && (len(o.Failed) > 0 || len(o.Skipped) > 0 || o.namedKept > 0 || o.pending > 0)
+	return o != nil && (len(o.Failed) > 0 || len(o.Skipped) > o.moved || o.namedKept > 0 || o.pending > 0)
 }
 
 // ReapNotSeen is printed by every reap: a worktree on another machine, and
@@ -110,11 +118,27 @@ const ReapForgeUnanswered = "the forge search did not answer, so claims with no 
 // worktree may be on another machine.
 var workLabels = []string{"needs-land"}
 
+// mrPath is the path of a merge request URL after its host: the characters a
+// URL may carry here, then the forge's merge request segment and number.
+const mrPath = `[^\s)>\]"'\x00-\x1f\x7f]+/(?:pull|pulls|-/merge_requests|pull-requests)/[0-9]+`
+
 // mrURL matches a GitHub pull request or GitLab merge request URL in bead text.
-var mrURL = regexp.MustCompile(`https?://[^\s)>\]"'\x00-\x1f\x7f]+/(?:pull|pulls|-/merge_requests|pull-requests)/[0-9]+`)
+var mrURL = regexp.MustCompile(`https?://` + mrPath)
+
+// mrRef matches what reap counts as a merge request named in bead text, in
+// its first group: an mrURL, one without its scheme (github.com/o/r/pull/12),
+// "PR #128" or "MR !45", or after a space, bracket, quote or markup a GitLab
+// reference (!45, g/p!45). #12, bare or as o/r#12, is not one: it is as often
+// an issue. Like a branch, it errs towards a match: a false one only keeps a
+// claim.
+var mrRef = regexp.MustCompile(`(` + mrURL.String() +
+	`|(?i:\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)+(?::[0-9]+)?/` + mrPath + `)` +
+	`|(?i:\b(?:pull request|merge request|pr|mr)[ \t]*[#!][0-9]+\b)` +
+	")|(?:^|[\\s(\\[,;:`\"'*_])((?:[\\w.-]+/[\\w.-]+)?![0-9]+\\b)")
 
 // Reap releases stale claims that hold no work anyone can see from here. The
-// evidence of work is a needs-land label, a merge request URL on the bead, a
+// evidence of work is a needs-land label, a merge request on the bead (a URL,
+// with or without its scheme, or a reference such as PR #128 or !45), a
 // hold of a live worktree of this clone, a branch whose name carries the
 // bead's id: on the lock remote or origin, local, or checked out (or named by
 // the path of a detached worktree) in this clone, or an open or merged merge
@@ -132,7 +156,11 @@ var mrURL = regexp.MustCompile(`https?://[^\s)>\]"'\x00-\x1f\x7f]+/(?:pull|pulls
 //
 // If the ledger pull or the first branch listing fails, nothing is released;
 // a later listing failure stops the run and lists the rest under skipped. A
-// bead whose evidence cannot be read is kept. Orphan refs (a ref with no claim on the ledger) and
+// bead whose evidence cannot be read is kept, unless the command's deadline
+// cut the read short: then it and the rest are skipped, to run again. A
+// takeover refused because the claim was released, taken over or refreshed
+// since it was judged is skipped, and is negative only when --only named it.
+// Orphan refs (a ref with no claim on the ledger) and
 // landing refs are not stale claims and are left alone.
 func Reap(ctx context.Context, env *Env, o ReapOpts) (*ReapOut, error) {
 	out := &ReapOut{DryRun: o.DryRun, Released: []ReapDone{}, WouldRelease: []ReapDone{},
@@ -201,29 +229,29 @@ func Reap(ctx context.Context, env *Env, o ReapOpts) (*ReapOut, error) {
 		return out, fmt.Errorf("reap: cannot list branches, so nothing was released: %w", err)
 	}
 	var failures []error
+	// skipRest lists the claims from k on under skipped, with why.
+	skipRest := func(k int, why string) {
+		for _, rest := range st.Stale[k:] {
+			s := doneAs(rest)
+			s.Detail = why
+			out.Skipped = append(out.Skipped, s)
+		}
+	}
 	for k, c := range st.Stale {
 		d := doneAs(c)
 		if !o.DryRun && !timeFor(ctx) {
-			for _, rest := range st.Stale[k:] {
-				s := doneAs(rest)
-				s.Detail = "not reached: too little of the command's time left; run reap again"
-				out.Skipped = append(out.Skipped, s)
-			}
+			skipRest(k, reapNoTime)
 			break
 		}
 		if !o.DryRun && k > 0 { // the first claim's listing is fresh
 			if branches, err = env.workBranches(ctx); err != nil {
 				why := "not reached: branches could not be listed again; run reap again"
 				if ctx.Err() != nil {
-					why = "not reached: too little of the command's time left; run reap again"
+					why = reapNoTime
 				} else {
 					failures = append(failures, fmt.Errorf("reap: cannot list branches, so nothing more was released: %w", err))
 				}
-				for _, rest := range st.Stale[k:] {
-					s := doneAs(rest)
-					s.Detail = why
-					out.Skipped = append(out.Skipped, s)
-				}
+				skipRest(k, why)
 				break
 			}
 		}
@@ -237,23 +265,25 @@ func Reap(ctx context.Context, env *Env, o ReapOpts) (*ReapOut, error) {
 			// shows no work, so reading them here too would double it.
 			known.comments = []bdComment{}
 		}
-		ev := env.evidenceOrUnread(ctx, c.ID, &known, branches, true)
+		// A read the command's deadline cut short is no evidence of work:
+		// the claim and the rest are listed under skipped, to run again.
+		ev, cut := env.evidenceOrUnread(ctx, c.ID, &known, branches, true)
 		if c.Run == "" && !slices.Contains(only, c.ID) {
 			ev = append(ev, "claimed outside bops (no run label or claim ref; its age is from the ledger only): name it with --only to release it")
 		}
 		if len(ev) == 0 && !o.DryRun {
-			ev = env.evidenceOrUnread(ctx, c.ID, nil, branches, true)
+			ev, cut = env.evidenceOrUnread(ctx, c.ID, nil, branches, true)
 		}
 		if len(ev) == 0 && o.DryRun && !fs.timeFor(ctx) {
-			for _, rest := range st.Stale[k:] {
-				s := doneAs(rest)
-				s.Detail = "not reached: too little of the command's time left for a forge search; run reap again"
-				out.Skipped = append(out.Skipped, s)
-			}
+			skipRest(k, "not reached: too little of the command's time left for a forge search; run reap again")
 			break
 		}
-		if len(ev) == 0 { // one forge call, only for a claim it may save
-			ev = fs.evidence(ctx, c.ID)
+		if len(ev) == 0 && !cut { // one forge call, only for a claim it may save
+			ev, cut = fs.evidence(ctx, c.ID)
+		}
+		if cut {
+			skipRest(k, reapNoTime)
+			break
 		}
 		if len(ev) > 0 {
 			out.Kept = append(out.Kept, keptAs(c, ev))
@@ -267,15 +297,20 @@ func Reap(ctx context.Context, env *Env, o ReapOpts) (*ReapOut, error) {
 			continue
 		}
 		if !timeFor(ctx) { // the evidence reads may have used the margin
-			for _, rest := range st.Stale[k:] {
-				s := doneAs(rest)
-				s.Detail = "not reached: too little of the command's time left; run reap again"
-				out.Skipped = append(out.Skipped, s)
-			}
+			skipRest(k, reapNoTime)
 			break
 		}
 		if err := env.reapOne(ctx, c, &d, &out.Warnings, &fs); err != nil {
 			failures = append(failures, fmt.Errorf("%s: %w", c.ID, err))
+		}
+		if d.moved {
+			// Another reaper, or the holder, got there first: listed, but
+			// not a failure unless --only named it.
+			out.Skipped = append(out.Skipped, d)
+			if !slices.Contains(only, c.ID) {
+				out.moved++
+			}
+			continue
 		}
 		if d.Outcome == OutcomeReleased {
 			if strings.Contains(d.Detail, reapPending) {
@@ -288,6 +323,10 @@ func Reap(ctx context.Context, env *Env, o ReapOpts) (*ReapOut, error) {
 	}
 	return out, errors.Join(failures...)
 }
+
+// reapNoTime is the detail of a claim skipped because the command's time ran
+// short.
+const reapNoTime = "not reached: too little of the command's time left; run reap again"
 
 // heldBy reports whether run holds c: its ref's run, or for a claim with no
 // ref any of its run: labels (bd need not list them in the same order twice).
@@ -388,18 +427,18 @@ func (f *forgeSearch) timeFor(ctx context.Context) bool {
 // search matches titles and descriptions, so one that names id only in its
 // branch is not found. A search that fails, times out, or hit its result
 // limit without such a match is evidence too: an unanswered forge keeps the
-// claim. With no forge it finds nothing.
-func (f *forgeSearch) evidence(ctx context.Context, id string) []string {
+// claim. With no forge it finds nothing. cut is a search that failed because
+// ctx itself ended: no answer, and no reason to doubt the forge.
+func (f *forgeSearch) evidence(ctx context.Context, id string) (ev []string, cut bool) {
 	if f.s == nil {
-		return nil
+		return nil, false
 	}
 	if f.unanswered != nil {
-		return []string{"forge unanswered, so kept: an earlier search failed: " + lock.Scrub(f.unanswered.Error())}
+		return []string{"forge unanswered, so kept: an earlier search failed: " + lock.Scrub(f.unanswered.Error())}, false
 	}
 	fctx, cancel := context.WithTimeout(ctx, f.clockOr())
 	defer cancel()
 	mrs, err := f.s.SearchMRs(fctx, id)
-	var ev []string
 	for _, m := range mrs {
 		// Closed unmerged is the one state that is not work; one this code
 		// does not know keeps the claim.
@@ -416,13 +455,16 @@ func (f *forgeSearch) evidence(ctx context.Context, id string) []string {
 		ev = append(ev, "mr "+u+" ("+m.State+", found on the forge)")
 	}
 	if len(ev) == 0 && err != nil {
+		if ctx.Err() != nil {
+			return nil, true
+		}
 		if !errors.Is(err, forge.ErrIncomplete) { // a full page is an answer, just not a complete one
 			f.unanswered = err
 		}
-		return []string{"forge unanswered, so kept: " + lock.Scrub(err.Error())}
+		return []string{"forge unanswered, so kept: " + lock.Scrub(err.Error())}, false
 	}
 	slices.Sort(ev)
-	return slices.Compact(ev)
+	return slices.Compact(ev), false
 }
 
 // titleNamesBead reports whether a merge request title carries id, or the id
@@ -463,8 +505,10 @@ func alnumAt(s string, k int) bool {
 
 // evidenceOrUnread is workEvidence with a read failure as evidence, so a bead
 // that cannot be read is kept. known, when set, supplies the issue and the
-// comments Stale already decoded; what it lacks is read fresh.
-func (e *Env) evidenceOrUnread(ctx context.Context, id string, known *StaleClaim, branches []workBranch, ownHold bool) []string {
+// comments Stale already decoded; what it lacks is read fresh. cut reports a
+// read that failed once ctx had ended: the deadline, not the ledger, stopped
+// it, so the caller can say to run again rather than keep the claim.
+func (e *Env) evidenceOrUnread(ctx context.Context, id string, known *StaleClaim, branches []workBranch, ownHold bool) (ev []string, cut bool) {
 	var cur *ledger.Issue
 	var comments []bdComment
 	if known != nil {
@@ -472,9 +516,9 @@ func (e *Env) evidenceOrUnread(ctx context.Context, id string, known *StaleClaim
 	}
 	ev, err := e.workEvidence(ctx, id, cur, comments, branches, ownHold)
 	if err != nil {
-		return []string{"unread: " + lock.Scrub(err.Error())}
+		return []string{"unread: " + lock.Scrub(err.Error())}, ctx.Err() != nil
 	}
-	return ev
+	return ev, false
 }
 
 // reapOne takes c over and gives it back. claim --force refuses a claim that
@@ -534,7 +578,10 @@ func (e *Env) reapOne(ctx context.Context, c StaleClaim, d *ReapDone, warnings *
 		if cl.Holder != nil {
 			why = strings.TrimSpace(why + " held by " + orDash(cl.Holder.Actor) + " (run " + orDash(cl.Holder.Run) + ")")
 		}
-		d.Outcome, d.Detail = cl.Outcome, "takeover: "+why
+		d.Outcome, d.Detail, d.moved = cl.Outcome, "takeover: "+why, cl.moved
+		if cl.moved {
+			d.Detail += "; the claim changed since this run judged it stale (released, taken over or refreshed), so it was left alone; run reap --dry-run to judge it again"
+		}
 		return nil
 	}
 	pending := cl.LedgerPending || cl.RefPending
@@ -545,11 +592,13 @@ func (e *Env) reapOne(ctx context.Context, c StaleClaim, d *ReapDone, warnings *
 		d.Outcome, d.Detail = OutcomeHeld, "taken over, but branches could not be listed again: "+lock.Scrub(err.Error())+held()
 		return err
 	}
-	ev := e.evidenceOrUnread(cctx, c.ID, nil, branches, false)
+	// Here a read cut short by its clock keeps the claim held: the
+	// takeover is done, so the run cannot just skip it.
+	ev, _ := e.evidenceOrUnread(cctx, c.ID, nil, branches, false)
 	if len(ev) == 0 {
 		// Under the bead lock, on its own clock: a merge request opened
 		// since the first search keeps the claim too.
-		ev = fs.evidence(context.WithoutCancel(ctx), c.ID)
+		ev, _ = fs.evidence(context.WithoutCancel(ctx), c.ID)
 	}
 	if len(ev) > 0 {
 		d.Outcome, d.Detail = OutcomeHeld, "taken over, then found work: "+strings.Join(ev, "; ")+held()
@@ -675,7 +724,8 @@ func (e *Env) workBranches(ctx context.Context) ([]workBranch, error) {
 }
 
 // workEvidence lists what suggests id's work exists: a work label, a merge
-// request URL on the bead (landed metadata, notes or comments), a hold of a
+// request on the bead (a landed ref, or an mrRef in its notes, description,
+// acceptance criteria or comments), a hold of a
 // live worktree of this clone, or a name in branches that carries the id.
 // ownHold counts this run's own hold too; after reap's own takeover it must
 // not, since that hold is the takeover. A nil cur or comments is read from
@@ -710,8 +760,8 @@ func (e *Env) workEvidence(ctx context.Context, id string, cur *ledger.Issue, co
 		texts = append(texts, c.Text)
 	}
 	for _, t := range texts {
-		for _, u := range mrURL.FindAllString(t, -1) {
-			ev = append(ev, "mr "+u)
+		for _, m := range mrRef.FindAllStringSubmatch(t, -1) {
+			ev = append(ev, "mr "+m[1]+m[2]) // one group matched
 		}
 	}
 	if e.Store != nil {
@@ -735,7 +785,11 @@ func (e *Env) workEvidence(ctx context.Context, id string, cur *ledger.Issue, co
 // id, or the id of one of its parents (a child's work may sit on its epic's
 // branch): the whole id, or its part after the prefix with or without dots,
 // as a token bounded by the ends or one of / - _ . It errs towards a match: a
-// false match keeps a claim, a missed one could release work.
+// false match keeps a claim, a missed one could release work. A short number
+// after the prefix (the 12 of bops-12) with a '.' on both sides does not count
+// alone: that is a version (foo-1.12.0), and would keep its claim forever.
+// Bounded otherwise (fix/12, 12-login, release-12, fix/12.wip) it still
+// counts, and so does a child's dotted part (12.3).
 func BranchNamesBead(branch, id string) bool {
 	b := strings.ToLower(branch)
 	for i := strings.ToLower(id); i != ""; {
@@ -744,7 +798,8 @@ func BranchNamesBead(branch, id string) bool {
 		}
 		if k := strings.LastIndex(i, "-"); k >= 0 && k < len(i)-1 {
 			suffix := i[k+1:]
-			if tokenIn(b, suffix) || tokenIn(b, strings.ReplaceAll(suffix, ".", "")) {
+			version := !suffixAlone(suffix) && !strings.Contains(suffix, ".")
+			if tokenBy(b, suffix, version) || tokenBy(b, strings.ReplaceAll(suffix, ".", ""), version) {
 				return true
 			}
 		}
@@ -755,6 +810,43 @@ func BranchNamesBead(branch, id string) bool {
 		i = i[:dot] // the parent
 	}
 	return false
+}
+
+// suffixAlone reports whether an id's part after its prefix is distinctive
+// enough to name the bead even between dots: it has a letter, or a run of
+// three digits.
+func suffixAlone(s string) bool {
+	run := 0
+	for _, c := range s {
+		switch {
+		case c >= 'a' && c <= 'z':
+			return true
+		case c >= '0' && c <= '9':
+			if run++; run >= 3 {
+				return true
+			}
+		default:
+			run = 0
+		}
+	}
+	return false
+}
+
+// tokenBy is tokenIn, but with notVersion an occurrence with a '.' on both
+// sides does not count.
+func tokenBy(s, tok string, notVersion bool) bool {
+	for from := 0; ; {
+		k := strings.Index(s[from:], tok)
+		if k < 0 {
+			return false
+		}
+		k += from
+		end := k + len(tok)
+		if config.Bounded(s, k, end) && !(notVersion && k > 0 && end < len(s) && s[k-1] == '.' && s[end] == '.') {
+			return true
+		}
+		from = k + 1
+	}
 }
 
 // tokenIn reports whether tok occurs in s bounded by the start, the end or

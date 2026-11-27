@@ -23,6 +23,8 @@ type searchForge struct {
 	later map[string][]forge.MR
 	// laterErr, when set, fails every search after the first.
 	laterErr error
+	// onSearch, when set, runs at the start of each search.
+	onSearch func()
 }
 
 func (f *searchForge) Name() string                                   { return "fake" }
@@ -30,6 +32,9 @@ func (f *searchForge) IsMerged(context.Context, string) forge.Merged  { return f
 func (f *searchForge) RefSHA(context.Context, string) (string, error) { return "", errors.New("no") }
 func (f *searchForge) SearchMRs(ctx context.Context, text string) ([]forge.MR, error) {
 	f.asked = append(f.asked, text)
+	if f.onSearch != nil {
+		f.onSearch()
+	}
 	if f.block {
 		<-ctx.Done()
 		return nil, ctx.Err()

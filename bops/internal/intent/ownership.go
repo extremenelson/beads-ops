@@ -404,6 +404,10 @@ type ClaimOut struct {
 	// handoff is what a takeover read of the bead, for Claim to fill
 	// Previous from once the bead lock is let go.
 	handoff *handoffSrc
+	// moved is a claim --force refused or lost because the claim is no
+	// longer the stale one it set out to take: gone, landing, refreshed, or
+	// held by another run. reap lists those as skipped, not failed.
+	moved bool
 }
 
 // Negative reports a run that worked and an answer of no.
@@ -797,16 +801,18 @@ func claimForce(ctx context.Context, env *Env, id string, from *string) (*ClaimO
 		prev.Actor, prev.Run, prev.AgeMinutes = ref.Actor, ref.Run, max(0, int(age.Minutes()))
 		switch {
 		case ref.State == lock.StateLanding:
+			out.moved = true
 			return env.refuseStale(out, "its work has landed and is waiting on the PR; use claim --resume as the holder, or see the recovery section of PROCESS", age)
 		case ref.Anomalous(now):
 			return env.refuseStale(out, fmt.Sprintf("the claim's time %s is ahead of this machine's clock; check both clocks", ref.At.Format(time.RFC3339)), 0)
 		case !ref.Stale(now, window):
+			out.moved = true
 			return env.refuseStale(out, fmt.Sprintf("held by %s and not stale; a person can wait or ask the holder to release it", ref.Actor), age)
 		}
 	} else {
 		runs := cur.LabelsWithPrefix("run:")
 		if cur.Assignee == "" && len(runs) == 0 {
-			out.Outcome, out.Reason = OutcomeRefused, "nothing to take over; use a plain claim"
+			out.Outcome, out.Reason, out.moved = OutcomeRefused, "nothing to take over; use a plain claim", true
 			return out, nil
 		}
 		if len(runs) > 0 {
@@ -815,6 +821,7 @@ func claimForce(ctx context.Context, env *Env, id string, from *string) (*ClaimO
 		age := now.Sub(cur.UpdatedAt)
 		prev.Actor, prev.Run, prev.AgeMinutes = cur.Assignee, previous, max(0, int(age.Minutes()))
 		if cur.UpdatedAt.IsZero() || cur.UpdatedAt.After(now) || age <= window {
+			out.moved = !cur.UpdatedAt.IsZero() && !cur.UpdatedAt.After(now) // refreshed, not unreadable
 			return env.refuseStale(out, fmt.Sprintf("assigned to %q with recent activity; a person can wait or ask them to release it", cur.Assignee), age)
 		}
 	}
@@ -822,6 +829,7 @@ func claimForce(ctx context.Context, env *Env, id string, from *string) (*ClaimO
 	// atomic), and bd need not list them in the same order twice, so there
 	// the run judged need only be one of them.
 	if from != nil && previous != *from && (ref != nil || *from == "" || !cur.HasLabel("run:"+*from)) {
+		out.moved = true
 		return env.refuseStale(out, fmt.Sprintf("held now by run %s, not run %s that was judged stale", orDash(previous), orDash(*from)),
 			time.Duration(prev.AgeMinutes)*time.Minute)
 	}
@@ -845,7 +853,7 @@ func claimForce(ctx context.Context, env *Env, id string, from *string) (*ClaimO
 	}
 	out.Warnings = append(out.Warnings, res.Warnings...)
 	if res.Outcome == lock.Lost {
-		out.Outcome, out.Holder = OutcomeLost, env.holder(res.Holder)
+		out.Outcome, out.Holder, out.moved = OutcomeLost, env.holder(res.Holder), true
 		env.event("claim", id, "ref_replace", OutcomeLost, "", nil)
 		return out, nil
 	}
