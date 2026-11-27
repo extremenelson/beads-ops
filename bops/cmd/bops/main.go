@@ -145,7 +145,9 @@ func budget(name string) time.Duration {
 		return 5 * time.Minute
 	case "reap": // a takeover and a release per stale claim
 		return 5 * time.Minute
-	case "sync", "gc", "renew": // gc: one ref delete per closed or orphan ref; renew: a ref push per bead
+	case "gc": // per orphan or reopened closed bead: a branch listing and a forge search, and the delete
+		return 5 * time.Minute
+	case "sync", "renew": // renew: a ref push per bead
 		return 2 * time.Minute
 	case "claim", "release", "note", "land", "session-start", "doctor", "status": // status: a comment read per claim
 		return time.Minute

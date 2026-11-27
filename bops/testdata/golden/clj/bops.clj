@@ -37,7 +37,7 @@
    "stale" {:id? false :text nil :opts {:all-machines :bool, :older-than :value} :required #{}}
    "status" {:id? false :text nil :opts {:mine :bool, :older-than :value, :stale :bool} :required #{}}
    "reap" {:id? false :text nil :opts {:dry-run :bool, :forge :value, :older-than :value, :only :value} :required #{}}
-   "gc" {:id? false :text nil :opts {:dry-run :bool, :only :value} :required #{}}
+   "gc" {:id? false :text nil :opts {:dry-run :bool, :forge :value, :only :value} :required #{}}
    "lint" {:id? true :text nil :opts {:strict :bool} :required #{}}
    "sync" {:id? false :text nil :opts {:no-push :bool} :required #{}}
    "session-start" {:id? false :text nil :opts {:hook-json :bool} :required #{}}
@@ -187,7 +187,7 @@
   ([cfg opts] (call cfg "reap" nil opts)))
 
 (defn gc
-  "Delete refs of closed beads and orphans. Runs `bops gc`; returns {:exit :doc :err}.\n   opts: :dry-run (bool); :only (string?)."
+  "Delete claim refs nothing needs. Runs `bops gc`; returns {:exit :doc :err}.\n   opts: :dry-run (bool); :forge (one of auto, github, gitlab, none); :only (string?)."
   ([cfg] (gc cfg {}))
   ([cfg opts] (call cfg "gc" nil opts)))
 

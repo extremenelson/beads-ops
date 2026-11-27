@@ -723,9 +723,10 @@ func cmdGC(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool
 	fs := newFlagSet("gc", stderr)
 	dryRun := fs.Bool("dry-run", true, "report what would be deleted without deleting it")
 	only := fs.String("only", "", "comma-separated bead ids: act on these only")
+	fs.String("forge", "auto", "auto|github|gitlab|none")
 	fs.Bool("json", false, "")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
-		fmt.Fprintln(stderr, "usage: bops gc [--dry-run=false] [--only <id>,<id>]")
+		fmt.Fprintln(stderr, "usage: bops gc [--dry-run=false] [--only <id>,<id>] [--forge auto|github|gitlab|none]")
 		return exitUsage
 	}
 	ids, ok := onlyIDs(fs, *only)
@@ -735,12 +736,21 @@ func cmdGC(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool
 		fmt.Fprintln(stderr, "bops gc: --only names no bead ids")
 		return exitUsage
 	}
+	cfg, err := loadConfig()
+	if err != nil {
+		return emit(m, "gc", asJSON, nil, err, stdout, stderr)
+	}
+	f, err := selectForge(ctx, fs, cfg, forge.Exec)
+	if err != nil {
+		fmt.Fprintln(stderr, "bops gc:", err)
+		return exitUsage
+	}
 	env, store, err := newEnv(runstate.Read)
 	if err != nil {
 		return emit(m, "gc", asJSON, nil, err, stdout, stderr)
 	}
 	defer store.Close()
-	out, err := intent.GC(ctx, env, intent.GCOpts{DryRun: *dryRun, Only: ids})
+	out, err := intent.GC(ctx, env, intent.GCOpts{DryRun: *dryRun, Only: ids, Forge: f})
 	code := emit(m, "gc", asJSON, out, err, stdout, stderr)
 	if !asJSON && out != nil {
 		gcDetails(stdout, out)

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/extremenelson/beads-ops/bops/internal/bdx"
+	"github.com/extremenelson/beads-ops/bops/internal/forge"
 	"github.com/extremenelson/beads-ops/bops/internal/ledger"
 	"github.com/extremenelson/beads-ops/bops/internal/lock"
 )
@@ -21,7 +22,19 @@ type GCOpts struct {
 	// preview listed under would_delete. One whose ref is no longer garbage is
 	// listed under skipped, which makes the run negative.
 	Only []string
+	// Forge, when it is a forge.Searcher, is asked, as reap asks it, for open
+	// or merged merge requests naming the bead of each orphan, or of each
+	// closed bead whose ref is newer than its last ledger change, that shows
+	// no other work. Nil, or a forge that cannot search, skips that with a
+	// warning.
+	Forge forge.Forge
+	// ForgeClock bounds one forge search; zero means 20 s.
+	ForgeClock time.Duration
 }
+
+// GCForgeUnanswered is warned once when a forge search fails: every ref it was
+// asked about with no other evidence of work is then kept.
+const GCForgeUnanswered = "the forge search did not answer, so refs whose beads show no other work were kept; fix the forge CLI (gh or glab) or its login, or pass --forge none to delete without searching"
 
 // Why gc would delete a ref.
 const (
@@ -64,6 +77,30 @@ type gcCandidate struct {
 	ref  lock.Ref
 	why  string
 	note string // what a person should know, such as a bead missing from the ledger
+	// work says the ref may be a live claim whose ledger display has not
+	// reached this ledger (an orphan, or a closed bead's ref newer than the
+	// bead's last ledger change), so reap's work evidence is checked first.
+	work bool
+	cur  *ledger.Issue // the bead as read; nil when it is not on the ledger
+}
+
+// gcWork is what gc's work-evidence checks share across refs: the branch
+// listing, read once on first need, and reap's forge search.
+type gcWork struct {
+	branches []workBranch
+	listed   bool
+	listErr  error
+	fs       forgeSearch
+	checked  bool // some ref's evidence was read
+}
+
+// listing returns the branches, listing them on first call.
+func (w *gcWork) listing(ctx context.Context, e *Env) ([]workBranch, error) {
+	if !w.listed {
+		w.branches, w.listErr = e.workBranches(ctx)
+		w.listed = w.listErr == nil || ctx.Err() == nil // a listing the deadline cut is not cached
+	}
+	return w.branches, w.listErr
 }
 
 // GC deletes claim refs nothing needs: the ref of every closed bead, and every
@@ -76,6 +113,17 @@ type gcCandidate struct {
 // A closed bead's ref is kept while it is younger than stale_minutes and was
 // written after the bead's last ledger change: that is a claim of a reopened
 // bead whose ledger write is still pending, and the ref is the claim.
+//
+// Before an orphan's ref, or a closed bead's ref written after the bead's last
+// ledger change, is deleted, gc reads reap's work evidence for the bead (a
+// needs-land label, a merge request on the bead, a live hold of this clone, a
+// branch naming the bead, and, when none of those shows, the forge), since
+// the ref may be a live claim whose ledger display never reached this ledger.
+// A ref whose bead shows work is kept, listed with the evidence. As in reap, a
+// forge search that fails or does not answer counts as evidence, and a read
+// that fails keeps the ref; a branch listing that fails lists the ref under
+// failed. The real run reads the evidence again under the bead's lock, with
+// a fresh branch listing, before the delete.
 //
 // With DryRun false it pulls the ledger first and refetches the refs, deleting
 // nothing if either fails. Each ref is then deleted under the bead's lock,
@@ -120,6 +168,16 @@ func GC(ctx context.Context, env *Env, o GCOpts) (*GCOut, error) {
 	if err != nil {
 		return out, err
 	}
+	w := &gcWork{fs: forgeSearch{clock: o.ForgeClock}}
+	w.fs.s, _ = o.Forge.(forge.Searcher)
+	defer func() {
+		if w.checked && w.fs.s == nil {
+			out.Warnings = append(out.Warnings, ReapNoForge)
+		}
+		if w.fs.unanswered != nil {
+			out.Warnings = append(out.Warnings, GCForgeUnanswered)
+		}
+	}()
 	orphans := map[string]bool{}
 	for _, r := range st.Orphans {
 		orphans[r.ID] = true
@@ -130,13 +188,23 @@ func GC(ctx context.Context, env *Env, o GCOpts) (*GCOut, error) {
 			continue
 		}
 		if ctx.Err() != nil { // a read that ran out of time is no verdict
-			out.Failed = append(out.Failed, env.gcRef(nil, r, "not reached: the command's time ran out; run gc again"))
+			out.Failed = append(out.Failed, env.gcRef(nil, r, gcNoTime))
 			continue
 		}
 		c, keep := env.gcJudge(ctx, r, orphans[r.ID])
+		if c != nil && c.work && keep == "" {
+			var unread string
+			// A real run searches the forge only under the bead lock, where
+			// it reads the evidence again anyway: one search per ref.
+			keep, unread = env.gcCheckWork(ctx, c, w, o.DryRun)
+			if unread != "" {
+				out.Failed = append(out.Failed, env.gcRef(c, r, unread))
+				continue
+			}
+		}
 		switch {
 		case ctx.Err() != nil && c == nil:
-			out.Failed = append(out.Failed, env.gcRef(nil, r, "not reached: the command's time ran out; run gc again"))
+			out.Failed = append(out.Failed, env.gcRef(nil, r, gcNoTime))
 		case strings.HasPrefix(keep, gcUnread):
 			out.Failed = append(out.Failed, env.gcRef(nil, r, keep)) // never judged, so never quietly kept
 		case keep != "":
@@ -156,7 +224,8 @@ func GC(ctx context.Context, env *Env, o GCOpts) (*GCOut, error) {
 			out.Warnings = append(out.Warnings, id+": no claim ref, so nothing to delete")
 			continue
 		}
-		if !slices.ContainsFunc(cands, func(c gcCandidate) bool { return c.ref.ID == id }) && !slices.ContainsFunc(out.Kept, named) {
+		if !slices.ContainsFunc(cands, func(c gcCandidate) bool { return c.ref.ID == id }) && !slices.ContainsFunc(out.Kept, named) &&
+			!slices.ContainsFunc(out.Failed, named) { // already listed, with why
 			out.Skipped = append(out.Skipped, GCRef{ID: id, Detail: "not a ref gc deletes now; run gc --dry-run again"})
 		}
 	}
@@ -170,12 +239,12 @@ func GC(ctx context.Context, env *Env, o GCOpts) (*GCOut, error) {
 		}
 		if ctx.Err() != nil {
 			for _, rest := range cands[k:] {
-				s := env.gcRef(&rest, rest.ref, "not reached: the command's time ran out; run gc again")
+				s := env.gcRef(&rest, rest.ref, gcNoTime)
 				out.Failed = append(out.Failed, s)
 			}
 			break
 		}
-		res, err := env.gcOne(ctx, c, &g, &out.Warnings)
+		res, err := env.gcOne(ctx, c, &g, &out.Warnings, w)
 		switch {
 		case err != nil:
 			if lock.CodeOf(err) != lock.CodeContention { // a busy bead waits for the next gc
@@ -203,7 +272,7 @@ type gcResult int
 const (
 	gcDeleted gcResult = iota
 	gcKept             // the re-check found it is no longer garbage
-	gcLost             // someone changed the ref since gc read it
+	gcLost             // not deleted, and not judged garbage now: the ref changed since gc read it, or the re-check could not finish
 )
 
 func (e *Env) gcRef(c *gcCandidate, r lock.Ref, detail string) GCRef {
@@ -216,6 +285,53 @@ func (e *Env) gcRef(c *gcCandidate, r lock.Ref, detail string) GCRef {
 		g.AgeMinutes = int(e.now().Sub(r.At).Minutes())
 	}
 	return g
+}
+
+// gcDeleteClock bounds one leased ref delete, after the re-check under the
+// bead lock.
+const gcDeleteClock = 60 * time.Second
+
+// gcNoTime is the detail of a ref the command's time ran out before judging.
+const gcNoTime = "not reached: the command's time ran out; run gc again"
+
+// gcCheckWork reads reap's work evidence for c's bead, as reap reads it. It
+// returns why to keep the ref when the bead shows work, or, when the evidence
+// could not be judged (no branch listing, or the deadline cut a read short),
+// why it is listed under failed instead; both are empty when the ref may go.
+// The forge is asked only when nothing else shows work, and only when forge
+// is set: a real run's first read leaves it to the re-check under the lock. A
+// preview with too little time left for a forge search lists the ref under
+// failed rather than keep it on a search the deadline cut short. An evidence
+// read that fails keeps the ref, as in reap, saying so.
+func (e *Env) gcCheckWork(ctx context.Context, c *gcCandidate, w *gcWork, forge bool) (keep, unread string) {
+	branches, err := w.listing(ctx, e)
+	if err != nil {
+		if ctx.Err() != nil {
+			return "", gcNoTime
+		}
+		return "", gcUnread + "branches could not be listed, so its work could not be checked: " + lock.Scrub(err.Error())
+	}
+	w.checked = true
+	known := &StaleClaim{issue: c.cur}
+	if c.cur == nil { // not on the ledger: only holds, branches and the forge can show work
+		known.issue, known.comments = &ledger.Issue{ID: c.ref.ID}, []bdComment{}
+	}
+	ev, cut := e.evidenceOrUnread(ctx, c.ref.ID, known, branches, true)
+	if len(ev) == 0 && !cut && forge {
+		if !w.fs.timeFor(ctx) {
+			return "", gcNoTime
+		}
+		ev, cut = w.fs.evidence(ctx, c.ref.ID)
+	}
+	switch {
+	case cut:
+		return "", gcNoTime
+	case len(ev) == 1 && strings.HasPrefix(ev[0], gcUnread):
+		return "its work evidence could not be read, so kept: " + strings.TrimPrefix(ev[0], gcUnread), ""
+	case len(ev) > 0:
+		return "the bead shows work, so the ref may be a claim whose ledger write has not arrived: " + strings.Join(ev, "; "), ""
+	}
+	return "", ""
 }
 
 // gcJudge decides what gc does with ref r. It returns a candidate to delete,
@@ -232,7 +348,7 @@ func (e *Env) gcJudge(ctx context.Context, r lock.Ref, orphan bool) (*gcCandidat
 	cur, err := e.show(ctx, r.ID)
 	switch {
 	case err != nil && orphan && beadMissing(err):
-		return &gcCandidate{ref: r, why: GCOrphan, note: "bead not on the ledger"}, ""
+		return &gcCandidate{ref: r, why: GCOrphan, note: "bead not on the ledger", work: true}, ""
 	case err != nil && beadMissing(err):
 		return nil, "bead not on the ledger, and the ref is not an orphan stale lists (a landing ref, or younger than stale_minutes)"
 	case err != nil:
@@ -275,7 +391,13 @@ func (e *Env) gcVerdict(cur *ledger.Issue, r lock.Ref, orphan bool) (*gcCandidat
 		case r.At.After(cutoff) && r.At.After(cur.UpdatedAt.Add(-gcSkew)):
 			return nil, "the bead is closed, but the ref was written after its last ledger change: a claim whose ledger write may be pending"
 		}
-		return &gcCandidate{ref: r, why: GCClosed}, ""
+		// A ref newer than the bead's last ledger change may be the claim of
+		// a reopened bead whose ledger write has not arrived, however old.
+		// No skew margin here: a closed bead's landing leaves evidence (its
+		// MR, its branch) for good, so a ref written shortly before a plain
+		// bd close would be kept for ever; the young-ref rule above covers
+		// skew while the ref is younger than stale_minutes.
+		return &gcCandidate{ref: r, why: GCClosed, work: r.At.After(cur.UpdatedAt), cur: cur}, ""
 	}
 	if !orphan {
 		return nil, ""
@@ -288,7 +410,7 @@ func (e *Env) gcVerdict(cur *ledger.Issue, r lock.Ref, orphan bool) (*gcCandidat
 		// though stale, which reads in-progress beads only, lists its ref.
 		return nil, "the bead is " + cur.Status + " but still carries this ref's claim (its run label or assignee): a parked claim, released by its holder"
 	}
-	return &gcCandidate{ref: r, why: GCOrphan}, ""
+	return &gcCandidate{ref: r, why: GCOrphan, work: true, cur: cur}, ""
 }
 
 // bdNoIssue is bd's --json error for an id with no bead (bd 1.3.x and the
@@ -302,10 +424,11 @@ func beadMissing(err error) bool {
 	return !errors.Is(err, bdx.ErrNotFound) && strings.Contains(err.Error(), bdNoIssue)
 }
 
-// gcOne deletes c's ref under the bead's lock, after reading the bead and this
-// clone's holds again. It reports kept when the re-check found the ref is no
-// longer garbage, with why in g.Detail.
-func (e *Env) gcOne(ctx context.Context, c gcCandidate, g *GCRef, warnings *[]string) (gcResult, error) {
+// gcOne deletes c's ref under the bead's lock, after reading the bead, this
+// clone's holds and, where gcVerdict asks for it, the bead's work evidence
+// again, on a fresh branch listing. It reports kept when the re-check found
+// the ref is no longer garbage, with why in g.Detail.
+func (e *Env) gcOne(ctx context.Context, c gcCandidate, g *GCRef, warnings *[]string, w *gcWork) (gcResult, error) {
 	id := c.ref.ID
 	unlock, err := e.lockBead(ctx, "gc", id, warnings, 0) // a busy bead waits for the next gc
 	if err != nil {
@@ -321,14 +444,15 @@ func (e *Env) gcOne(ctx context.Context, c gcCandidate, g *GCRef, warnings *[]st
 		return gcKept, nil
 	}
 	cur, err := e.show(ctx, id)
+	again := &gcCandidate{ref: c.ref, why: GCOrphan, work: true} // still missing, still an orphan
 	switch {
 	case err != nil && c.why == GCOrphan && beadMissing(err):
-		// still missing, still an orphan
 	case err != nil:
 		g.Detail = "re-read: " + lock.Scrub(err.Error())
 		return gcLost, err
 	default:
-		if again, keep := e.gcVerdict(cur, c.ref, c.why == GCOrphan); again == nil {
+		var keep string
+		if again, keep = e.gcVerdict(cur, c.ref, c.why == GCOrphan); again == nil {
 			if keep == "" {
 				keep = "changed since gc read it: now " + cur.Status
 				if cur.Status == "in_progress" {
@@ -340,7 +464,29 @@ func (e *Env) gcOne(ctx context.Context, c gcCandidate, g *GCRef, warnings *[]st
 			return gcKept, nil
 		}
 	}
-	res, err := e.Lock.Delete(ctx, id, c.ref.SHA)
+	if again.work {
+		// The branches are listed afresh: one pushed since the first read
+		// keeps the ref.
+		w.listed = false
+		keep, unread := e.gcCheckWork(ctx, again, w, true)
+		switch {
+		case unread != "":
+			g.Detail = "re-check: " + unread
+			if strings.HasPrefix(unread, gcUnread) {
+				return gcLost, errors.New(unread)
+			}
+			return gcLost, nil
+		case keep != "":
+			g.Detail = keep
+			e.event("gc", id, "work_evidence", eventDeferred, c.ref.SHA, nil)
+			return gcKept, nil
+		}
+	}
+	// The delete runs on its own clock: the re-check may have used what was
+	// left of the command's, and a push cut partway leaves its outcome unknown.
+	dctx, dcancel := context.WithTimeout(context.WithoutCancel(ctx), gcDeleteClock)
+	defer dcancel()
+	res, err := e.Lock.Delete(dctx, id, c.ref.SHA)
 	if err != nil {
 		g.Detail = "delete: " + lock.Scrub(err.Error())
 		e.event("gc", id, "ref_delete", OutcomeUnreachable, c.ref.SHA, err)
