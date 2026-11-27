@@ -29,6 +29,11 @@ type StaleClaim struct {
 	// note refreshes) or "ledger" (a claim with no ref: updated_at,
 	// heartbeat_at or the newest bops: comment).
 	Source string `json:"source"`
+	// issue and comments are what Stale decoded for the claim (comments is
+	// nil when it read none), so reap's first evidence read need not read
+	// them again.
+	issue    *ledger.Issue
+	comments []bdComment
 }
 
 // Orphan is a held claim ref with no matching claim on the ledger.
@@ -80,7 +85,7 @@ func Stale(ctx context.Context, env *Env, o StaleOpts) (*StaleOut, error) {
 			continue // no claim on the ledger; a held ref here is an orphan, below
 		}
 		claimed[i.ID] = i
-		c := StaleClaim{ID: i.ID, Actor: i.Assignee}
+		c := StaleClaim{ID: i.ID, Actor: i.Assignee, issue: i}
 		if len(runs) > 0 {
 			c.Run = runs[0]
 		}
@@ -114,6 +119,7 @@ func Stale(ctx context.Context, env *Env, o StaleOpts) (*StaleOut, error) {
 			c.SameMachine = claimedHere(comments, c.Run, env.Run.Machine)
 		}
 		if c.SameMachine || o.AllMachines {
+			c.comments = comments
 			out.Stale = append(out.Stale, c)
 		}
 	}

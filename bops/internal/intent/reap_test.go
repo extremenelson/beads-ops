@@ -395,6 +395,97 @@ func TestReapKeepsABeadWhoseEvidenceCannotBeRead(t *testing.T) {
 	}
 }
 
+// reads counts the bd show and bd comments (not comments add) calls on id.
+func reads(bd *fakeBD, id string) (show, comments int) {
+	for _, c := range bd.calls {
+		switch {
+		case c[0] == "show" && c[1] == id:
+			show++
+		case c[0] == "comments" && c[1] == id:
+			comments++
+		}
+	}
+	return show, comments
+}
+
+func TestReapReusesTheIssueAndCommentsStaleRead(t *testing.T) {
+	for _, dry := range []bool{true, false} {
+		a, b, bdB := reapWorld(t, "x-1", "x-2")
+		pushBranch(t, a, "work/x-1")
+		bdB.beads["x-2"].Labels = append(bdB.beads["x-2"].Labels, "needs-land")
+		bdB.calls = nil
+		out, err := intent.Reap(bg, b.env, intent.ReapOpts{DryRun: dry})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(out.Kept) != 2 {
+			t.Fatalf("dry=%v: %+v", dry, out)
+		}
+		for _, id := range []string{"x-1", "x-2"} {
+			// stale reads the list and, for a claim from another machine,
+			// its comments once; the evidence read reuses both.
+			if show, comments := reads(bdB, id); show != 0 || comments != 1 {
+				t.Errorf("dry=%v %s: %d show and %d comments calls, want 0 and 1", dry, id, show, comments)
+			}
+		}
+	}
+}
+
+func TestReapReadsNoCommentsForAClaimItsOwnHoldKeeps(t *testing.T) {
+	// A claim of this clone's run: stale reads no comments for it, and its
+	// live hold keeps it without them.
+	_, b, bdB := reapWorld(t)
+	bdB.add("x-own")
+	later(b, 0)
+	mustClaim(t, b, "x-own")
+	later(b, 3*time.Hour)
+	bdB.calls = nil
+	out, err := intent.Reap(bg, b.env, intent.ReapOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(keptEvidence(out)["x-own"], "hold of run B") {
+		t.Fatalf("%+v", out)
+	}
+	if show, comments := reads(bdB, "x-own"); show != 0 || comments != 0 {
+		t.Errorf("x-own: %d show and %d comments calls, want none", show, comments)
+	}
+}
+
+func TestReapReadsTheBeadAfreshJustBeforeATakeover(t *testing.T) {
+	// Work recorded after stale read the ledger, as another process in this
+	// clone might: only bd show sees it, and it keeps the claim untaken.
+	_, b, bdB := reapWorld(t, "x-1")
+	listed := false
+	bdB.fail = func(a []string) error {
+		if a[0] == "list" {
+			listed = true
+		} else if listed && a[0] == "comments" && a[1] == "x-1" {
+			n := bdB.beads["x-1"]
+			n.Notes = "MR: https://gitlab.example.com/g/p/-/merge_requests/7"
+		}
+		return nil
+	}
+	bdB.calls = nil
+	f := &searchForge{}
+	out, err := intent.Reap(bg, b.env, intent.ReapOpts{Forge: f})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(keptEvidence(out)["x-1"], "merge_requests/7") || len(out.Released)+len(out.Failed) != 0 {
+		t.Fatalf("%+v", out)
+	}
+	if len(f.asked) != 0 {
+		t.Errorf("asked the forge %v for a claim the fresh read keeps", f.asked)
+	}
+	if bdB.wrote("x-1") {
+		t.Errorf("took x-1 over though a fresh read showed its work: %v", bdB.calls)
+	}
+	if show, _ := reads(bdB, "x-1"); show != 1 {
+		t.Errorf("x-1: %d show calls, want the one fresh read before the takeover", show)
+	}
+}
+
 func TestReapListsBranchesAgainBeforeEachTakeover(t *testing.T) {
 	a, b, bdB := reapWorld(t, "x-1", "x-2")
 	pulls := 0

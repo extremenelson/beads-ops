@@ -12,6 +12,7 @@ import (
 
 	"github.com/extremenelson/beads-ops/bops/internal/config"
 	"github.com/extremenelson/beads-ops/bops/internal/forge"
+	"github.com/extremenelson/beads-ops/bops/internal/ledger"
 	"github.com/extremenelson/beads-ops/bops/internal/lock"
 )
 
@@ -119,12 +120,13 @@ var mrURL = regexp.MustCompile(`https?://[^\s)>\]"'\x00-\x1f\x7f]+/(?:pull|pulls
 // that fails, times out or may have missed some is evidence too. A claim with
 // any evidence is kept and listed with what was found, for a person to decide.
 //
-// With DryRun false it pulls the ledger first, and for each claim lists the
-// branches and reads the evidence again just before taking it over with claim
-// --force (which re-checks under a lease that it is still stale), and once
-// more after the takeover's pull. Work that appears then keeps the claim with
-// this run, reported under failed, rather than release it. A claim is
-// released with reason abandoned.
+// The first evidence read of each claim reuses the issue and comments Stale
+// decoded. With DryRun false it pulls the ledger first, and for each claim
+// lists the branches again, and reads the bead again just before taking it
+// over with claim --force (which re-checks under a lease that it is still
+// stale), and once more after the takeover's pull. Work that appears then
+// keeps the claim with this run, reported under failed, rather than release
+// it. A claim is released with reason abandoned.
 //
 // If the ledger pull or the first branch listing fails, nothing is released;
 // a later listing failure stops the run and lists the rest under skipped. A
@@ -219,9 +221,22 @@ func Reap(ctx context.Context, env *Env, o ReapOpts) (*ReapOut, error) {
 				break
 			}
 		}
-		ev := env.evidenceOrUnread(ctx, c.ID, branches, true)
+		// The issue and comments Stale decoded serve here. A real run
+		// reads a claim they show no work for afresh, since Stale's
+		// snapshot may be minutes old by now, before the forge is asked
+		// and the claim taken over.
+		known := c
+		if !o.DryRun && known.comments == nil {
+			// Stale read none; the fresh read below reads them if the rest
+			// shows no work, so reading them here too would double it.
+			known.comments = []bdComment{}
+		}
+		ev := env.evidenceOrUnread(ctx, c.ID, &known, branches, true)
 		if c.Run == "" && !slices.Contains(only, c.ID) {
 			ev = append(ev, "claimed outside bops (no run label or claim ref; its age is from the ledger only): name it with --only to release it")
+		}
+		if len(ev) == 0 && !o.DryRun {
+			ev = env.evidenceOrUnread(ctx, c.ID, nil, branches, true)
 		}
 		if len(ev) == 0 && o.DryRun && !fs.timeFor(ctx) {
 			for _, rest := range st.Stale[k:] {
@@ -245,7 +260,7 @@ func Reap(ctx context.Context, env *Env, o ReapOpts) (*ReapOut, error) {
 			out.WouldRelease = append(out.WouldRelease, d)
 			continue
 		}
-		if !timeFor(ctx) { // the evidence read may have used the margin
+		if !timeFor(ctx) { // the evidence reads may have used the margin
 			for _, rest := range st.Stale[k:] {
 				s := doneAs(rest)
 				s.Detail = "not reached: too little of the command's time left; run reap again"
@@ -395,9 +410,15 @@ func alnumAt(s string, k int) bool {
 }
 
 // evidenceOrUnread is workEvidence with a read failure as evidence, so a bead
-// that cannot be read is kept.
-func (e *Env) evidenceOrUnread(ctx context.Context, id string, branches []workBranch, ownHold bool) []string {
-	ev, err := e.workEvidence(ctx, id, branches, ownHold)
+// that cannot be read is kept. known, when set, supplies the issue and the
+// comments Stale already decoded; what it lacks is read fresh.
+func (e *Env) evidenceOrUnread(ctx context.Context, id string, known *StaleClaim, branches []workBranch, ownHold bool) []string {
+	var cur *ledger.Issue
+	var comments []bdComment
+	if known != nil {
+		cur, comments = known.issue, known.comments
+	}
+	ev, err := e.workEvidence(ctx, id, cur, comments, branches, ownHold)
 	if err != nil {
 		return []string{"unread: " + lock.Scrub(err.Error())}
 	}
@@ -470,7 +491,7 @@ func (e *Env) reapOne(ctx context.Context, c StaleClaim, d *ReapDone, warnings *
 		d.Outcome, d.Detail = OutcomeHeld, "taken over, but branches could not be listed again: "+lock.Scrub(err.Error())+held()
 		return err
 	}
-	ev := e.evidenceOrUnread(cctx, c.ID, branches, false)
+	ev := e.evidenceOrUnread(cctx, c.ID, nil, branches, false)
 	if len(ev) == 0 {
 		// Under the bead lock, on its own clock: a merge request opened
 		// since the first search keeps the claim too.
@@ -603,11 +624,14 @@ func (e *Env) workBranches(ctx context.Context) ([]workBranch, error) {
 // request URL on the bead (landed metadata, notes or comments), a hold of a
 // live worktree of this clone, or a name in branches that carries the id.
 // ownHold counts this run's own hold too; after reap's own takeover it must
-// not, since that hold is the takeover.
-func (e *Env) workEvidence(ctx context.Context, id string, branches []workBranch, ownHold bool) ([]string, error) {
-	cur, err := e.show(ctx, id)
-	if err != nil {
-		return nil, err
+// not, since that hold is the takeover. A nil cur or comments is read from
+// bd; a non-nil one is used as given.
+func (e *Env) workEvidence(ctx context.Context, id string, cur *ledger.Issue, comments []bdComment, branches []workBranch, ownHold bool) ([]string, error) {
+	var err error
+	if cur == nil {
+		if cur, err = e.show(ctx, id); err != nil {
+			return nil, err
+		}
 	}
 	var ev []string
 	for _, l := range workLabels {
@@ -622,9 +646,10 @@ func (e *Env) workEvidence(ctx context.Context, id string, branches []workBranch
 	for _, l := range landed {
 		ev = append(ev, "mr "+l.Ref)
 	}
-	comments, err := e.comments(ctx, id)
-	if err != nil {
-		return nil, err
+	if comments == nil {
+		if comments, err = e.comments(ctx, id); err != nil {
+			return nil, err
+		}
 	}
 	texts := []string{cur.Notes, cur.Description, cur.AcceptanceCriteria}
 	for _, c := range comments {
