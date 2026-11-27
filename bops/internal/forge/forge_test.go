@@ -99,21 +99,6 @@ func TestSelectRemoteFallbacks(t *testing.T) {
 	}
 }
 
-func TestRemoteHost(t *testing.T) {
-	for remote, want := range map[string]string{
-		"https://github.com/o/r.git":          "github.com",
-		"https://user@ghe.example.com:8443/r": "ghe.example.com",
-		"git@github.com:o/r.git":              "github.com",
-		"ssh://git@gitlab.example.com:22/o/r": "gitlab.example.com",
-		"/srv/git/r.git":                      "",
-		"file:///srv/git/r.git":               "",
-	} {
-		if got := remoteHost(remote); got != want {
-			t.Errorf("%s: got %q, want %q", remote, got, want)
-		}
-	}
-}
-
 func TestGitHubIsMerged(t *testing.T) {
 	for body, want := range map[string]Merged{
 		`{"state":"closed","merged":true,"head":{"sha":"abc"}}`:  Yes,
@@ -208,5 +193,87 @@ func TestNone(t *testing.T) {
 	}
 	if _, err := f.RefSHA(context.Background(), ghURL); err == nil {
 		t.Error("none cannot verify")
+	}
+}
+
+func TestRemoteRepo(t *testing.T) {
+	for _, tc := range []struct{ remote, host, repo string }{
+		{"https://github.com/o/r.git", "github.com", "o/r"},
+		{"git@github.com:o/r.git", "github.com", "o/r"},
+		{"ssh://git@gitlab.example.com:2222/g/sub/p.git", "gitlab.example.com", "g/sub/p"},
+		{"https://gitlab.com/g/p/", "gitlab.com", "g/p"},
+		{"https://github.com/o", "github.com", ""},
+		{"https://user@ghe.example.com:8443/r", "ghe.example.com", ""},
+		{"ssh://git@gitlab.example.com:22/o/r", "gitlab.example.com", "o/r"},
+		{"https://github.com/o/r%20x", "github.com", ""},
+		{"/srv/git/r.git", "", ""},
+		{"file:///srv/git/r.git", "", ""},
+	} {
+		if h, r := remoteRepo(tc.remote); h != tc.host || r != tc.repo {
+			t.Errorf("remoteRepo(%q) = %q, %q; want %q, %q", tc.remote, h, r, tc.host, tc.repo)
+		}
+	}
+}
+
+func searcher(t *testing.T, name, remote string, s *stub) Searcher {
+	t.Helper()
+	s.out["git remote get-url origin"] = remote + "\n"
+	f, err := Select(context.Background(), name, "origin", s.run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sr, ok := f.(Searcher)
+	if !ok {
+		t.Fatalf("%s forge cannot search", name)
+	}
+	return sr
+}
+
+func TestGitHubSearchMRs(t *testing.T) {
+	key := `gh pr list --repo github.com/o/r --state all --search "bops-1" in:title,body --limit 100 --json url,title,headRefName,state`
+	s := &stub{out: map[string]string{key: `[{"url":"https://github.com/o/r/pull/3","title":"t (bops-1)","headRefName":"work/bops-1","state":"MERGED"},{"url":"u","title":"x","headRefName":"b","state":"OPEN"}]`}}
+	got, err := searcher(t, "auto", "git@github.com:o/r.git", s).SearchMRs(context.Background(), "bops-1")
+	want := []MR{{"https://github.com/o/r/pull/3", "t (bops-1)", "work/bops-1", "merged"}, {"u", "x", "b", "open"}}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v, %v; calls %v", got, err, s.calls)
+	}
+}
+
+func TestGitLabSearchMRs(t *testing.T) {
+	key := "glab api --hostname gitlab.com projects/g%2Fp/merge_requests?per_page=100&search=bops-1&state=all"
+	s := &stub{out: map[string]string{key: `[{"web_url":"w","title":"t","source_branch":"work/bops-1","state":"opened"},{"web_url":"m","title":"t","source_branch":"b","state":"merged"},{"web_url":"c","title":"t","source_branch":"b","state":"closed"},{"web_url":"l","title":"t","source_branch":"b","state":"locked"}]`}}
+	got, err := searcher(t, "auto", "https://gitlab.com/g/p.git", s).SearchMRs(context.Background(), "bops-1")
+	want := []MR{{"w", "t", "work/bops-1", "open"}, {"m", "t", "b", "merged"}, {"c", "t", "b", "closed"}, {"l", "t", "b", "open"}}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v, %v; calls %v", got, err, s.calls)
+	}
+}
+
+func TestSearchFailuresAreErrors(t *testing.T) {
+	ctx := context.Background()
+	// The command fails.
+	if _, err := searcher(t, "github", "https://github.com/o/r", &stub{out: map[string]string{}}).SearchMRs(ctx, "x-1"); err == nil {
+		t.Error("github: a failed search returned no error")
+	}
+	// The remote names no repository: no CLI is run.
+	s := &stub{out: map[string]string{}}
+	if _, err := searcher(t, "gitlab", "/srv/git/r.git", s).SearchMRs(ctx, "x-1"); err == nil || len(s.calls) != 1 {
+		t.Errorf("gitlab without a repository: %v, calls %v", err, s.calls)
+	}
+	// Undecodable output.
+	key := "glab api --hostname gitlab.com projects/g%2Fp/merge_requests?per_page=100&search=x-1&state=all"
+	if _, err := searcher(t, "gitlab", "https://gitlab.com/g/p", &stub{out: map[string]string{key: "<html>"}}).SearchMRs(ctx, "x-1"); err == nil {
+		t.Error("gitlab: bad JSON returned no error")
+	}
+	// A full page may have missed some.
+	page := "[" + strings.TrimSuffix(strings.Repeat(`{"url":"u","state":"OPEN"},`, SearchLimit), ",") + "]"
+	key = `gh pr list --repo github.com/o/r --state all --search "x-1" in:title,body --limit 100 --json url,title,headRefName,state`
+	got, err := searcher(t, "github", "https://github.com/o/r", &stub{out: map[string]string{key: page}}).SearchMRs(ctx, "x-1")
+	if !errors.Is(err, ErrIncomplete) || len(got) != SearchLimit {
+		t.Errorf("full page: %d results, %v", len(got), err)
+	}
+	// none cannot search.
+	if _, ok := Forge(none{}).(Searcher); ok {
+		t.Error("none is a Searcher")
 	}
 }

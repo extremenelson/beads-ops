@@ -1,6 +1,7 @@
-// Package forge answers two questions about a merge request: has it merged,
-// and what commit is it at (SPEC.md §7). Nothing else in bops knows what a
-// pull request is. Forge CLIs are the only way in, so no token handling
+// Package forge answers questions about merge requests: has one merged, and
+// what commit is it at (SPEC.md §7), and, for github and gitlab, which ones a
+// text search finds (Searcher). Nothing else in bops knows what a pull
+// request is. Forge CLIs are the only way in, so no token handling
 // lives here.
 package forge
 
@@ -13,6 +14,7 @@ import (
 	"net/url"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -25,13 +27,32 @@ const (
 	Unknown Merged = "unknown"
 )
 
-// Forge is the two-function adapter from SPEC §7.
+// Forge is the adapter from SPEC §7; search_mrs is the separate Searcher.
 type Forge interface {
 	Name() string
 	// IsMerged returns Unknown rather than failing, so one bad ref cannot
 	// stop a sweep.
 	IsMerged(ctx context.Context, ref string) Merged
 	RefSHA(ctx context.Context, ref string) (string, error)
+}
+
+// MR is a merge request a search found. State is open, merged or closed.
+type MR struct {
+	URL, Title, Branch, State string
+}
+
+// ErrIncomplete is returned, with the merge requests found, when a search
+// hit its result limit, so a merge request it did not return may exist.
+var ErrIncomplete = errors.New("the forge search hit its result limit, so it may have missed some")
+
+// SearchLimit is the most merge requests one search returns.
+const SearchLimit = 100
+
+// Searcher is a forge that can search its merge requests. none is not one.
+type Searcher interface {
+	// SearchMRs returns the merge requests of this repository, in any
+	// state, that the forge's text search finds for text (a bead id).
+	SearchMRs(ctx context.Context, text string) ([]MR, error)
 }
 
 // Runner executes an external command and returns stdout.
@@ -61,9 +82,9 @@ func Select(ctx context.Context, name, remote string, run Runner) (Forge, error)
 	if remote == "" {
 		remote = "origin"
 	}
-	host := ""
+	host, repo := "", ""
 	if out, err := run(ctx, "git", "remote", "get-url", remote); err == nil {
-		host = remoteHost(strings.TrimSpace(string(out)))
+		host, repo = remoteRepo(strings.TrimSpace(string(out)))
 	}
 	if name == "" || name == "auto" {
 		switch {
@@ -77,9 +98,9 @@ func Select(ctx context.Context, name, remote string, run Runner) (Forge, error)
 	}
 	switch name {
 	case "github":
-		return &github{run: run, host: orDefault(host, "github.com")}, nil
+		return &github{run: run, host: orDefault(host, "github.com"), repo: repo}, nil
 	case "gitlab":
-		return &gitlab{run: run, host: orDefault(host, "gitlab.com")}, nil
+		return &gitlab{run: run, host: orDefault(host, "gitlab.com"), repo: repo}, nil
 	}
 	return none{}, nil
 }
@@ -91,22 +112,42 @@ func orDefault(s, def string) string {
 	return s
 }
 
-// remoteHost extracts the host from https://, ssh:// and scp-style remotes.
-// A local path has no host.
-func remoteHost(remote string) string {
+// remoteRepo extracts the host and the repository path (owner/name, or
+// group/sub/project, without .git) from https://, ssh:// and scp-style
+// remotes. A local path has neither; a path with an unsafe segment is "".
+func remoteRepo(remote string) (host, repo string) {
+	var path string
 	if strings.Contains(remote, "://") {
 		u, err := url.Parse(remote)
 		if err != nil || u.Scheme == "file" {
-			return ""
+			return "", ""
 		}
-		return u.Hostname()
+		host, path = u.Hostname(), u.Path
+	} else if at := strings.Index(remote, "@"); at >= 0 {
+		colon := strings.Index(remote[at:], ":")
+		if colon <= 0 {
+			return "", ""
+		}
+		host, path = remote[at+1:at+colon], remote[at+colon+1:]
+	} else {
+		return "", ""
 	}
-	if at := strings.Index(remote, "@"); at >= 0 {
-		if colon := strings.Index(remote[at:], ":"); colon > 0 {
-			return remote[at+1 : at+colon]
+	path = strings.TrimSuffix(strings.Trim(path, "/"), ".git")
+	parts := strings.Split(path, "/")
+	for _, p := range parts {
+		if !safeSegment.MatchString(p) || p == "." || p == ".." {
+			return host, ""
 		}
 	}
-	return ""
+	if len(parts) < 2 {
+		return host, ""
+	}
+	return host, path
+}
+
+// noRepo is the search error when the remote names no repository.
+func noRepo(host string) error {
+	return fmt.Errorf("the lock remote's URL names no repository on %s, so its merge requests cannot be searched", host)
 }
 
 var (
@@ -142,6 +183,7 @@ func segments(ref, host string) ([]string, error) {
 type github struct {
 	run  Runner
 	host string
+	repo string // owner/name, from the lock remote's URL
 }
 
 func (g *github) Name() string { return "github" }
@@ -191,11 +233,45 @@ func (g *github) RefSHA(ctx context.Context, ref string) (string, error) {
 	return pull.Head.SHA, nil
 }
 
+type githubSearchHit struct {
+	URL         string `json:"url"`
+	Title       string `json:"title"`
+	HeadRefName string `json:"headRefName"`
+	State       string `json:"state"` // OPEN, CLOSED or MERGED
+}
+
+// SearchMRs runs gh pr list --search, the forge's search of titles and
+// bodies (not comments), for text as a phrase.
+func (g *github) SearchMRs(ctx context.Context, text string) ([]MR, error) {
+	if g.repo == "" {
+		return nil, noRepo(g.host)
+	}
+	out, err := g.run(ctx, "gh", "pr", "list", "--repo", g.host+"/"+g.repo, "--state", "all",
+		"--search", `"`+strings.ReplaceAll(text, `"`, "")+`" in:title,body`, "--limit", strconv.Itoa(SearchLimit),
+		"--json", "url,title,headRefName,state")
+	if err != nil {
+		return nil, err
+	}
+	var hits []githubSearchHit
+	if err := json.Unmarshal(out, &hits); err != nil {
+		return nil, fmt.Errorf("decode pull request search: %w", err)
+	}
+	mrs := make([]MR, 0, len(hits))
+	for _, h := range hits {
+		mrs = append(mrs, MR{URL: h.URL, Title: h.Title, Branch: h.HeadRefName, State: strings.ToLower(h.State)})
+	}
+	if len(hits) >= SearchLimit {
+		return mrs, ErrIncomplete
+	}
+	return mrs, nil
+}
+
 // --- GitLab
 
 type gitlab struct {
 	run  Runner
 	host string
+	repo string // group/sub/project, from the lock remote's URL
 }
 
 func (g *gitlab) Name() string { return "gitlab" }
@@ -244,6 +320,43 @@ func (g *gitlab) RefSHA(ctx context.Context, ref string) (string, error) {
 		return "", err
 	}
 	return mr.SHA, nil
+}
+
+type gitlabSearchHit struct {
+	WebURL       string `json:"web_url"`
+	Title        string `json:"title"`
+	SourceBranch string `json:"source_branch"`
+	State        string `json:"state"` // opened, closed, locked or merged
+}
+
+// SearchMRs asks the merge requests API to search titles and descriptions
+// for text, in every state.
+func (g *gitlab) SearchMRs(ctx context.Context, text string) ([]MR, error) {
+	if g.repo == "" {
+		return nil, noRepo(g.host)
+	}
+	q := url.Values{"state": {"all"}, "search": {text}, "per_page": {strconv.Itoa(SearchLimit)}}
+	out, err := g.run(ctx, "glab", "api", "--hostname", g.host,
+		fmt.Sprintf("projects/%s/merge_requests?%s", url.PathEscape(g.repo), q.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	var hits []gitlabSearchHit
+	if err := json.Unmarshal(out, &hits); err != nil {
+		return nil, fmt.Errorf("decode merge request search: %w", err)
+	}
+	mrs := make([]MR, 0, len(hits))
+	for _, h := range hits {
+		state := h.State
+		if state == "opened" || state == "locked" {
+			state = "open"
+		}
+		mrs = append(mrs, MR{URL: h.WebURL, Title: h.Title, Branch: h.SourceBranch, State: state})
+	}
+	if len(hits) >= SearchLimit {
+		return mrs, ErrIncomplete
+	}
+	return mrs, nil
 }
 
 // --- none

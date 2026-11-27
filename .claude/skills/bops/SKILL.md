@@ -70,7 +70,7 @@ Do not close beads yourself. `bops sweep` previews which landed beads have merge
 - **Moving machines:** after `bops note` and a branch push, the person runs `bops claim --resume <id>` from the new machine's worktree. Never in an autonomous loop.
 - **A reviewer asks for changes after `release --reason done`:** run `bops claim --resume <id>` from a worktree, then continue from step 4. Only the actor who landed it can.
 - **`bops sync` lists `stranded_holds`:** held by a removed worktree; if abandoned, run `bops release <id> --reason abandoned` from any worktree of this clone.
-- **A bead looks abandoned:** `bops stale` lists idle claims and orphan refs; `bops reap` previews those with no visible work, `bops gc` the refs to delete. Acting on either, or `claim --force`, is a person's call: report the list. Runbook: PROCESS §12.
+- **A bead looks abandoned:** `bops stale` lists idle claims, orphan refs; `bops reap` previews those with no visible work, `bops gc` refs to delete. Acting on either, or `claim --force`, is a person's call: report it. Runbook: PROCESS §12.
 
 ## Command reference (contract 1)
 
@@ -89,7 +89,7 @@ Exit codes: **0** done, or a read's verdict; **1** could not run: remote or ledg
 | `bops sweep [--dry-run] [--forge]` | write | Close landed beads whose refs are merged |
 | `bops stale [--all-machines] [--older-than]` | read | Claims nobody is working |
 | `bops status [--mine] [--older-than] [--stale]` | read | Every claim on every machine |
-| `bops reap [--dry-run] [--older-than] [--only]` | write | Release stale claims that hold no work |
+| `bops reap [--dry-run] [--forge] [--older-than] [--only]` | write | Release stale claims that hold no work |
 | `bops gc [--dry-run] [--only]` | write | Delete refs of closed beads and orphans |
 | `bops lint <id> [--strict]` | read | Is this bead workable? |
 | `bops sync [--no-push]` | write | Pull, heartbeat, push — with the one retry |

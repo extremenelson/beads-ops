@@ -36,7 +36,7 @@
    "sweep" {:id? false :text nil :opts {:dry-run :bool, :forge :value} :required #{}}
    "stale" {:id? false :text nil :opts {:all-machines :bool, :older-than :value} :required #{}}
    "status" {:id? false :text nil :opts {:mine :bool, :older-than :value, :stale :bool} :required #{}}
-   "reap" {:id? false :text nil :opts {:dry-run :bool, :older-than :value, :only :value} :required #{}}
+   "reap" {:id? false :text nil :opts {:dry-run :bool, :forge :value, :older-than :value, :only :value} :required #{}}
    "gc" {:id? false :text nil :opts {:dry-run :bool, :only :value} :required #{}}
    "lint" {:id? true :text nil :opts {:strict :bool} :required #{}}
    "sync" {:id? false :text nil :opts {:no-push :bool} :required #{}}
@@ -182,7 +182,7 @@
   ([cfg opts] (call cfg "status" nil opts)))
 
 (defn reap
-  "Release stale claims that hold no work. Runs `bops reap`; returns {:exit :doc :err}.\n   opts: :dry-run (bool); :older-than (duration); :only (string?)."
+  "Release stale claims that hold no work. Runs `bops reap`; returns {:exit :doc :err}.\n   opts: :dry-run (bool); :forge (one of auto, github, gitlab, none); :older-than (duration); :only (string?)."
   ([cfg] (reap cfg {}))
   ([cfg opts] (call cfg "reap" nil opts)))
 

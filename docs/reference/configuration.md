@@ -28,7 +28,7 @@ A missing file is skipped. A file that exists must be one JSON object.
 | [`hold_minutes`](#hold_minutes) | integer ≥ 1 | `120` | `BOPS_HOLD_MINUTES` | `next`, `lint` (W12) |
 | [`pool`](#pool-and-caps) | string | none (default pool) | `BOPS_POOL` | every command's run |
 | [`caps`](#pool-and-caps) | list of strings | none | `BOPS_CAPS` (comma-separated) | every command's run |
-| [`forge`](#forge) | `auto` \| `github` \| `gitlab` \| `none` | `auto` | `BOPS_FORGE` | `land --verify`, `sweep` |
+| [`forge`](#forge) | `auto` \| `github` \| `gitlab` \| `none` | `auto` | `BOPS_FORGE` | `land --verify`, `sweep`, `reap` |
 | [`lock.mode`](#lockmode) | `ref` \| `none` | `ref` | `BOPS_LOCK_MODE` | every command, `doctor` |
 | [`blocking_labels`](#blocking_labels) | list of bead labels | none | `BOPS_BLOCKING_LABELS` (comma-separated) | `next`, `lint` (W15), `claim` |
 | [`lock.remote`](#lockremote) | git remote name | `origin` | `BOPS_LOCK_REMOTE` | claim-ref commands, `doctor`, forge inference |
@@ -97,7 +97,7 @@ The branch the generated agent skill names for a bead's worktree, in place of `w
 
 ### `forge`
 
-Which forge `sweep` and `land --verify` ask whether a pull request merged. `auto` infers it from the host of `git remote get-url <lock.remote>`: `github` or `gitlab` by name, otherwise `none`. With `none`, `sweep` can't tell whether a PR merged and lists landing beads under `unknown`. `--forge` overrides it for one call.
+Which forge `sweep` and `land --verify` ask whether a pull request merged. `auto` infers it from the host of `git remote get-url <lock.remote>`: `github` or `gitlab` by name, otherwise `none`. With `none`, `sweep` can't tell whether a PR merged and lists landing beads under `unknown`. `reap` also searches it for open or merged pull requests naming a stale claim before releasing it; with `none` it searches nothing and warns. `--forge` overrides it for one call.
 
 ### `lock.mode`
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/extremenelson/beads-ops/bops/internal/config"
+	"github.com/extremenelson/beads-ops/bops/internal/forge"
 	"github.com/extremenelson/beads-ops/bops/internal/lock"
 )
 
@@ -23,6 +24,13 @@ type ReapOpts struct {
 	// is listed under skipped; in a real run, one kept on evidence makes the
 	// run negative too.
 	Only []string
+	// Forge, when it is a forge.Searcher, is asked for open or merged merge
+	// requests naming each claim that has no other evidence, and again after
+	// its takeover. Nil, or a forge that cannot search (none), skips that and
+	// says so in a warning.
+	Forge forge.Forge
+	// ForgeClock bounds one forge search; zero means 20 s.
+	ForgeClock time.Duration
 }
 
 // ReapKept is a stale claim reap left alone, with what it found.
@@ -72,15 +80,27 @@ func (o *ReapOut) Negative() bool {
 // uncommitted work in it, is invisible from here.
 const ReapNotSeen = "worktrees on other machines, and other clones on this one, are not visible from here: a claim made there may hold uncommitted work"
 
-// takeoverClock, recheckClock and releaseClock bound one takeover, the evidence
-// read after it and its release, each on its own clock. reap starts no takeover with less than both left, so the pair
-// ends inside the command's budget and a claim it took is given back.
+// takeoverClock, recheckClock, forgeClock and releaseClock bound one
+// takeover, the evidence read and forge search after it, and its release,
+// each on its own clock. reap starts no takeover with less than all of them
+// left, so they end inside the command's budget and a claim it took is given
+// back.
 const (
 	takeoverClock = 90 * time.Second
 	recheckClock  = 30 * time.Second // the evidence read between the two
-	releaseClock  = 60 * time.Second
-	reapReserve   = takeoverClock + recheckClock + releaseClock
+	// forgeClock bounds one forge search. One that does not answer in time
+	// keeps the claim.
+	forgeClock   = 20 * time.Second
+	releaseClock = 60 * time.Second
+	reapReserve  = takeoverClock + recheckClock + forgeClock + releaseClock
 )
+
+// ReapNoForge is warned when reap has no forge to search for merge requests.
+const ReapNoForge = "no forge to search (forge none, or not inferred from the lock remote): merge requests from forks, or merged with their branch deleted, were not looked for"
+
+// ReapForgeUnanswered is warned once when a forge search fails: every claim
+// with no other evidence is then kept.
+const ReapForgeUnanswered = "the forge search did not answer, so claims with no other evidence were kept; fix the forge CLI (gh or glab) or its login, or pass --forge none to release without searching"
 
 // workLabels say a bead's work exists somewhere reap may not see: needs-land
 // is how a loop marks work left in a worktree for a person to land, and that
@@ -92,10 +112,12 @@ var mrURL = regexp.MustCompile(`https?://[^\s)>\]"'\x00-\x1f\x7f]+/(?:pull|pulls
 
 // Reap releases stale claims that hold no work anyone can see from here. The
 // evidence of work is a needs-land label, a merge request URL on the bead, a
-// hold of a live worktree of this clone, or a branch whose name carries the
+// hold of a live worktree of this clone, a branch whose name carries the
 // bead's id: on the lock remote or origin, local, or checked out (or named by
-// the path of a detached worktree) in this clone. A claim with any evidence is
-// kept and listed with what was found, for a person to decide.
+// the path of a detached worktree) in this clone, or an open or merged merge
+// request on the forge whose title or branch carries the id. A forge search
+// that fails, times out or may have missed some is evidence too. A claim with
+// any evidence is kept and listed with what was found, for a person to decide.
 //
 // With DryRun false it pulls the ledger first, and for each claim lists the
 // branches and reads the evidence again just before taking it over with claim
@@ -156,6 +178,16 @@ func Reap(ctx context.Context, env *Env, o ReapOpts) (*ReapOut, error) {
 	if len(st.Stale) == 0 {
 		return out, nil
 	}
+	fs := forgeSearch{clock: o.ForgeClock}
+	fs.s, _ = o.Forge.(forge.Searcher)
+	if fs.s == nil {
+		out.Warnings = append(out.Warnings, ReapNoForge)
+	}
+	defer func() {
+		if fs.unanswered != nil {
+			out.Warnings = append(out.Warnings, ReapForgeUnanswered)
+		}
+	}()
 	branches, err := env.workBranches(ctx)
 	if err != nil {
 		return out, fmt.Errorf("reap: cannot list branches, so nothing was released: %w", err)
@@ -191,6 +223,17 @@ func Reap(ctx context.Context, env *Env, o ReapOpts) (*ReapOut, error) {
 		if c.Run == "" && !slices.Contains(only, c.ID) {
 			ev = append(ev, "claimed outside bops (no run label or claim ref; its age is from the ledger only): name it with --only to release it")
 		}
+		if len(ev) == 0 && o.DryRun && !fs.timeFor(ctx) {
+			for _, rest := range st.Stale[k:] {
+				s := doneAs(rest)
+				s.Detail = "not reached: too little of the command's time left for a forge search; run reap again"
+				out.Skipped = append(out.Skipped, s)
+			}
+			break
+		}
+		if len(ev) == 0 { // one forge call, only for a claim it may save
+			ev = fs.evidence(ctx, c.ID)
+		}
 		if len(ev) > 0 {
 			out.Kept = append(out.Kept, keptAs(c, ev))
 			if !o.DryRun && slices.Contains(only, c.ID) {
@@ -210,7 +253,7 @@ func Reap(ctx context.Context, env *Env, o ReapOpts) (*ReapOut, error) {
 			}
 			break
 		}
-		if err := env.reapOne(ctx, c, &d, &out.Warnings); err != nil {
+		if err := env.reapOne(ctx, c, &d, &out.Warnings, &fs); err != nil {
 			failures = append(failures, fmt.Errorf("%s: %w", c.ID, err))
 		}
 		if d.Outcome == OutcomeReleased {
@@ -242,6 +285,115 @@ func timeFor(ctx context.Context) bool {
 	return !ok || time.Until(dl) >= reapReserve
 }
 
+// forgeSearch is reap's forge search: s, nil when there is no forge to
+// search, and whether any search went unanswered.
+type forgeSearch struct {
+	s     forge.Searcher
+	clock time.Duration // zero means forgeClock; never more
+	// unanswered is the first search that failed or timed out; later ones
+	// are not made, so a dead forge costs one clock, not one per claim.
+	unanswered error
+}
+
+func (f *forgeSearch) clockOr() time.Duration {
+	if f.clock <= 0 || f.clock > forgeClock { // the takeover reserve counts forgeClock
+		return forgeClock
+	}
+	return f.clock
+}
+
+// timeFor reports whether a preview has time for one more forge search. One
+// that has not lists the rest under skipped, rather than keep them on
+// searches the deadline cut short. With no forge there is nothing to wait on.
+func (f *forgeSearch) timeFor(ctx context.Context) bool {
+	if f.s == nil || f.unanswered != nil { // no search will be made
+		return true
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	dl, ok := ctx.Deadline()
+	return !ok || time.Until(dl) >= f.clockOr()
+}
+
+// evidence asks the forge for merge requests naming id and lists the ones
+// not closed unmerged whose title or source branch carries it. The forge's
+// search matches titles and descriptions, so one that names id only in its
+// branch is not found. A search that fails, times out, or hit its result
+// limit without such a match is evidence too: an unanswered forge keeps the
+// claim. With no forge it finds nothing.
+func (f *forgeSearch) evidence(ctx context.Context, id string) []string {
+	if f.s == nil {
+		return nil
+	}
+	if f.unanswered != nil {
+		return []string{"forge unanswered, so kept: an earlier search failed: " + lock.Scrub(f.unanswered.Error())}
+	}
+	fctx, cancel := context.WithTimeout(ctx, f.clockOr())
+	defer cancel()
+	mrs, err := f.s.SearchMRs(fctx, id)
+	var ev []string
+	for _, m := range mrs {
+		// Closed unmerged is the one state that is not work; one this code
+		// does not know keeps the claim.
+		if m.State == "closed" {
+			continue
+		}
+		if !BranchNamesBead(m.Branch, id) && !titleNamesBead(m.Title, id) {
+			continue
+		}
+		u := mrURL.FindString(m.URL)
+		if u == "" {
+			u = "(no usable URL)"
+		}
+		ev = append(ev, "mr "+u+" ("+m.State+", found on the forge)")
+	}
+	if len(ev) == 0 && err != nil {
+		if !errors.Is(err, forge.ErrIncomplete) { // a full page is an answer, just not a complete one
+			f.unanswered = err
+		}
+		return []string{"forge unanswered, so kept: " + lock.Scrub(err.Error())}
+	}
+	slices.Sort(ev)
+	return slices.Compact(ev)
+}
+
+// titleNamesBead reports whether a merge request title carries id, or the id
+// of one of its parents, whole and bounded by the ends or by a character that
+// is not a letter or digit. Unlike a branch, a title's bare suffix ("260") is
+// not enough: prose is full of numbers.
+func titleNamesBead(title, id string) bool {
+	t := strings.ToLower(title)
+	for i := strings.ToLower(id); i != ""; {
+		for from := 0; ; {
+			k := strings.Index(t[from:], i)
+			if k < 0 {
+				break
+			}
+			k += from
+			if !alnumAt(t, k-1) && !alnumAt(t, k+len(i)) {
+				return true
+			}
+			from = k + 1
+		}
+		dot := strings.LastIndex(i, ".")
+		if dot <= strings.LastIndex(i, "-") {
+			break
+		}
+		i = i[:dot] // the parent
+	}
+	return false
+}
+
+// alnumAt reports whether s has an ASCII letter or digit at k.
+func alnumAt(s string, k int) bool {
+	if k < 0 || k >= len(s) {
+		return false
+	}
+	c := s[k]
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+}
+
 // evidenceOrUnread is workEvidence with a read failure as evidence, so a bead
 // that cannot be read is kept.
 func (e *Env) evidenceOrUnread(ctx context.Context, id string, branches []workBranch, ownHold bool) []string {
@@ -265,7 +417,7 @@ func (e *Env) evidenceOrUnread(ctx context.Context, id string, branches []workBr
 // fails the ref stays, marked release pending, and the next sync (or command
 // on the bead) from this clone pushes and then deletes it. So no machine sees
 // the ref gone while the remote ledger still shows the old holder.
-func (e *Env) reapOne(ctx context.Context, c StaleClaim, d *ReapDone, warnings *[]string) error {
+func (e *Env) reapOne(ctx context.Context, c StaleClaim, d *ReapDone, warnings *[]string, fs *forgeSearch) error {
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), takeoverClock)
 	defer cancel()
 	warn := func(ws []string) {
@@ -318,13 +470,23 @@ func (e *Env) reapOne(ctx context.Context, c StaleClaim, d *ReapDone, warnings *
 		d.Outcome, d.Detail = OutcomeHeld, "taken over, but branches could not be listed again: "+lock.Scrub(err.Error())+held()
 		return err
 	}
-	if ev := e.evidenceOrUnread(cctx, c.ID, branches, false); len(ev) > 0 {
+	ev := e.evidenceOrUnread(cctx, c.ID, branches, false)
+	if len(ev) == 0 {
+		// Under the bead lock, on its own clock: a merge request opened
+		// since the first search keeps the claim too.
+		ev = fs.evidence(context.WithoutCancel(ctx), c.ID)
+	}
+	if len(ev) > 0 {
 		d.Outcome, d.Detail = OutcomeHeld, "taken over, then found work: "+strings.Join(ev, "; ")+held()
 		return nil
 	}
-	note := fmt.Sprintf("Reaped: the claim by %s (run %s) was idle %d minutes, and no needs-land label, merge request, branch or worktree of this clone carried its work.\n\n"+
+	searched := ""
+	if fs.s != nil {
+		searched = ", nor did the forge find an open or merged merge request naming it"
+	}
+	note := fmt.Sprintf("Reaped: the claim by %s (run %s) was idle %d minutes, and no needs-land label, merge request, branch or worktree of this clone carried its work%s.\n\n"+
 		"NEXT: pick it up again from the bead once its bops:hold cooling-off ends; anything left in a worktree on the holder's machine is not on the remote.",
-		orDash(c.Actor), orDash(c.Run), c.AgeMinutes)
+		orDash(c.Actor), orDash(c.Run), c.AgeMinutes, searched)
 	relctx, relcancel := context.WithTimeout(context.WithoutCancel(ctx), releaseClock)
 	defer relcancel()
 	rel, err := releaseKeepingRef(relctx, e, c.ID, "abandoned", note)
