@@ -878,3 +878,91 @@ func TestRenewExitCodes(t *testing.T) {
 		})
 	}
 }
+
+// status is a read, so the read-only MCP server lists it, with its flags.
+func TestStatusIsAReadOnlyMCPTool(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	stdout, _ := os.CreateTemp(t.TempDir(), "out")
+	stderr, _ := os.CreateTemp(t.TempDir(), "err")
+	if code := run([]string{"gen", "mcp"}, stdout, stderr); code != exitVerdict {
+		t.Fatalf("gen mcp: exit %d", code)
+	}
+	var doc struct {
+		Tools []struct {
+			Name        string
+			InputSchema struct{ Properties map[string]any } `json:"inputSchema"`
+		}
+	}
+	if err := json.Unmarshal(must(os.ReadFile(stdout.Name())), &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range doc.Tools {
+		if tool.Name == "status" {
+			for _, p := range []string{"mine", "stale", "older-than"} {
+				if _, ok := tool.InputSchema.Properties[p]; !ok {
+					t.Errorf("status tool lacks %q: %v", p, tool.InputSchema.Properties)
+				}
+			}
+			return
+		}
+	}
+	t.Fatal("the read-only MCP tools do not include status")
+}
+
+func TestStatusUsageAndBudget(t *testing.T) {
+	stdout, _ := os.CreateTemp(t.TempDir(), "out")
+	stderr, _ := os.CreateTemp(t.TempDir(), "err")
+	if code := run([]string{"status", "--older-than", "-1h"}, stdout, stderr); code != exitUsage {
+		t.Errorf("negative --older-than: exit %d, want usage", code)
+	}
+	if budget("status") < time.Minute {
+		t.Errorf("status budget = %v, want room for a comment read per claim", budget("status"))
+	}
+}
+
+func TestStatusTablePrintsEveryClaimWithoutControlBytes(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := func(v int) *int { return &v }
+	statusTable(f, &intent.StatusOut{Claims: []intent.StatusClaim{
+		{ID: "x-1", State: intent.StatusStale, Actor: "alice", Machine: "box", Run: "R1", SameMachine: true, AgeMinutes: n(185), IdleMinutes: n(130), LastNoteMinutes: n(130), Branch: "work/x-1"},
+		{ID: "x-2", State: intent.StatusLanding, Actor: "bob\x1b[31m\u202e\u200b", Machine: "far", Run: "R2", AgeMinutes: n(3 * 24 * 60), IdleMinutes: n(5), MR: "https://github.com/o/r/pull/9"},
+	}})
+	b, _ := os.ReadFile(f.Name())
+	got := string(b)
+	for _, want := range []string{"ID", "STATE", "MACHINE", "x-1", "stale", "alice", "box*", "3h05m", "2h10m", "work/x-1", "x-2", "landing", "far ", "3d00h", "5m", "https://github.com/o/r/pull/9"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.ContainsAny(got, "\x1b\u202e\u200b") {
+		t.Errorf("control or format rune printed:\n%s", got)
+	}
+	if lines := strings.Split(strings.TrimSpace(got), "\n"); len(lines) != 4 {
+		t.Errorf("want a header, two rows and the legend:\n%s", got)
+	}
+}
+
+// printKV's lists are cleaned: a ref-named id or a warning cannot forge a
+// line or hide text.
+func TestPrintKVCleansListItems(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	printKV(f, &intent.StatusOut{Claims: []intent.StatusClaim{{ID: "x-1‮"}}, Warnings: []string{"bad\nok=true"}})
+	b, _ := os.ReadFile(f.Name())
+	if got := string(b); strings.Contains(got, "‮") || strings.Contains(got, "\nok=true") || !strings.Contains(got, "claims=x-1?") {
+		t.Errorf("printKV printed:\n%q", got)
+	}
+}
+
+// Joiners, which scripts and emoji need, survive; bidi controls do not.
+func TestCleanTextKeepsJoiners(t *testing.T) {
+	if got := cleanText("a\u200db\u200cc\u202ed\u2028e"); got != "a\u200db\u200cc?d?e" {
+		t.Errorf("cleanText = %q", got)
+	}
+}

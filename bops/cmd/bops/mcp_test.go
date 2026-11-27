@@ -78,8 +78,8 @@ func TestGenMCPEnableWrites(t *testing.T) {
 		code  int
 		tools int
 	}{
-		{[]string{"gen", "mcp"}, exitVerdict, 7},
-		{[]string{"gen", "mcp", "--enable-writes"}, exitVerdict, 15},
+		{[]string{"gen", "mcp"}, exitVerdict, 8},
+		{[]string{"gen", "mcp", "--enable-writes"}, exitVerdict, 16},
 		{[]string{"gen", "docs", "--enable-writes"}, exitUsage, -1},
 	} {
 		stdout, _ := os.CreateTemp(t.TempDir(), "out")
@@ -137,7 +137,7 @@ func TestServeMCP(t *testing.T) {
 			t.Fatalf("writes=%v: %d responses: %s", writes, len(resps), out)
 		}
 		tools := resps[1]["result"].(map[string]any)["tools"].([]any)
-		if want := map[bool]int{false: 7, true: 15}[writes]; len(tools) != want {
+		if want := map[bool]int{false: 8, true: 16}[writes]; len(tools) != want {
 			t.Errorf("writes=%v: %d tools, want %d", writes, len(tools), want)
 		}
 		res := resps[2]["result"].(map[string]any)
