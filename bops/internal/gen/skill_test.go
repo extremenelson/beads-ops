@@ -257,3 +257,42 @@ func TestSkillUnderTheCapWithTheLongestBranchPattern(t *testing.T) {
 		}
 	}
 }
+
+// The PreToolUse guard is opt-in: it goes to guard-hooks.json, never to the
+// hooks.json every bops repo merges, and only Claude Code takes one.
+func TestCCGuardHookIsOptIn(t *testing.T) {
+	files := ccFiles(t, embedded(t))
+	if strings.Contains(files["hooks.json"], "PreToolUse") {
+		t.Fatal("hooks.json carries a PreToolUse hook")
+	}
+	var h struct {
+		Hooks map[string][]struct {
+			Matcher string `json:"matcher"`
+			Hooks   []struct{ Type, Command string }
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal([]byte(files["guard-hooks.json"]), &h); err != nil {
+		t.Fatal(err)
+	}
+	g := h.Hooks["PreToolUse"]
+	if len(h.Hooks) != 1 || len(g) != 1 || g[0].Matcher != "Bash" || len(g[0].Hooks) != 1 || g[0].Hooks[0].Command != "bops guard --hook-json || true" {
+		t.Fatalf("guard-hooks.json hooks = %+v", h.Hooks)
+	}
+
+	m, err := manifest.Parse([]byte(`{"contract":1,"commands":[{"name":"next","intent":"x","kind":"read","output":{},"surfaces":{"cc":["skill"],"codex":["skill"]}},{"name":"guard","intent":"x","kind":"read","args":{"hook-json":{"type":"bool","default":false}},"output":{},"surfaces":{"codex":["hook:PreToolUse"]}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gen.Codex(m); err == nil {
+		t.Fatal("gen codex generated a PreToolUse hook")
+	}
+	files2, err := gen.CC(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files2 {
+		if f.Path == "guard-hooks.json" {
+			t.Fatal("gen cc wrote guard-hooks.json with no command asking for one")
+		}
+	}
+}

@@ -17,6 +17,7 @@ Exit codes: **0** = done, or a read's verdict; **1** = could not run: remote or 
 | `lint` | Is this bead workable? | read |
 | `sync` | Pull, heartbeat, push — with the one retry | write |
 | `session-start` | Orient a fresh agent session | read+sync |
+| `guard` | Refuse a raw bd claim before it runs | read |
 | `doctor` | Can the claim lock work against its remote (lock.remote, default origin)? | read |
 | `gates` | What is blocking this bead's path? | read |
 | `deps` | Blockers, dependents, longest path | read |
@@ -419,6 +420,33 @@ Output:
   "ready_count": "int",
   "synced": "bool",
   "prime": "string",
+  "warnings": "string[]"
+}
+```
+
+## `bops guard`
+
+Refuse a raw bd claim before it runs
+
+| Arg | Type | Default | Doc |
+|---|---|---|---|
+| `--file <path>` | stdin\|file |  | The shell command to check. Without --hook-json only. |
+| `--hook-json` | bool | `false` | Read Claude Code's PreToolUse payload ({tool_name, tool_input:{command}, cwd}) on stdin instead, and always exit 0: a refusal prints {hookSpecificOutput:{hookEventName:PreToolUse, permissionDecision:deny, permissionDecisionReason}}, anything else prints nothing, so the harness's own permission rules still apply. |
+
+Preconditions: refuses only in a worktree with a .beads directory, or whose main checkout has one (the worktree holding the payload cwd, else the current directory), and whose claim lock is on (lock.mode is not none); every other case allows.
+
+Never: run bd or touch the network: its one subprocess is git rev-parse --show-toplevel --git-common-dir, to find the worktree and its main checkout, cut off after 2 s (then the directory itself is used), refuse when it cannot decide (unreadable input or config allows the command, with a warning: it fails open), print an allow decision, which would skip the harness's permission prompt.
+
+Wraps: `finds bd update ... --claim, bd ready ... --claim and bd reclaim in each simple command (after ;, &&, ||, |, subshells, command substitution, also inside double quotes, leading assignments and wrappers such as env and timeout, sh -c and eval), skipping quoted text, comments, heredoc bodies, shifts inside (( )) and --help calls; variables, aliases, sourced scripts and a script on a shell's stdin are not read`.
+
+Output:
+
+```json
+{
+  "refused": "bool",
+  "matched": "string (the raw claim found: bd update --claim, bd ready --claim or bd reclaim; empty when none)",
+  "use": "string (the bops command to run instead; empty unless refused)",
+  "reason": "string (the refusal the agent sees; empty unless refused)",
   "warnings": "string[]"
 }
 ```
