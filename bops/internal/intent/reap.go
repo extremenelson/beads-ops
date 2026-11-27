@@ -21,8 +21,10 @@ type ReapOpts struct {
 	OlderThan time.Duration // zero means env.StaleAfter; shorter than it is refused
 	DryRun    bool
 	// Only, when set, limits reap to these bead ids, normally the ones a
-	// preview listed under would_release. One that is no longer a stale claim
-	// is listed under skipped; in a real run, one kept on evidence makes the
+	// preview listed under would_release. An entry id@run also pins the
+	// holder: the claim is reaped only while that run still holds it. One
+	// that is no longer a stale claim, or is held now by another run, is
+	// listed under skipped; in a real run, one kept on evidence makes the
 	// run negative too.
 	Only []string
 	// Forge, when it is a forge.Searcher, is asked for open or merged merge
@@ -142,14 +144,9 @@ func Reap(ctx context.Context, env *Env, o ReapOpts) (*ReapOut, error) {
 		return out, fmt.Errorf("%w: --older-than %s is shorter than stale_minutes (%s), and claim --force would refuse those claims",
 			ErrPrecondition, o.OlderThan, env.staleAfter())
 	}
-	var only []string
-	for _, id := range o.Only {
-		if err := lock.ValidateID(id); err != nil {
-			return out, err
-		}
-		if !slices.Contains(only, id) {
-			only = append(only, id)
-		}
+	only, pins, err := parseOnly(o.Only)
+	if err != nil {
+		return out, err
 	}
 	if !o.DryRun {
 		// The ledger must be the one claims write: one on another repository
@@ -169,10 +166,19 @@ func Reap(ctx context.Context, env *Env, o ReapOpts) (*ReapOut, error) {
 	if len(only) > 0 {
 		var picked []StaleClaim
 		for _, id := range only {
-			if k := slices.IndexFunc(st.Stale, func(c StaleClaim) bool { return c.ID == id }); k >= 0 {
-				picked = append(picked, st.Stale[k])
-			} else {
+			if k := slices.IndexFunc(st.Stale, func(c StaleClaim) bool { return c.ID == id }); k < 0 {
 				out.Skipped = append(out.Skipped, ReapDone{ID: id, Detail: "not a stale claim now; run reap --dry-run again"})
+			} else if pin, ok := pins[id]; ok && !st.Stale[k].heldBy(pin) {
+				// Taken over since the preview: not the holder the operator saw.
+				s := doneAs(st.Stale[k])
+				s.Detail = "held now by run " + orDash(s.Run) + ", not run " + pin + " that --only named; run reap --dry-run again"
+				out.Skipped = append(out.Skipped, s)
+			} else {
+				c := st.Stale[k]
+				if ok {
+					c.Run = pin // the takeover re-checks the pinned run, not another label
+				}
+				picked = append(picked, c)
 			}
 		}
 		st.Stale = picked
@@ -281,6 +287,52 @@ func Reap(ctx context.Context, env *Env, o ReapOpts) (*ReapOut, error) {
 		}
 	}
 	return out, errors.Join(failures...)
+}
+
+// heldBy reports whether run holds c: its ref's run, or for a claim with no
+// ref any of its run: labels (bd need not list them in the same order twice).
+func (c StaleClaim) heldBy(run string) bool {
+	return c.Run == run || c.Source == "ledger" && c.issue != nil && c.issue.HasLabel("run:"+run)
+}
+
+// parseOnly splits --only entries into bead ids, in order and once each, and
+// the runs pinned by id@run entries. An id named twice must name the same
+// run, or none both times.
+func parseOnly(entries []string) (ids []string, pins map[string]string, err error) {
+	pins = map[string]string{}
+	pinned := map[string]string{} // as given, "" for a bare id
+	for _, e := range entries {
+		id, run, hasRun := strings.Cut(e, "@")
+		if err := lock.ValidateID(id); err != nil {
+			return nil, nil, err
+		}
+		if hasRun && !ValidRun(run) {
+			return nil, nil, &lock.Error{Code: lock.CodeBadID, Err: fmt.Errorf("%q does not name a run after @", e)}
+		}
+		if prev, seen := pinned[id]; seen {
+			if prev != run {
+				return nil, nil, fmt.Errorf("%w: --only names %s twice, with different runs", ErrPrecondition, id)
+			}
+			continue
+		}
+		pinned[id] = run
+		ids = append(ids, id)
+		if hasRun {
+			pins[id] = run
+		}
+	}
+	return ids, pins, nil
+}
+
+// ValidRun reports whether s can be pinned as id@run in --only: printable
+// ASCII other than space, comma and @, and not "-" (what an unknown run
+// prints as). A run that is not prints without a pin, so a preview never
+// offers a pin that a terminal would alter or that would not parse back as
+// the same single entry.
+func ValidRun(s string) bool {
+	return s != "" && s != "-" && !strings.ContainsFunc(s, func(r rune) bool {
+		return r <= ' ' || r >= 0x7f || r == ',' || r == '@'
+	})
 }
 
 func keptAs(c StaleClaim, ev []string) ReapKept {
@@ -467,7 +519,9 @@ func (e *Env) reapOne(ctx context.Context, c StaleClaim, d *ReapDone, warnings *
 	defer unlock()
 	// Reap reads the evidence itself once the takeover is done, so it
 	// takes over through claimLocked, which leaves the handoff unread.
-	cl, err := claimLocked(rctx, e, c.ID, true, &ClaimOut{ID: c.ID, Run: e.Run.ID, Warnings: []string{}})
+	// The takeover is refused if another run holds the claim by now, so
+	// reap never takes over a holder it did not judge.
+	cl, err := claimLocked(rctx, e, c.ID, true, &c.Run, &ClaimOut{ID: c.ID, Run: e.Run.ID, Warnings: []string{}})
 	if cl != nil {
 		warn(cl.Warnings)
 	}

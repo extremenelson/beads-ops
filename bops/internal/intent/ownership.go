@@ -462,16 +462,16 @@ func claimOne(ctx context.Context, env *Env, id string, force bool) (*ClaimOut, 
 		return out.fail(err)
 	}
 	defer unlock()
-	return claimLocked(ctx, env, id, force, out)
+	return claimLocked(ctx, env, id, force, nil, out)
 }
 
 // claimLocked is claimOne once the bead's lock is held.
-func claimLocked(ctx context.Context, env *Env, id string, force bool, out *ClaimOut) (*ClaimOut, error) {
+func claimLocked(ctx context.Context, env *Env, id string, force bool, from *string, out *ClaimOut) (*ClaimOut, error) {
 	if _, err := env.finishRelease(ctx, id); err != nil {
 		return out.fail(err)
 	}
 	if force {
-		forced, err := claimForce(ctx, env, id)
+		forced, err := claimForce(ctx, env, id, from)
 		if forced == nil {
 			return out.fail(err)
 		}
@@ -755,8 +755,10 @@ func (e *Env) refuseStale(out *ClaimOut, why string, age time.Duration) (*ClaimO
 
 // claimForce is the single recovery path for an expired claim or an orphan. It
 // replaces the ref with a lease on the value it just read, so of two takeovers
-// exactly one wins. A landing bead is refused: its work is done.
-func claimForce(ctx context.Context, env *Env, id string) (*ClaimOut, error) {
+// exactly one wins. A landing bead is refused: its work is done. from, when
+// set, is the run the caller judged the claim by (reap): a claim held now by
+// any other run is refused, read on the same read the lease is taken on.
+func claimForce(ctx context.Context, env *Env, id string, from *string) (*ClaimOut, error) {
 	if err := lock.ValidateID(id); err != nil {
 		return nil, err
 	}
@@ -815,6 +817,13 @@ func claimForce(ctx context.Context, env *Env, id string) (*ClaimOut, error) {
 		if cur.UpdatedAt.IsZero() || cur.UpdatedAt.After(now) || age <= window {
 			return env.refuseStale(out, fmt.Sprintf("assigned to %q with recent activity; a person can wait or ask them to release it", cur.Assignee), age)
 		}
+	}
+	// A ledger claim may carry more than one run: label (its relabel is not
+	// atomic), and bd need not list them in the same order twice, so there
+	// the run judged need only be one of them.
+	if from != nil && previous != *from && (ref != nil || *from == "" || !cur.HasLabel("run:"+*from)) {
+		return env.refuseStale(out, fmt.Sprintf("held now by run %s, not run %s that was judged stale", orDash(previous), orDash(*from)),
+			time.Duration(prev.AgeMinutes)*time.Minute)
 	}
 	if env.LockOff {
 		// The forced write is the takeover. Unlike a lease, it does not stop

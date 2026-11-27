@@ -683,11 +683,11 @@ func cmdReap(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 	fs := newFlagSet("reap", stderr)
 	older := fs.Duration("older-than", 0, "idle longer than this is stale (default stale_minutes)")
 	dryRun := fs.Bool("dry-run", true, "report what would be released without releasing it")
-	only := fs.String("only", "", "comma-separated bead ids: act on these only")
+	only := fs.String("only", "", "comma-separated bead ids, or id@run to pin the holder: act on these only")
 	fs.String("forge", "auto", "auto|github|gitlab|none")
 	fs.Bool("json", false, "")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 || *older < 0 {
-		fmt.Fprintln(stderr, "usage: bops reap [--older-than 2h] [--dry-run=false] [--only <id>,<id>] [--forge auto|github|gitlab|none]")
+		fmt.Fprintln(stderr, "usage: bops reap [--older-than 2h] [--dry-run=false] [--only <id>[@<run>],<id>] [--forge auto|github|gitlab|none]")
 		return exitUsage
 	}
 	ids, ok := onlyIDs(fs, *only)
@@ -838,7 +838,11 @@ func reapDetails(w io.Writer, out *intent.ReapOut) {
 		fmt.Fprintf(w, "kept %s (%s, idle %dm): %s\n", clean(k.ID), where(k.Same), k.Age, clean(strings.Join(k.Evidence, "; ")))
 	}
 	for _, d := range out.WouldRelease {
-		fmt.Fprintf(w, "would release %s (%s, %s, idle %dm)\n", clean(d.ID), where(d.Same), clean(d.Actor), d.Age)
+		name := d.ID // id@run, so --only can pin the holder shown here
+		if intent.ValidRun(d.Run) {
+			name += "@" + d.Run
+		}
+		fmt.Fprintf(w, "would release %s (%s, %s, idle %dm)\n", clean(name), where(d.Same), clean(d.Actor), d.Age)
 	}
 	for _, d := range out.Released { // only what needs a follow-up: pending writes, saved text
 		if d.Detail != "" || d.SavedTo != "" {
