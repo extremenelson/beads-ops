@@ -155,6 +155,8 @@ more. That was not measured.
 
 ## For the push-contention design
 
+The design that answers this section: [ledger push contention](../designs/ledger-push-contention.md).
+
 What a structural fix has to beat, from the numbers above:
 
 1. **The ref push race scales with machines, not agents.** One machine of 4
