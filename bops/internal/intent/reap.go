@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/extremenelson/beads-ops/bops/internal/config"
 	"github.com/extremenelson/beads-ops/bops/internal/lock"
 )
 
@@ -516,18 +517,16 @@ func BranchNamesBead(branch, id string) bool {
 }
 
 // tokenIn reports whether tok occurs in s bounded by the start, the end or
-// one of / - _ . on each side.
+// one of config.IDBounds on each side. branch_pattern must carry <id> so
+// bounded, so a branch it names is found here.
 func tokenIn(s, tok string) bool {
-	const bounds = "/-_."
 	for from := 0; ; {
 		k := strings.Index(s[from:], tok)
 		if k < 0 {
 			return false
 		}
 		k += from
-		end := k + len(tok)
-		if (k == 0 || strings.ContainsRune(bounds, rune(s[k-1]))) &&
-			(end == len(s) || strings.ContainsRune(bounds, rune(s[end]))) {
+		if config.Bounded(s, k, k+len(tok)) {
 			return true
 		}
 		from = k + 1

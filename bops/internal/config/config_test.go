@@ -346,11 +346,14 @@ func TestBelowMin(t *testing.T) {
 
 // branch_pattern shapes the skill a repo commits, so only .bops.json sets
 // it, and it must be a branch name the skill can show unquoted (bops-onn).
+// It must carry <id> bounded by an end or one of / - _ ., the token reap finds
+// a bead's branch by, or reap would release a claim whose pushed work sits on
+// a branch it cannot see.
 func TestBranchPatternOnlyFromTheRepoFile(t *testing.T) {
 	if c, err := newWorld(t, "", "").load(); err != nil || c.BranchPattern != config.DefaultBranchPattern {
 		t.Errorf("default: %q, %v", c.BranchPattern, err)
 	}
-	for _, ok := range []string{"feat/<slug>-<id>", "<type>/<slug>-<suffix>", "bead_<id>.1", strings.Repeat("a", 40)} {
+	for _, ok := range []string{"feat/<slug>-<id>", "<id>", "<type>/<id>_<slug>", "bead_<id>.1", "<slug><id>/<id>", strings.Repeat("a", 35) + "/<id>"} {
 		if c, err := newWorld(t, `{"branch_pattern":"`+ok+`"}`, "").load(); err != nil || c.BranchPattern != ok {
 			t.Errorf("repo file %q: %q, %v", ok, c.BranchPattern, err)
 		}
@@ -363,7 +366,9 @@ func TestBranchPatternOnlyFromTheRepoFile(t *testing.T) {
 	if _, err := w.load(); err == nil || !strings.Contains(err.Error(), "BOPS_BRANCH_PATTERN") {
 		t.Errorf("env: err = %v", err)
 	}
-	for _, bad := range []string{`"a b"`, "\"a`b\"", `"-x"`, `"/x"`, `"x/"`, `"x..y"`, `"x//y"`, `"x.lock"`, `"x."`, `"<ID>"`, `"<id"`, `""`, `"` + strings.Repeat("a", 41) + `"`, `5`} {
+	for _, bad := range []string{`"a b"`, "\"a`b\"", `"-x"`, `"/x"`, `"x/"`, `"x..y"`, `"x//y"`, `"x.lock"`, `"x."`, `"<ID>"`, `"<id"`, `""`, `"` + strings.Repeat("a", 36) + `/<id>"`, `5`,
+		`"feat/<slug>"`, `"<type>/<slug>-<suffix>"`, `"work/<ids>"`, `"bead<id>"`, `"<id>x"`, `"<slug><id>"`, `"<id><slug>"`, `"work/x<id>y-<id>z"`,
+		`".<id>"`, `"feat/.<id>"`, `"x.lock/<id>"`} {
 		if _, err := newWorld(t, `{"branch_pattern":`+bad+`}`, "").load(); err == nil || !strings.Contains(err.Error(), "branch_pattern") {
 			t.Errorf("branch_pattern %s: err = %v, want a branch_pattern error", bad, err)
 		}

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/extremenelson/beads-ops/bops/internal/config"
 	"github.com/extremenelson/beads-ops/bops/internal/ledger"
 	"github.com/extremenelson/beads-ops/bops/internal/lock"
 )
@@ -207,7 +208,6 @@ func pickBranch(branches []workBranch, id, here string) string {
 // ends or one of / - _ . on each side, and not as the start of a child's id
 // (id followed by a dot and a digit).
 func namesWholeID(name, id string) bool {
-	const bounds = "/-_."
 	s, tok := strings.ToLower(name), strings.ToLower(id)
 	for from := 0; ; {
 		k := strings.Index(s[from:], tok)
@@ -217,8 +217,7 @@ func namesWholeID(name, id string) bool {
 		k += from
 		end := k + len(tok)
 		child := end+1 < len(s) && s[end] == '.' && s[end+1] >= '0' && s[end+1] <= '9'
-		if (k == 0 || strings.ContainsRune(bounds, rune(s[k-1]))) &&
-			(end == len(s) || strings.ContainsRune(bounds, rune(s[end]))) && !child {
+		if config.Bounded(s, k, end) && !child {
 			return true
 		}
 		from = k + 1
