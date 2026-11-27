@@ -32,7 +32,7 @@ A missing file is skipped. A file that exists must be one JSON object.
 | [`lock.mode`](#lockmode) | `ref` \| `none` | `ref` | `BOPS_LOCK_MODE` | every command, `doctor` |
 | [`blocking_labels`](#blocking_labels) | list of bead labels | none | `BOPS_BLOCKING_LABELS` (comma-separated) | `next`, `lint` (W15), `claim` |
 | [`lock.remote`](#lockremote) | git remote name | `origin` | `BOPS_LOCK_REMOTE` | claim-ref commands, `doctor`, forge inference |
-| [`min_bops`](#min_bops) | bops release, `MAJOR.MINOR.PATCH` | none | only from `.bops.json` | every command, `doctor` |
+| [`min_bops`](#min_bops) | bops release, `MAJOR.MINOR.PATCH` | none | only from `.bops.json` | every command but `guard`, `doctor` |
 | [`branch_pattern`](#branch_pattern) | branch name, at most 40 characters | `work/<id>` | only from `.bops.json` | `gen cc`, `gen codex` |
 | `lint.strict` | boolean | `false` | `BOPS_LINT_STRICT` | loaded and validated, **not applied yet**; use `bops lint --strict` |
 | `lint.disable` | list of rule ids | none | `BOPS_LINT_DISABLE` | loaded and validated, **not applied yet**. Only `.bops.json` may list `W15` |
@@ -86,6 +86,8 @@ bops claim: bops_too_old: this bops is v0.5.1, older than min_bops 0.6.0 in .bop
 Only `.bops.json` may set it: a user file or `BOPS_MIN_BOPS` could otherwise lower it for one machine, so either is an error unless it repeats the repo file's value. A prerelease is not accepted as the floor. A running prerelease or Go pseudo-version (`v0.6.1-0.2026…`) counts as older than its release.
 
 A build with no version, such as `go install ./cmd/bops` from a clone, reports `dev`. It cannot be compared, so commands run; `bops doctor` warns that it could not check.
+
+`bops guard`, the opt-in Claude Code hook, is not checked: it fails open, so a `bops` below `min_bops`, or one that rejects `.bops.json` with `bad_config`, lets raw claims through without a word. Raise `min_bops` to the release that brought the guard when you adopt it.
 
 **Upgrade every machine before raising it**, as with any change to `.bops.json`. Also, a `bops` older than the release that adds `min_bops` does not know the key, so it fails every command with `bad_config` instead of `bops_too_old`. That is also a refusal, with a less helpful message.
 

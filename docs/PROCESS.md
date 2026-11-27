@@ -347,7 +347,7 @@ bd setup claude              # idempotent; --check to verify, --global for ~/.cl
 
 What the plugin gives you (`plugins/beads/.claude-plugin/plugin.json`): `SessionStart` and `PreCompact` hooks that run `bd prime`, the `beads` skill, 29 `/bd-*` slash commands, and `task-agent`. Upstream deliberately does **not** run `bd gate check` or `bd list --status in_progress` in hooks. Add them.
 
-**`.claude/settings.json` (project):** merge [`bindings/claude-code/settings.json`](../bindings/claude-code/settings.json), which adds sync, `bd gate check` and the `in_progress` report to the upstream hooks. If you use `bops`, merge [`hooks.json`](../bindings/claude-code/hooks.json), which `bops gen cc` generates, in its place.
+**`.claude/settings.json` (project):** merge [`bindings/claude-code/settings.json`](../bindings/claude-code/settings.json), which adds sync, `bd gate check` and the `in_progress` report to the upstream hooks. If you use `bops`, merge [`hooks.json`](../bindings/claude-code/hooks.json), which `bops gen cc` generates, in its place. To have Claude Code refuse raw claims, also merge [`guard-hooks.json`](../bindings/claude-code/guard-hooks.json): a `PreToolUse` hook on Bash that runs `bops guard --hook-json` and denies `bd update --claim`, `bd ready --claim` and `bd reclaim` while the claim lock is on, naming the `bops` command to run instead. It is opt-in, and it fails open: when `bops` is missing or cannot decide, the command runs.
 
 **`CLAUDE.md` addition:** append [`bindings/claude-code/CLAUDE.md.snippet`](../bindings/claude-code/CLAUDE.md.snippet). It carries the process rules, the `bd-lint-claim.sh` claim rule and the `bops` session protocol.
 
@@ -532,7 +532,7 @@ git push --no-verify --force-with-lease=refs/bops/claims/<id>:$(git rev-parse re
 
 Never delete or rewrite a claim ref with `-f`: it cancels the lease.
 
-**Never on a `bops` ledger:** `bd reclaim` (by hand or on a timer) and `bd update --claim`, which both ignore the lock; and an older `bops` on any machine.
+**Never on a `bops` ledger:** `bd reclaim` (by hand or on a timer) and `bd update --claim`, which both ignore the lock; and an older `bops` on any machine. In Claude Code, the opt-in [`guard-hooks.json`](../bindings/claude-code/guard-hooks.json) hook refuses the first two (and `bd ready --claim`) before they run, so the rule does not rest on the agent remembering it (§9.1).
 
 ---
 

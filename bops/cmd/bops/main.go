@@ -53,6 +53,9 @@ func run(args []string, stdout, stderr *os.File) int {
 	ctx, cancel := context.WithTimeout(context.Background(), budget(name))
 	defer cancel()
 	gateWarnings = nil
+	if name == "guard" { // a hook on every Bash call: no gate, no network, fails open
+		return cmdGuard(m, rest, wantJSON, os.Stdin, isTerminal(os.Stdin), stdout, stderr)
+	}
 	if c, ok := m.Lookup(name); ok && name != "doctor" {
 		if warn, err := minBopsGate(c.Kind); err != nil {
 			if name == "session-start" && slices.Contains(rest, "--hook-json") {

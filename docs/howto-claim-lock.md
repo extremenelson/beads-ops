@@ -185,7 +185,7 @@ These are the failures `doctor` reports, with the `next` text it prints. Stuck c
 | `bops_version` fails, `code: bops_too_old` | This `bops` is older than `min_bops` in `.bops.json` | Run the `go install` command in `next` ([min_bops](reference/configuration.md#min_bops)) |
 | Exit 1 before any check runs, `code: bad_config` | A bad `.bops.json`, user config or `BOPS_*` value | Fix the named file or variable ([validation](reference/configuration.md#validation)) |
 
-Never run `bd reclaim` (by hand or on a timer) on a ledger that uses the lock. It ignores claim refs and would hand out beads someone still holds.
+Never run `bd reclaim` (by hand or on a timer) on a ledger that uses the lock. It ignores claim refs and would hand out beads someone still holds. For Claude Code agents, merge [`guard-hooks.json`](../bindings/claude-code/guard-hooks.json) into `.claude/settings.json`: `bops guard` then refuses `bd reclaim`, `bd update --claim` and `bd ready --claim` before they run ([command reference](COMMANDS.md#bops-guard)).
 
 ## Related
 
