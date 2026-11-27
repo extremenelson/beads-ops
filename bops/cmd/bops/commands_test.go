@@ -828,6 +828,28 @@ func TestRenewDetailsPrintsEachBeadWithoutControlBytes(t *testing.T) {
 	}
 }
 
+// A forced claim prints the previous attempt, which printKV skips as a
+// nested object, one line per field and with no control bytes.
+func TestPreviousDetailsPrintsTheLastAttempt(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousDetails(f, &intent.Previous{Actor: "old", Run: "R1", AgeMinutes: 190,
+		LastNote: "NEXT: write\nthe tests\x1b[31m", NoteRun: "R0", MR: "https://github.com/o/r/pull/7"})
+	previousDetails(f, nil)
+	b, _ := os.ReadFile(f.Name())
+	got := string(b)
+	want := "previous_holder=old (run R1, idle 190m)\n" +
+		"previous_last_note=NEXT: write the tests?[31m\n" +
+		"previous_note_run=R0\n" +
+		"previous_branch=-\n" +
+		"previous_mr=https://github.com/o/r/pull/7\n"
+	if got != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
 // A renew whose beads were refused or lost exits 3; one with a bead it could
 // not refresh exits 1 for a retry, and still prints every bead's outcome, so a
 // caller reads beads[].outcome on any non-zero exit.

@@ -444,7 +444,7 @@ func Note(ctx context.Context, env *Env, id, text string) (*NoteOut, error) {
 	case refreshFailed:
 		out.Warnings = append(out.Warnings, "claim not refreshed: "+r.err.Error())
 	}
-	path, cleanup, err := writeTemp(fmt.Sprintf("bops:note run=%s\n%s", env.Run.ID, text))
+	path, cleanup, err := writeTemp(notePrefix + env.Run.ID + "\n" + text)
 	if err != nil {
 		return nil, err
 	}
