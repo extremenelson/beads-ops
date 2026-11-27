@@ -68,6 +68,7 @@ bops doctor
 | `push` | the remote accepts a push from this account (dry run) |
 | `lock` | a create-only push to `refs/bops/doctor/<nonce>` succeeds and a second one is refused, which is the property the lock depends on |
 | `dolt_remote` | a Dolt remote points at the same repository |
+| `ledger_conflict` | listed only when it fails: this clone's last ledger pull stopped on a merge conflict that needs a person, and no pull has succeeded since (read from the record the command that met it left; doctor does not pull) |
 
 A healthy run (`--json`, trimmed):
 
@@ -184,6 +185,7 @@ These are the failures `doctor` reports, with the `next` text it prints. Stuck c
 | `fetch` or `push`, `unreachable` | Network or host down | Retry once you can reach the remote |
 | `lock`, `lock_unsupported` | The forge rejects pushes to `refs/bops/*` | Check branch/ref protection rules on the forge. There's no fallback in v0.1.0 |
 | `dolt_remote`, `remote_mismatch` | No Dolt remote, or it points at a different repository | `bd dolt remote add origin git+<the lock remote's URL>`, or set `lock.mode: none` in `.bops.json` for a one-machine repo |
+| `ledger_conflict` | A bead was deleted on another machine while this clone changed it, so every pull and push from this clone fails | Follow `next`: the exit-2 runbook in [MULTI-DEV-PLAN §6](MULTI-DEV-PLAN.md#exit-2-runbook-merge-conflict). `--strategy theirs` keeps the delete, `--strategy ours` brings the bead back without its labels and comments; `bd dolt commit`, then `bops sync` clears the check |
 | `bops_version` fails, `code: bops_too_old` | This `bops` is older than `min_bops` in `.bops.json` | Run the `go install` command in `next` ([min_bops](reference/configuration.md#min_bops)) |
 | Exit 1 before any check runs, `code: bad_config` | A bad `.bops.json`, user config or `BOPS_*` value | Fix the named file or variable ([validation](reference/configuration.md#validation)) |
 

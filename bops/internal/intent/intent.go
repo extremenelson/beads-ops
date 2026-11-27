@@ -55,6 +55,11 @@ type Env struct {
 	// BlockingLabels (config blocking_labels) keep a bead out of `next` (W15)
 	// and make a plain claim refuse it.
 	BlockingLabels []string
+	// Command is the bops command this Env serves, for what it records.
+	Command string
+	// ledgerConflict is set once a pull in this command stopped on a merge
+	// conflict that needs a person: later pulls and pushes return it.
+	ledgerConflict error
 }
 
 // HoldStore is the part of the clone's state that spans worktrees.
@@ -70,6 +75,10 @@ type HoldStore interface {
 	Matches(run, id string, expect runstate.Entry) bool
 	// PruneBeadLocks removes the lock files of beads no run holds (bops-exb).
 	PruneBeadLocks() (int, error)
+	// LedgerConflict and SetLedgerConflict read and write the record of a
+	// ledger pull that stopped for a person.
+	LedgerConflict() (*runstate.LedgerConflict, error)
+	SetLedgerConflict(c *runstate.LedgerConflict) error
 }
 
 // holdBead takes this clone's lock on id for the rest of a command and
@@ -954,7 +963,7 @@ func Sweep(ctx context.Context, env *Env, f forge.Forge, dryRun bool) (*SweepOut
 		if err := env.noLedgerRemote(ctx); err != nil {
 			return out, err // the cause, not bd's "no remote" from the pull
 		}
-		if _, err := withLockRetry(ctx, env, "dolt", "pull"); err != nil {
+		if _, err := env.doltPull(ctx); err != nil {
 			return out, err
 		}
 	}

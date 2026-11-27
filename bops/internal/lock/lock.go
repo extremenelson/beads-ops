@@ -59,6 +59,7 @@ const (
 	CodeRemoteMismatch  = "remote_mismatch" // the lock remote is not the Dolt remote, or there is none
 	CodeBadConfig       = "bad_config"      // .bops.json, the user config file or a BOPS_* variable is invalid
 	CodeTooOld          = "bops_too_old"    // this bops is older than min_bops in .bops.json
+	CodeLedgerConflict  = "ledger_conflict" // a ledger pull stopped on a merge conflict that needs a person
 )
 
 // Error carries a stable code. SHA is set when a ref may remain on the remote

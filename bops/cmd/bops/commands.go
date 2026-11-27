@@ -182,6 +182,9 @@ func parseAnyOrder(fs *flag.FlagSet, args []string) error {
 	return fs.Parse(append([]string{"--"}, positional...))
 }
 
+// commandName is the command run is serving, for what an Env records.
+var commandName string
+
 func newEnv(mode runstate.Mode) (*intent.Env, *runstate.Store, error) {
 	root, err := os.Getwd()
 	if err != nil {
@@ -204,7 +207,7 @@ func newEnv(mode runstate.Mode) (*intent.Env, *runstate.Store, error) {
 		run.Caps = cfg.Caps
 	}
 	l := &lock.Lock{Git: lock.Exec{Dir: root}, Journal: store, Run: run.ID, Actor: run.Actor, Machine: run.Machine, Remote: cfg.LockRemote}
-	return &intent.Env{BD: bdx.Exec{}, Run: run, Store: store, Lock: l, LockOff: cfg.LockOff(), StaleAfter: cfg.StaleAfter(), HoldFor: cfg.HoldFor(), BlockingLabels: cfg.BlockingLabels, BeadWait: beadWait}, store, nil
+	return &intent.Env{BD: bdx.Exec{}, Run: run, Store: store, Lock: l, LockOff: cfg.LockOff(), StaleAfter: cfg.StaleAfter(), HoldFor: cfg.HoldFor(), BlockingLabels: cfg.BlockingLabels, BeadWait: beadWait, Command: commandName}, store, nil
 }
 
 // beadWait is how long a command waits for a bead another bops process on
@@ -586,6 +589,11 @@ func cmdDoctor(ctx context.Context, m *manifest.Manifest, args []string, asJSON 
 	}
 	if w := staleBinary(ctx, worktreeRoot(root), runningBuild()); w != "" {
 		out.Warnings = append(out.Warnings, w) // a warning: the lock checks still decide the exit
+	}
+	if c, ok, w := intent.LedgerConflictCheck(root); ok {
+		out.Add(c) // recorded by the command whose pull met it; doctor only reads it
+	} else if w != "" {
+		out.Warnings = append(out.Warnings, w)
 	}
 	if u, err := intent.UnmatchedBlockingLabels(ctx, doctorBD, cfg.BlockingLabels); err != nil {
 		out.Warnings = append(out.Warnings, "blocking_labels not checked: bd could not list the beads: "+lock.Scrub(err.Error()))

@@ -182,7 +182,7 @@ func Reap(ctx context.Context, env *Env, o ReapOpts) (*ReapOut, error) {
 		if err := env.checkRemote(ctx); err != nil {
 			return out, err
 		}
-		if _, err := withLockRetry(ctx, env, "dolt", "pull"); err != nil {
+		if _, err := env.doltPull(ctx); err != nil {
 			return out, fmt.Errorf("reap: ledger pull failed, so nothing was released: %w", err)
 		}
 	}

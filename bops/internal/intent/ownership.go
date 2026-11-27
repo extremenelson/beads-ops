@@ -271,14 +271,21 @@ func (e *Env) ledgerHolder(cur *ledger.Issue) *Holder {
 // failure stays in the error returned even when a later try failed at its
 // pull (refused over the same dirty working set, say), so the cause is not
 // hidden behind its symptom.
+//
+// A pull that stops on a merge conflict needing a person ends the retries at
+// once, and a later pushLedger in the same command returns that error
+// without calling bd: no retry can succeed until a person resolves it.
 func (e *Env) pushLedger(ctx context.Context) error {
+	if e.ledgerConflict != nil {
+		return e.ledgerConflict
+	}
 	var err, commitFailed error
 	for try := 0; try < maxPushTries; try++ {
 		if try > 0 {
 			e.sleepFor(time.Duration(try) * 500 * time.Millisecond)
-			if _, pullErr := withLockRetry(ctx, e, "dolt", "pull"); pullErr != nil {
+			if _, pullErr := e.doltPull(ctx); pullErr != nil {
 				err = pullErr
-				if ctx.Err() != nil {
+				if ctx.Err() != nil || isLedgerConflict(pullErr) {
 					break
 				}
 				continue
@@ -660,7 +667,7 @@ func claimLocked(ctx context.Context, env *Env, id string, force bool, from *str
 	}
 	env.event("claim", id, "ref_create", OutcomeClaimed, res.SHA, nil)
 
-	if _, pullErr := withLockRetry(ctx, env, "dolt", "pull"); pullErr != nil {
+	if _, pullErr := env.doltPull(ctx); pullErr != nil {
 		out.Warnings = append(out.Warnings, "ledger not pulled: "+pullErr.Error())
 	} else if fresh, showErr := env.showWithComments(ctx, id); showErr != nil {
 		out.Warnings = append(out.Warnings, "ledger not re-read after the pull: "+showErr.Error())
@@ -735,7 +742,7 @@ func (e *Env) pullUnlessUnpublished(ctx context.Context, out *ClaimOut) bool {
 		out.Warnings = append(out.Warnings, noDoltRemoteWarning)
 		return false
 	}
-	if _, err := withLockRetry(ctx, e, "dolt", "pull"); err != nil {
+	if _, err := e.doltPull(ctx); err != nil {
 		out.Warnings = append(out.Warnings, "ledger not pulled: "+err.Error())
 	}
 	return true
@@ -939,7 +946,10 @@ func claimForce(ctx context.Context, env *Env, id string, from *string) (*ClaimO
 	publish := true
 	if env.LockOff {
 		publish = env.pullUnlessUnpublished(ctx, out)
-	} else if _, err := withLockRetry(ctx, env, "dolt", "pull"); err != nil {
+	} else if _, err := env.doltPull(ctx); err != nil {
+		if isLedgerConflict(err) {
+			return out.fail(err) // its own code and runbook, not unreachable
+		}
 		return out.fail(&lock.Error{Code: lock.CodeUnreachable, Err: err})
 	}
 	if !env.LockOff {
@@ -1087,7 +1097,7 @@ func ClaimResume(ctx context.Context, env *Env, id string) (*ClaimOut, error) {
 	}
 	env.event("claim", id, "ref_replace", OutcomeClaimed, res.SHA, nil)
 	out.Outcome, out.ClaimedAt, out.Generation = OutcomeClaimed, env.now(), res.Gen
-	if _, err := withLockRetry(ctx, env, "dolt", "pull"); err != nil {
+	if _, err := env.doltPull(ctx); err != nil {
 		out.Warnings = append(out.Warnings, "ledger not pulled: "+err.Error())
 	}
 	cur, err := env.show(ctx, id)
@@ -1349,7 +1359,12 @@ func releaseLocked(ctx context.Context, env *Env, out *ReleaseOut, text string, 
 		out.committed = true // the text is in the local ledger; the push carries it
 		if err := env.pushLedger(ctx); err != nil {
 			out.Outcome, out.LedgerPending, out.RefPending = OutcomeReleased, true, true
-			out.Warnings = append(out.Warnings, "ledger push pending: the claim ref stays until it lands; bops sync from this checkout pushes it and then deletes the ref: "+lock.Scrub(err.Error()))
+			if isLedgerConflict(err) {
+				// bops sync fails the same way until a person resolves it.
+				out.Warnings = append(out.Warnings, "ledger push pending: the claim ref stays until it lands, and the ledger is stuck until a person resolves it; after that bops sync from this checkout pushes it and then deletes the ref: "+lock.Scrub(err.Error()))
+			} else {
+				out.Warnings = append(out.Warnings, "ledger push pending: the claim ref stays until it lands; bops sync from this checkout pushes it and then deletes the ref: "+lock.Scrub(err.Error()))
+			}
 			env.event("release", id, "ledger", "pending", sha, err)
 			return out, nil
 		}
@@ -1705,13 +1720,13 @@ func syncAs(ctx context.Context, env *Env, o syncOpts) (*SyncOut, error) {
 func pull(ctx context.Context, env *Env, reserve time.Duration) ([]byte, error) {
 	dl, ok := ctx.Deadline()
 	if reserve <= 0 || !ok {
-		return withLockRetry(ctx, env, "dolt", "pull")
+		return env.doltPull(ctx)
 	}
 	given := time.Until(dl.Add(-reserve)).Round(time.Second)
 	pctx, cancel := context.WithDeadline(ctx, dl.Add(-reserve))
 	defer cancel()
-	b, err := withLockRetry(pctx, env, "dolt", "pull")
-	if err != nil && pctx.Err() != nil && ctx.Err() == nil {
+	b, err := env.doltPull(pctx)
+	if err != nil && pctx.Err() != nil && ctx.Err() == nil && !isLedgerConflict(err) {
 		return b, fmt.Errorf("bd dolt pull did not finish in the %s session-start gives it; run `bops sync`, which allows 2 minutes: %w", given, err)
 	}
 	return b, err

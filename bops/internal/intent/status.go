@@ -58,8 +58,12 @@ type StatusClaim struct {
 
 // StatusOut is the `status` output.
 type StatusOut struct {
-	Claims   []StatusClaim `json:"claims"`
-	Warnings []string      `json:"warnings"`
+	Claims []StatusClaim `json:"claims"`
+	// LedgerConflict is this clone's last ledger pull that stopped on a
+	// merge conflict needing a person, while no later pull has succeeded;
+	// every pull and push from the clone fails until it is resolved.
+	LedgerConflict *LedgerConflictReport `json:"ledger_conflict,omitempty"`
+	Warnings       []string              `json:"warnings"`
 }
 
 // Status lists every claim, from the claim refs and the ledger joined, with
@@ -81,12 +85,14 @@ type StatusOut struct {
 // machine. Branch and MR are inferred as claim --force's previous infers
 // them; the forge is not asked, and branches are not listed when the claim
 // ref fetch failed. A failed read beyond the refs and the bead list leaves
-// fields empty and adds a warning.
+// fields empty and adds a warning. A ledger pull this clone recorded as
+// stuck on a merge conflict is reported in ledger_conflict and a warning.
 func Status(ctx context.Context, env *Env, o StatusOpts) (*StatusOut, error) {
 	if o.OlderThan == 0 {
 		o.OlderThan = env.staleAfter()
 	}
 	out := &StatusOut{Claims: []StatusClaim{}, Warnings: []string{}}
+	out.LedgerConflict = env.ledgerConflictReport(&out.Warnings) // read from the record: status pulls nothing
 	refs, issues, fetched, err := env.claimSnapshot(ctx, &out.Warnings)
 	if err != nil {
 		return nil, err
