@@ -401,6 +401,8 @@ type NoteOut struct {
 	Holder    *Holder  `json:"holder,omitempty"`
 	Reason    string   `json:"reason,omitempty"`
 	SavedTo   string   `json:"saved_to,omitempty"` // where a refused note's text went
+	OpID      string   `json:"op_id,omitempty"`
+	Replayed  bool     `json:"replayed,omitempty"` // op_id was already recorded; nothing written
 }
 
 // Negative reports a run that worked and an answer of no.
@@ -419,32 +421,74 @@ var noteEndings = []string{"NEXT:", "BLOCKER:", "KEY DECISION:", "REF:"}
 // Note records where this run has got to and keeps the claim. The text goes
 // to bd through a private file, never as a command-line argument.
 func Note(ctx context.Context, env *Env, id, text string) (*NoteOut, error) {
+	return NoteOp(ctx, env, id, text, "")
+}
+
+// NoteOp is Note with an operation id (see opid.go); "" derives one from the
+// run and text. A note whose op id this run already recorded on the bead
+// writes no comment and sets replayed: while this run holds the bead it still
+// refreshes the claim and heartbeats (noted); otherwise it answers refused or
+// lost.
+func NoteOp(ctx context.Context, env *Env, id, text, op string) (*NoteOut, error) {
 	if strings.TrimSpace(text) == "" {
 		return nil, fmt.Errorf("%w: note text is empty", ErrPrecondition)
 	}
 	if err := lock.ValidateID(id); err != nil {
 		return nil, err
 	}
-	out := &NoteOut{ID: id, Warnings: []string{}}
+	op, err := opID(op, "note", id, env.Run.ID, text)
+	if err != nil {
+		return nil, err
+	}
+	out := &NoteOut{ID: id, Warnings: []string{}, OpID: op}
 	// While another process works on the bead, this run cannot tell whether
 	// it still holds it, so the note waits; its text is kept at saved_to.
-	unlock, held, err := env.lockHeld(ctx, "note", id, &out.Warnings)
+	unlock, err := env.holdBead(ctx, "note", id, &out.Warnings)
 	if err != nil {
 		return out.refuse(OutcomeError, err.Error(), nil, text), err
 	}
-	if !held {
+	defer unlock()
+	// A repeat finds its comment before the hold check: the hold may have
+	// gone since the note landed. The answer is then refused or lost, as
+	// for any note, with replayed set: the text is on the bead already.
+	rec, err := env.findOp(ctx, id, evNote, op)
+	if err != nil {
+		out.Warnings = append(out.Warnings, "earlier notes not checked for op "+op+": "+lock.Scrub(err.Error()))
+	}
+	if _, err := env.finishRelease(ctx, id); err != nil {
+		return out.refuse(OutcomeError, err.Error(), nil, text), err
+	}
+	_, held := env.Run.Held[id]
+	if rec != nil {
+		out.Outcome, out.Replayed, out.CommentID = OutcomeNoted, true, string(rec.comment.ID)
+		out.Warnings = append(out.Warnings, replayNote(op))
+		if !held {
+			out.Outcome, out.Reason = OutcomeRefused, id+" is not held by this run"
+			return out, nil
+		}
+	} else if !held {
 		return out.refuse(OutcomeRefused, id+" is not held by this run", nil, text), nil
 	}
-	defer unlock()
 	// A network failure is only a warning, because a note must work offline.
+	// A replay still keeps the claim alive, as a note does; it writes no comment.
 	switch r := env.refreshRef(ctx, "note", id, OutcomeNoted, &out.Warnings); r.outcome {
 	case refreshLost:
+		if out.Replayed {
+			out.Outcome, out.Holder, out.Reason = OutcomeLost, r.holder, id+" is no longer held by this run"
+			return out, nil
+		}
 		out.refuse(OutcomeLost, id+" is no longer held by this run", r.holder, text)
 		return out, nil
 	case refreshFailed:
 		out.Warnings = append(out.Warnings, "claim not refreshed: "+r.err.Error())
 	}
-	path, cleanup, err := writeTemp(notePrefix + env.Run.ID + "\n" + text)
+	if out.Replayed {
+		if _, err := env.BD.Run(ctx, "heartbeat", id); err != nil {
+			out.Warnings = append(out.Warnings, "heartbeat failed: "+err.Error())
+		}
+		return out, nil
+	}
+	path, cleanup, err := writeTemp(notePrefix + env.Run.ID + " op=" + op + "\n" + text)
 	if err != nil {
 		return nil, err
 	}
@@ -532,8 +576,8 @@ type refreshResult struct {
 // sha it holds, so the ref's at (the claim's age for stale, reap and claim
 // --force) shows activity (D27). It writes nothing to the ledger. A ref that
 // is another run's now drops the hold. The caller holds the bead's lock and
-// has checked that this run holds the bead (lockHeld). note and renew share
-// it; done is the outcome the event log records for a refresh.
+// has checked that this run holds the bead (note inline, renew through
+// lockHeld). note and renew share it; done is the outcome the event log records for a refresh.
 func (e *Env) refreshRef(ctx context.Context, cmd, id, done string, warnings *[]string) refreshResult {
 	if e.LockOff || e.Lock == nil {
 		return refreshResult{outcome: refreshNoRef}
@@ -615,6 +659,8 @@ type LandOut struct {
 	Holder   *Holder       `json:"holder,omitempty"`
 	Reason   string        `json:"reason,omitempty"`
 	Warnings []string      `json:"warnings,omitempty"`
+	OpID     string        `json:"op_id,omitempty"`
+	Replayed bool          `json:"replayed,omitempty"` // this landing was already recorded; nothing written
 }
 
 // Negative reports a run that worked and an answer of no.
@@ -625,6 +671,9 @@ func (o *LandOut) Negative() bool { return o != nil && negative(o.Outcome) }
 type LandOpts struct {
 	Ref, SHA string
 	Verify   forge.Forge
+	// OpID names the operation (see opid.go); "" derives it from the run,
+	// ref and sha.
+	OpID string
 }
 
 // Land records evidence that work reached its destination. It never merges,
@@ -640,24 +689,44 @@ func Land(ctx context.Context, env *Env, id string, o LandOpts) (*LandOut, error
 	if err := lock.ValidateID(id); err != nil {
 		return nil, err
 	}
+	op, err := opID(o.OpID, "land", id, env.Run.ID, o.Ref, o.SHA)
+	if err != nil {
+		return nil, err
+	}
 	warnings := []string{}
 	unlock, err := env.holdBead(ctx, "land", id, &warnings)
 	if err != nil {
-		return &LandOut{ID: id, Outcome: OutcomeError}, err
+		return &LandOut{ID: id, Outcome: OutcomeError, OpID: op}, err
 	}
 	defer unlock()
 	if _, err := env.finishRelease(ctx, id); err != nil {
-		return &LandOut{ID: id, Outcome: OutcomeError, Warnings: warnings}, err
+		return &LandOut{ID: id, Outcome: OutcomeError, Warnings: warnings, OpID: op}, err
 	}
 	if _, held := env.Run.Held[id]; !held {
-		return &LandOut{ID: id, Outcome: OutcomeRefused, Reason: id + " is not held by this run", Warnings: warnings}, nil
+		// A landing retried after the release that followed it.
+		if rec, err := env.findOp(ctx, id, evLanded, op); err != nil {
+			warnings = append(warnings, "earlier landings not checked for op "+op+": "+lock.Scrub(err.Error()))
+		} else if rec != nil && (rec.fields["ref"] != o.Ref || rec.fields["sha"] != o.SHA) {
+			warnings = append(warnings, "op "+op+" was recorded for another ref or sha")
+		} else if rec != nil {
+			// The answer is the landed record itself, not the comment's copy.
+			if l, err := env.landedRecord(ctx, id, rec.fields["ref"], rec.fields["sha"]); err != nil {
+				warnings = append(warnings, "earlier landing not confirmed: "+lock.Scrub(err.Error()))
+			} else if l != nil {
+				out := &LandOut{ID: id, Outcome: OutcomeLanded, Landed: *l, OpID: op, Replayed: true,
+					Warnings: append(warnings, replayNote(op))}
+				env.republish(ctx, &out.Warnings)
+				return out, nil
+			}
+		}
+		return &LandOut{ID: id, Outcome: OutcomeRefused, Reason: id + " is not held by this run", Warnings: warnings, OpID: op}, nil
 	}
 	if env.LockOff {
 		warnings = append(warnings, lock.OffWarning)
 	} else {
 		_, owned, err := env.checkHold(ctx, id)
 		if err != nil {
-			return &LandOut{ID: id, Outcome: OutcomeUnreachable}, err
+			return &LandOut{ID: id, Outcome: OutcomeUnreachable, OpID: op}, err
 		}
 		if !owned {
 			holder, err := env.dropLost(ctx, id)
@@ -665,7 +734,7 @@ func Land(ctx context.Context, env *Env, id string, o LandOpts) (*LandOut, error
 				return nil, err
 			}
 			env.event("land", id, "ref_check", OutcomeLost, "", nil)
-			return &LandOut{ID: id, Outcome: OutcomeLost, Holder: holder, Reason: id + " is no longer held by this run", Warnings: warnings}, nil
+			return &LandOut{ID: id, Outcome: OutcomeLost, Holder: holder, Reason: id + " is no longer held by this run", Warnings: warnings, OpID: op}, nil
 		}
 	}
 	cur, err := env.show(ctx, id)
@@ -678,7 +747,7 @@ func Land(ctx context.Context, env *Env, id string, o LandOpts) (*LandOut, error
 				return nil, err
 			}
 			env.event("land", id, "ledger_check", OutcomeLost, "", nil)
-			return &LandOut{ID: id, Outcome: OutcomeLost, Holder: holder, Reason: id + " is no longer held by this run", Warnings: warnings}, nil
+			return &LandOut{ID: id, Outcome: OutcomeLost, Holder: holder, Reason: id + " is no longer held by this run", Warnings: warnings, OpID: op}, nil
 		}
 	}
 	if o.Verify != nil {
@@ -695,8 +764,24 @@ func Land(ctx context.Context, env *Env, id string, o LandOpts) (*LandOut, error
 	if err != nil {
 		return nil, err
 	}
-	if existing != nil { // a repeat of the same landing writes nothing
-		return &LandOut{ID: id, Outcome: OutcomeLanded, Landed: *existing, Warnings: warnings}, nil
+	if existing != nil { // a repeat of the same landing adds no record
+		out := &LandOut{ID: id, Outcome: OutcomeLanded, Landed: *existing, OpID: op, Replayed: true,
+			Warnings: append(warnings, "this ref and sha are already landed; this is that landing")}
+		// This run's landing whose event comment failed gets it now, so a
+		// retry after the release can still find it.
+		if existing.Run == env.Run.ID {
+			if recorded, err := env.landedEvent(ctx, id, o.Ref, o.SHA); err != nil {
+				out.Warnings = append(out.Warnings, "landing event not checked: "+lock.Scrub(err.Error()))
+			} else if !recorded {
+				ev := fmt.Sprintf("%s run=%s ref=%s sha=%s op=%s", evLanded, env.Run.ID, o.Ref, o.SHA, op)
+				if _, err := env.BD.Run(ctx, "comments", "add", id, ev); err != nil {
+					out.Warnings = append(out.Warnings, "landing event still not recorded: "+lock.Scrub(err.Error()))
+				}
+			}
+		}
+		// The first run's push may have failed: publish again.
+		env.republish(ctx, &out.Warnings)
+		return out, nil
 	}
 	path, cleanup, err := writeTemp(string(merged))
 	if err != nil {
@@ -706,8 +791,8 @@ func Land(ctx context.Context, env *Env, id string, o LandOpts) (*LandOut, error
 	if _, err := env.BD.Run(ctx, "update", id, "--metadata", "@"+path); err != nil {
 		return nil, err
 	}
-	out := &LandOut{ID: id, Outcome: OutcomeLanded, Landed: entry, Warnings: warnings}
-	ev := fmt.Sprintf("bops:landed run=%s ref=%s sha=%s", env.Run.ID, o.Ref, o.SHA)
+	out := &LandOut{ID: id, Outcome: OutcomeLanded, Landed: entry, Warnings: warnings, OpID: op}
+	ev := fmt.Sprintf("%s run=%s ref=%s sha=%s op=%s", evLanded, env.Run.ID, o.Ref, o.SHA, op)
 	if _, err := env.BD.Run(ctx, "comments", "add", id, ev); err != nil {
 		return out, fmt.Errorf("landed but could not record event: %w", err)
 	}
@@ -724,6 +809,57 @@ func Land(ctx context.Context, env *Env, id string, o LandOpts) (*LandOut, error
 		return out, fmt.Errorf("landed locally; push failed: %w", err)
 	}
 	return out, nil
+}
+
+// republish pushes the ledger again for a replayed write, whose first run may
+// have stopped before its push or had it rejected. The write itself is
+// recorded, so every failure is a warning: a replay never fails, offline or
+// not, and `bops sync` publishes later.
+func (e *Env) republish(ctx context.Context, warnings *[]string) {
+	if e.unpublished(ctx) {
+		*warnings = append(*warnings, noDoltRemoteWarning)
+		return
+	}
+	if w := e.noLedgerRemoteWarning(ctx); w != "" {
+		*warnings = append(*warnings, w)
+		return
+	}
+	if err := e.pushLedger(ctx); err != nil {
+		*warnings = append(*warnings, "recorded locally, ledger not published (run bops sync): "+lock.Scrub(err.Error()))
+	}
+}
+
+// landedEvent reports whether id has this run's bops:landed comment for ref
+// and sha, whatever op id it carries.
+func (e *Env) landedEvent(ctx context.Context, id, ref, sha string) (bool, error) {
+	comments, err := e.comments(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	for _, c := range comments {
+		if k, f := eventFields(c.Text); k == evLanded && f["run"] == e.Run.ID && f["ref"] == ref && f["sha"] == sha {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// landedRecord is id's landed entry for ref and sha by this run, or nil.
+func (e *Env) landedRecord(ctx context.Context, id, ref, sha string) (*ledger.Landed, error) {
+	cur, err := e.show(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	landed, err := cur.Landed()
+	if err != nil {
+		return nil, err
+	}
+	for k := range landed {
+		if l := landed[k]; l.Ref == ref && l.SHA == sha && l.Run == e.Run.ID {
+			return &l, nil
+		}
+	}
+	return nil, nil
 }
 
 // --------------------------------------------------------------- sweep

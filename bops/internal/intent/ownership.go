@@ -962,6 +962,8 @@ type ReleaseOut struct {
 	Detail        string   `json:"detail,omitempty"`
 	SavedTo       string   `json:"saved_to,omitempty"` // where the text of a release that did not run went
 	Warnings      []string `json:"warnings,omitempty"`
+	OpID          string   `json:"op_id,omitempty"`
+	Replayed      bool     `json:"replayed,omitempty"` // op_id was already recorded; nothing written
 }
 
 // Negative reports a run that worked and an answer of no.
@@ -1003,7 +1005,17 @@ func Release(ctx context.Context, env *Env, id, reason string) (*ReleaseOut, err
 // a private file; it is written only when the release is, so a lost or refused
 // release writes none of it.
 func ReleaseWithText(ctx context.Context, env *Env, id, reason, text string) (*ReleaseOut, error) {
-	out, err := releaseWithText(ctx, env, id, reason, text)
+	return ReleaseOp(ctx, env, id, reason, text, "")
+}
+
+// ReleaseOp is ReleaseWithText with an operation id (see opid.go); "" derives
+// one from the run, reason and text. When this run no longer holds the bead
+// and its bops:released comment carries the op id, that release landed: it
+// writes nothing and answers released with replayed set. While the hold
+// remains, the release runs in full, since a release that stopped part way
+// must finish (sync would otherwise keep a claim given back on the ledger).
+func ReleaseOp(ctx context.Context, env *Env, id, reason, text, op string) (*ReleaseOut, error) {
+	out, err := releaseWithText(ctx, env, id, reason, text, op)
 	// Text from stdin must outlive a release that did not run, or whose
 	// ledger write did not (sync settles the claim but never the comment).
 	if out != nil && text != "" && (out.Outcome != OutcomeReleased || out.LedgerPending) {
@@ -1012,7 +1024,7 @@ func ReleaseWithText(ctx context.Context, env *Env, id, reason, text string) (*R
 	return out, err
 }
 
-func releaseWithText(ctx context.Context, env *Env, id, reason, text string) (*ReleaseOut, error) {
+func releaseWithText(ctx context.Context, env *Env, id, reason, text, op string) (*ReleaseOut, error) {
 	if !contains(ReleaseReasons, reason) {
 		return nil, fmt.Errorf("release: reason must be one of %s", strings.Join(ReleaseReasons, "|"))
 	}
@@ -1022,19 +1034,30 @@ func releaseWithText(ctx context.Context, env *Env, id, reason, text string) (*R
 	if err := lock.ValidateID(id); err != nil {
 		return nil, err
 	}
-	out := &ReleaseOut{ID: id, Reason: reason, Warnings: []string{}}
+	op, err := opID(op, "release", id, env.Run.ID, reason, text)
+	if err != nil {
+		return nil, err
+	}
+	out := &ReleaseOut{ID: id, Reason: reason, Warnings: []string{}, OpID: op}
 	unlock, err := env.holdBead(ctx, "release", id, &out.Warnings)
 	if err != nil {
 		return out.fail(err)
 	}
 	defer unlock()
-	if finished, err := env.finishRelease(ctx, id); err != nil {
+	finished, err := env.finishRelease(ctx, id)
+	if err != nil {
 		return out.fail(err)
-	} else if finished {
+	}
+	entry, ok := env.holdFor(id)
+	if finished || !ok {
+		if env.replayRelease(ctx, id, op, out) {
+			return out, nil
+		}
+	}
+	if finished {
 		out.Outcome, out.Detail = OutcomeRefused, "an earlier release of "+id+" had not finished deleting its claim; that is done now, and this run no longer holds it"
 		return out, nil
 	}
-	entry, ok := env.holdFor(id)
 	if !ok {
 		out.Outcome, out.Detail = OutcomeRefused, "this run does not hold "+id+"; claim --force is how a bead changes hands"
 		return out, nil
@@ -1085,7 +1108,7 @@ func releaseWithText(ctx context.Context, env *Env, id, reason, text string) (*R
 			out.Warnings = append(out.Warnings, w)
 		}
 	}
-	if err := env.releaseDisplay(ctx, id, reason, text, publish); err != nil {
+	if err := env.releaseDisplay(ctx, id, reason, text, op, publish); err != nil {
 		out.LedgerPending = true
 		out.Warnings = append(out.Warnings, "ledger display pending: "+err.Error())
 		env.event("release", id, "ledger", "pending", sha, err)
@@ -1110,6 +1133,30 @@ func releaseWithText(ctx context.Context, env *Env, id, reason, text string) (*R
 	}
 	env.event("release", id, "ref_delete", out.Outcome, sha, nil)
 	return out, nil
+}
+
+// replayRelease reports whether id carries the bops:released comment of op,
+// and if so fills out as that release's answer. A failed read is a warning;
+// the caller then answers as it would have without op ids.
+func (e *Env) replayRelease(ctx context.Context, id, op string, out *ReleaseOut) bool {
+	rec, err := e.findOp(ctx, id, evReleased, op)
+	if err != nil {
+		out.Warnings = append(out.Warnings, "earlier releases not checked for op "+op+": "+lock.Scrub(err.Error()))
+		return false
+	}
+	if rec == nil {
+		return false
+	}
+	if rec.fields["reason"] != out.Reason {
+		// The same op id with another reason is not this release.
+		out.Warnings = append(out.Warnings, "op "+op+" was recorded with reason "+rec.fields["reason"]+", not "+out.Reason)
+		return false
+	}
+	out.Outcome, out.Replayed, out.Detail = OutcomeReleased, true, replayNote(op)
+	e.event("release", id, "op", "replayed", "", nil)
+	// The first run's ledger push may have failed: publish again.
+	e.republish(ctx, &out.Warnings)
+	return true
 }
 
 // refuseUnlanded refuses a done release of a bead with no landed record. Such
@@ -1193,7 +1240,7 @@ func (e *Env) verifyHold(ctx context.Context, id, reason string, out *ReleaseOut
 // in_progress until sweep closes it; every other reason returns it to a status
 // bd ready understands. A non-empty text follows the event line in the same
 // comment. It pushes only when publish is set.
-func (e *Env) releaseDisplay(ctx context.Context, id, reason, text string, publish bool) error {
+func (e *Env) releaseDisplay(ctx context.Context, id, reason, text, op string, publish bool) error {
 	cur, err := e.show(ctx, id)
 	if err != nil {
 		return err
@@ -1219,7 +1266,10 @@ func (e *Env) releaseDisplay(ctx context.Context, id, reason, text string, publi
 			return err
 		}
 	}
-	ev := fmt.Sprintf("bops:released run=%s reason=%s", e.Run.ID, reason)
+	// Always written, even when an earlier comment carries op: that may be
+	// an earlier hold's release by this run, whose record must not stand in
+	// for this one. A release that stopped part way may so write it twice.
+	ev := fmt.Sprintf("%s run=%s reason=%s op=%s", evReleased, e.Run.ID, reason, op)
 	if err := e.addReleasedComment(ctx, id, ev, text); err != nil {
 		return err
 	}

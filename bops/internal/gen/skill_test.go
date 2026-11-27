@@ -55,9 +55,9 @@ func TestCCSkillReferencesTheSkillCommands(t *testing.T) {
 	}
 	for _, want := range []string{
 		"| `bops claim [<id>] [--force] [--next] [--resume]` | write |",
-		"| `bops note <id> [--file <path>]` | write |",
-		"| `bops release <id> --reason <reason> [--file <path>\\|-]` | write |",
-		"| `bops land <id> [--forge] --ref <ref> --sha <sha> [--verify]` | write |",
+		"| `bops note <id> [--op-id] [--file <path>]` | write |",
+		"| `bops release <id> [--op-id] --reason <reason> [--file <path>\\|-]` | write |",
+		"| `bops land <id> [--forge] [--op-id] --ref <ref> --sha <sha> [--verify]` | write |",
 		"**3** negative verdict on a write",
 	} {
 		if !strings.Contains(ref, want) {

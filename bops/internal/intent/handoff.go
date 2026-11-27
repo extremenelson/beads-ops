@@ -148,7 +148,10 @@ func lastNote(comments []bdComment, run string) (paragraph, by string) {
 // noteRun is the run a bops note's header names.
 func noteRun(text string) string {
 	header, _, _ := strings.Cut(strings.TrimPrefix(text, notePrefix), "\n")
-	return strings.TrimSpace(header)
+	if f := strings.Fields(header); len(f) > 0 {
+		return f[0] // op=<id> may follow the run
+	}
+	return ""
 }
 
 // handoffParagraph is text's last NEXT: or BLOCKER: paragraph, or else its
