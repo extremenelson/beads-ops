@@ -15,18 +15,29 @@ Why this beats the alternatives:
 - Dolt stores issue history under `refs/dolt/data` on the same git remote the code uses. There is nothing new to host, secure, back up, or keep awake. Offline work is native: every clone is a full replica.
 - Hash IDs (`bd-a1b2`) mean concurrent creates on different machines never collide. Dolt merges at the cell level, so two people only conflict when they edit the *same field of the same issue* — which the claim discipline in `PROCESS.md` makes rare.
 - `bd sync` (new in the 0.60 line) is the whole multi-machine loop in one command with machine-readable exit codes: pull → positive conflict detection → recompute `is_blocked` → push with bounded retries. It never auto-resolves anything it can't settle convergently; it exits 2 and waits for a human. That is exactly the safety property you want when agents are the ones running it.
-- Embedded mode needs no `dolt` binary on the machine and has zero ops surface. Server mode is only required for *concurrent writers on the same machine*, which this topology doesn't create.
+- Embedded mode needs no `dolt` binary on the machine and has zero ops surface. `/bead-loop` does put up to 4 concurrent writers on one machine's store; on bd 1.3.4 they mostly queue for it rather than fail (see the limits below), so that alone does not call for server mode.
+
+### Measured limits
+
+From [research/2026-11-ledger-contention.md](research/2026-11-ledger-contention.md): agents looping claim, note, land and release on one Mac, each "machine" a separate clone with its own embedded store, against a local remote, some runs with 400 ms added to every git network call.
+
+- **Agents per machine: at most 4** (more were not measured). At 1 machine x 4 agents on a fast remote nothing failed and no push was rejected, but every bd call queues on the one store: claim p50 12 s, p95 45 s (one agent alone: 4 s). With 400 ms of latency the same 4 agents hit 4 `database is locked by another dolt process` errors in 503 bd calls, and 1 claim in 20 failed on one (before taking the claim ref, so the bead stayed free).
+- **Total concurrent writers: at most 8** (2 machines x 4 agents), **on a fast remote**. There 44% of ledger pushes are rejected non-fast-forward and retried, claim p50 is 18 s and p95 reaches bops's 60 s command budget, and 6% of claims come back `ledger_pending` (the claim holds; a later push or `bops sync` publishes it). At 12 writers 19% and at 16 writers 34% of claims come back `ledger_pending`.
+- **On a hosted remote, plan on one machine of 4 agents** plus occasional single sessions elsewhere, not two full `/bead-loop` machines. Real network latency was not measured; with 400 ms per git call, 2 x 4 left 25% of claims `ledger_pending`, past the switch condition. A run with two real machines (the research note says how) can raise this.
+- 3 developers x 3 machines x 4 agents (~36 writers) is far past what works on option 1.
+
+**Switch condition.** Move off option 1 (to option 3, or to whatever the push-contention design lands) when any of these holds: more than 8 writers will run at once, or more than one `/bead-loop` machine on a hosted remote (single sessions elsewhere do not count); more than 1 claim in 10 leaves its ledger write pending; or the median claim takes more than 30 s. Each machine's `$XDG_STATE_HOME/bops/<hash>/events.jsonl` records the pending claims: `cat events.jsonl.1 events.jsonl 2>/dev/null | jq -r 'select(.command=="claim" and .step=="ledger") | .outcome' | sort | uniq -c` counts `written` against `pending`.
 
 ### Ranked alternatives and when to switch
 
 | # | Option | Pick it instead when |
 |---|---|---|
-| 2 | **Shared Dolt server per developer machine** (`bd init --server` or `dolt.shared-server: true`), still syncing to git origin | A developer runs Hermes + Kestrel + Claude Code *simultaneously* on one box and hits `database is locked`. Switch that machine only; the remote model is unchanged. |
-| 3 | **Central team Dolt server** (`dolt sql-server` on a VPS/LAN host, every clone in server mode pointing at it; or the experimental `beads-team-server`) | You need sub-second visibility of each other's claims (true real-time dispatch across people), or you have >~8 active writers and push races start exhausting `bd sync` retries (exit 3) routinely. Cost: a service to run, TLS, credentials file, no offline writes. |
+| 2 | **Shared Dolt server per developer machine** (`bd init --server` or `dolt.shared-server: true`), still syncing to git origin | A developer runs Hermes + Kestrel + Claude Code *simultaneously* on one box and hits `database is locked`. Switch that machine only; the remote model is unchanged. bd 1.3.4 mostly queues 4 `/bead-loop` agents rather than failing them (a few `database is locked` errors under latency), so this buys local latency, not cross-machine headroom; it was not measured. |
+| 3 | **Central team Dolt server** (`dolt sql-server` on a VPS/LAN host, every clone in server mode pointing at it; or the experimental `beads-team-server`) | You need sub-second visibility of each other's claims (true real-time dispatch across people), or the switch condition under [Measured limits](#measured-limits) holds: more than 8 concurrent writers (more than one `/bead-loop` machine on a hosted remote), or more than 1 claim in 10 left `ledger_pending`. Cost: a service to run, TLS, credentials file, no offline writes. |
 | 4 | **DoltHub / S3 remote** instead of git origin | The git host blocks custom refs or you want issue history separate from code access control (e.g., contractors see issues but not source). |
 | 5 | **Federation** (`bd federation add-peer`, peer-to-peer towns) | Two *independent* projects with their own graphs need to exchange issues. Not for one project. Criss-cross merges can conflict under Dolt 2.6; avoid unless the organizational boundary is real. |
 
-Don't pick 3 pre-emptively "for scale." Option 1 degrades gracefully into exit-3 retries long before it breaks, and that is the signal to move.
+Don't pick 3 pre-emptively "for scale." Option 1 degrades gracefully: under bops, ownership stayed correct at 16 writers and only the ledger lagged (`ledger_pending`). That lag, not a broken claim, is the signal to move.
 
 ---
 
