@@ -241,9 +241,13 @@ type NextOut struct {
 type NextOpts struct {
 	N                 int
 	IncludeUnworkable bool
+	// Local skips refreshing the claim refs from the lock remote, for a caller
+	// that has just fetched them (session-start, after its sync).
+	Local bool
 }
 
-// Next implements SPEC.md §5: filter `bd ready` through Lint, then order.
+// Next implements SPEC.md §5: filter `bd ready` through Lint and the claim
+// refs (W14), then order.
 func Next(ctx context.Context, env *Env, o NextOpts) (*NextOut, error) {
 	if o.N <= 0 {
 		o.N = 3
@@ -283,6 +287,14 @@ func Next(ctx context.Context, env *Env, o NextOpts) (*NextOut, error) {
 	if env.LockOff {
 		out.Warnings = append(out.Warnings, lock.OffWarning)
 	} else if env.Lock != nil {
+		// The ledger lags the refs: a bead another machine has claimed reads
+		// open here until its ledger push lands and this clone pulls. One
+		// fetch brings every claim ref, with its holder, so W14 skips it.
+		if !o.Local {
+			if err := env.Lock.Fetch(ctx); err != nil {
+				out.Warnings = append(out.Warnings, "claim refs not refreshed, W14 uses the last sync's copy: "+err.Error())
+			}
+		}
 		seen, err := env.Lock.Seen(ctx)
 		if err != nil {
 			out.Warnings = append(out.Warnings, "could not read local claims: "+err.Error())

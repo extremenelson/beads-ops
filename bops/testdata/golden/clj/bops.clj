@@ -28,7 +28,7 @@
   "Per command: whether it takes the bead id, how it takes text (:required
    on stdin, :optional on stdin with --file -), and each option's kind."
   {"next" {:id? false :text nil :opts {:caps :list, :include-unworkable :bool, :n :value, :pool :value} :required #{}}
-   "claim" {:id? true :text nil :opts {:force :bool, :resume :bool} :required #{}}
+   "claim" {:id? :optional :text nil :opts {:force :bool, :next :bool, :resume :bool} :required #{}}
    "note" {:id? true :text :required :opts {} :required #{}}
    "renew" {:id? true :text nil :opts {} :required #{}}
    "release" {:id? true :text :optional :opts {:reason :value} :required #{:reason}}
@@ -49,7 +49,7 @@
   "Malli schema per command of a result from a run that completed (exit 0, or
    3 for a negative verdict): the envelope plus the command's own output."
   {"next" [:map [:candidates [:vector [:map [:blocked_by_gates [:vector :string]] [:id :string] [:parent {:optional true} [:maybe :string]] [:priority :int] [:title :string] [:type :string] [:why [:vector :string]] [:why_not [:vector :string]] [:workable :boolean]]]] [:code {:optional true} [:maybe :string]] [:command :string] [:contract :int] [:error {:optional true} [:maybe :string]] [:excluded_count :int] [:ledger_revision :string] [:ok :boolean] [:warnings {:optional true} [:maybe [:vector :string]]]]
-   "claim" [:map [:age_minutes {:optional true} [:maybe :int]] [:claimed_at {:optional true} [:maybe :string]] [:code {:optional true} [:maybe :string]] [:command :string] [:contract :int] [:error {:optional true} [:maybe :string]] [:holder {:optional true} [:maybe :map]] [:id :string] [:ledger_pending {:optional true} [:maybe :boolean]] [:ok :boolean] [:outcome :string] [:readback_ok {:optional true} [:maybe :boolean]] [:reason {:optional true} [:maybe :string]] [:ref_pending {:optional true} [:maybe :boolean]] [:retry {:optional true} [:maybe :string]] [:run :string] [:side_effects {:optional true} [:maybe :string]] [:stale_minutes {:optional true} [:maybe :int]] [:warnings {:optional true} [:maybe [:vector :string]]]]
+   "claim" [:map [:age_minutes {:optional true} [:maybe :int]] [:claimed_at {:optional true} [:maybe :string]] [:code {:optional true} [:maybe :string]] [:command :string] [:contract :int] [:error {:optional true} [:maybe :string]] [:holder {:optional true} [:maybe :map]] [:id :string] [:ledger_pending {:optional true} [:maybe :boolean]] [:next_candidate {:optional true} [:maybe :string]] [:ok :boolean] [:outcome :string] [:readback_ok {:optional true} [:maybe :boolean]] [:reason {:optional true} [:maybe :string]] [:ref_pending {:optional true} [:maybe :boolean]] [:retry {:optional true} [:maybe :string]] [:run :string] [:side_effects {:optional true} [:maybe :string]] [:skipped {:optional true} [:maybe [:vector :map]]] [:stale_minutes {:optional true} [:maybe :int]] [:warnings {:optional true} [:maybe [:vector :string]]]]
    "note" [:map [:code {:optional true} [:maybe :string]] [:command :string] [:comment_id {:optional true} [:maybe :string]] [:contract :int] [:error {:optional true} [:maybe :string]] [:holder {:optional true} [:maybe :map]] [:id :string] [:ok :boolean] [:outcome :string] [:reason {:optional true} [:maybe :string]] [:saved_to {:optional true} [:maybe :string]] [:warnings [:vector :string]]]
    "renew" [:map [:beads [:vector [:map [:code {:optional true} [:maybe :string]] [:holder {:optional true} [:maybe :map]] [:id :string] [:outcome [:enum "renewed" "lost" "refused" "unreachable" "error"]] [:reason {:optional true} [:maybe :string]]]]] [:code {:optional true} [:maybe :string]] [:command :string] [:contract :int] [:error {:optional true} [:maybe :string]] [:ok :boolean] [:warnings [:vector :string]]]
    "release" [:map [:code {:optional true} [:maybe :string]] [:command :string] [:contract :int] [:detail {:optional true} [:maybe :string]] [:error {:optional true} [:maybe :string]] [:holder {:optional true} [:maybe :map]] [:id :string] [:ledger_pending {:optional true} [:maybe :boolean]] [:ok :boolean] [:outcome :string] [:reason :string] [:ref_pending {:optional true} [:maybe :boolean]] [:saved_to {:optional true} [:maybe :string]] [:warnings {:optional true} [:maybe [:vector :string]]]]
@@ -91,15 +91,17 @@
         extra (remove (conj (set (keys kinds)) :text) (keys opts))]
     (when (seq extra)
       (throw (ex-info (str "bops " command " takes no option " (str/join ", " extra)) {:command command :options extra})))
-    (when (and id? (str/blank? id))
+    (when (and (true? id?) (str/blank? id))
       (throw (ex-info (str "bops " command " needs a bead id") {:command command})))
+    (when (and id? (string? id) (str/starts-with? id "-"))
+      (throw (ex-info (str "bops " command ": a bead id must not start with -") {:command command :id id})))
     (when (and (= :required text) (str/blank? (:text opts)))
       (throw (ex-info (str "bops " command " needs text") {:command command})))
     (doseq [k required]
       (when (nil? (get opts k))
         (throw (ex-info (str "bops " command " needs " k) {:command command :option k}))))
     (-> [command]
-        (cond-> id? (conj id))
+        (cond-> (and id? (not (str/blank? id))) (conj id))
         (into (mapcat (fn [[k kind]]
                         (let [v (get opts k) flag (str "--" (name k))]
                           (cond
@@ -138,7 +140,7 @@
   ([cfg opts] (call cfg "next" nil opts)))
 
 (defn claim
-  "Take this bead for this run. Runs `bops claim`; returns {:exit :doc :err}.\n   opts: :force (bool); :resume (bool)."
+  "Take this bead for this run. Runs `bops claim`; returns {:exit :doc :err}. id may be nil.\n   opts: :force (bool); :next (bool); :resume (bool)."
   ([cfg id] (claim cfg id {}))
   ([cfg id opts] (call cfg "claim" id opts)))
 

@@ -41,7 +41,8 @@ func TestDocsArgsAsTheCommandsTakeThem(t *testing.T) {
 		return s
 	}
 	for _, c := range []struct{ cmd, want string }{
-		{"claim", "| `<id>` (positional) | string |"},
+		{"claim", "| `<id>` (positional) | string? |"},
+		{"note", "| `<id>` (positional) | string |"},
 		{"note", "| `--file <path>` |"},
 		{"release", "| `--file <path>` \\| `--file -` |"},
 		{"release", "| `--reason` | enum:"},

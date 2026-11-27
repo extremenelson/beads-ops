@@ -103,7 +103,7 @@ func mcpArgv(c *manifest.Command, args map[string]any) ([]string, *string, error
 		text := strings.HasPrefix(a.Type, "stdin|file")
 		optional := strings.HasSuffix(a.Type, "?") || a.Type == "bool" || a.Default != nil
 		if !given {
-			if an == "id" || (text && !optional) || (!text && !optional) {
+			if !optional {
 				return nil, nil, fmt.Errorf("bops %s needs %s", c.Name, an)
 			}
 			continue
@@ -113,6 +113,9 @@ func mcpArgv(c *manifest.Command, args map[string]any) ([]string, *string, error
 			s, ok := v.(string)
 			if !ok || s == "" {
 				return nil, nil, fmt.Errorf("bops %s: id must be a non-empty string", c.Name)
+			}
+			if strings.HasPrefix(s, "-") { // the command line would read it as a flag, such as --next
+				return nil, nil, fmt.Errorf("bops %s: id must not start with -", c.Name)
 			}
 			argv = append(argv, s)
 		case text:

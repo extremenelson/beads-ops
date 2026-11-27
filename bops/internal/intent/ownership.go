@@ -385,7 +385,11 @@ type ClaimOut struct {
 	StaleMinutes  int       `json:"stale_minutes,omitempty"`
 	Retry         string    `json:"retry,omitempty"`
 	SideEffects   string    `json:"side_effects,omitempty"`
-	Warnings      []string  `json:"warnings,omitempty"`
+	// NextCandidate is, on lost or refused, the bead `next` would offer now.
+	NextCandidate string `json:"next_candidate,omitempty"`
+	// Skipped lists, for claim --next, the candidates lost or refused first.
+	Skipped  []ClaimSkip `json:"skipped,omitempty"`
+	Warnings []string    `json:"warnings,omitempty"`
 }
 
 // Negative reports a run that worked and an answer of no.
@@ -412,7 +416,16 @@ func (o *ClaimOut) fail(err error) (*ClaimOut, error) {
 //	                                           write
 //
 // Every path, --force included, starts by taking the bead's lock (bops-yph).
+// A lost or refused claim names the bead `next` would offer instead.
 func Claim(ctx context.Context, env *Env, id string, force bool) (*ClaimOut, error) {
+	out, err := claimOne(ctx, env, id, force)
+	if err == nil && out != nil && out.Negative() {
+		out.NextCandidate = env.nextCandidate(ctx, map[string]bool{id: true}, &out.Warnings)
+	}
+	return out, err
+}
+
+func claimOne(ctx context.Context, env *Env, id string, force bool) (*ClaimOut, error) {
 	if err := lock.ValidateID(id); err != nil {
 		return nil, err
 	}

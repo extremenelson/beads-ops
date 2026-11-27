@@ -32,6 +32,9 @@ func TestMCPArgv(t *testing.T) {
 		{"release", map[string]any{"id": "x-1", "reason": "done", "text": "why"}, []string{"release", "x-1", "--reason=done", "--file", "-", "--json"}, "why"},
 		{"release", map[string]any{"id": "x-1", "reason": "done"}, []string{"release", "x-1", "--reason=done", "--json"}, ""},
 		{"version", map[string]any{}, []string{"version", "--json"}, ""},
+		// claim's id is optional: claim --next takes none.
+		{"claim", map[string]any{"next": true}, []string{"claim", "--next=true", "--json"}, ""},
+		{"claim", map[string]any{"id": "x-1"}, []string{"claim", "x-1", "--json"}, ""},
 		// An explicit null --only is an empty list (refused), never "no filter".
 		{"reap", map[string]any{"dry-run": false, "only": nil}, []string{"reap", "--dry-run=false", "--only=", "--json"}, ""},
 		{"reap", map[string]any{"dry-run": false}, []string{"reap", "--dry-run=false", "--json"}, ""},
@@ -59,6 +62,7 @@ func TestMCPArgv(t *testing.T) {
 		{"next", map[string]any{"n": 2.5}, "must be an integer"},
 		{"next", map[string]any{"caps": []any{"a,b"}}, "without commas"},
 		{"deps", map[string]any{"id": 7}, "non-empty string"},
+		{"claim", map[string]any{"id": "--next"}, "must not start with -"},
 	} {
 		if _, _, err := mcpArgv(cmd(c.cmd), c.args); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s %v: err %v, want %q", c.cmd, c.args, err, c.want)

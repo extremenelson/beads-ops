@@ -98,7 +98,7 @@ Every ref write follows one protocol, inside `internal/lock`:
 
 The journal entry is written before the push, so a crash or a lost reply is settled at the next `sync` by reading the ref, rather than guessed. **The ref decides; the ledger displays.** No ownership decision reads the assignee or labels, so a stale display can't cause a double claim.
 
-`next` doesn't hit the network: it reads the copies of claim refs the last `sync` fetched into `refs/bops/seen/*` (lint rule W14). It can be out of date; `claim` is what decides.
+`next` fetches every claim ref into `refs/bops/seen/*` in one round trip and skips the beads another run holds (lint rule W14), because the ledger lags the refs: a bead claimed on another machine reads open here until that ledger push lands and this clone pulls. Offline it warns and uses the last `sync`'s copy. It can still be out of date by the time you claim; `claim` is what decides, and `claim --next` walks on to the next candidate when it loses.
 
 Landing and closing are separate on purpose. `release --reason done` rewrites the ref to `state=landing` instead of deleting it, so nobody else can claim a bead whose PR is still open. Only `sweep` (once the forge says the PR merged) or a human closes it.
 

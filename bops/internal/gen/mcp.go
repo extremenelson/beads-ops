@@ -42,7 +42,7 @@ func MCPTools(m *manifest.Manifest, enableWrites bool) []MCPTool {
 			p := mcpProperty(an, a)
 			props[an] = p
 			switch k := cljArgKind(an, a); {
-			case k == "id", k == "text", k == "value" && cljRequired(a):
+			case k == "id" && !strings.HasSuffix(a.Type, "?"), k == "text", k == "value" && cljRequired(a):
 				required = append(required, an)
 			}
 		}
