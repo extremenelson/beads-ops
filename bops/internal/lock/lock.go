@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 	"time"
@@ -122,6 +123,7 @@ func (l *Lock) RemoteName() string { return l.remote() }
 type Result struct {
 	Outcome  Outcome
 	SHA      string   // the ref's value when Owned
+	Gen      int      // the generation written when Owned; 0 if unrecorded
 	Holder   *Ref     // who holds it when Lost, if that could be read
 	Warnings []string // a failed update of the local seen copy, for example
 }
@@ -154,7 +156,8 @@ func (l *Lock) Replace(ctx context.Context, id, expected, state string) (*Result
 	if err := ValidateID(id); err != nil {
 		return nil, err
 	}
-	sha, err := l.commit(ctx, state)
+	gen, genOK := l.nextGen(ctx, expected)
+	sha, err := l.commit(ctx, state, gen)
 	if err != nil {
 		return nil, err
 	}
@@ -165,7 +168,7 @@ func (l *Lock) Replace(ctx context.Context, id, expected, state string) (*Result
 	for attempt := 0; ; attempt++ {
 		st, out, pushErr := l.push(ctx, ref, sha, expected)
 		if st == pushed {
-			return l.won(ctx, id, sha, expected)
+			return l.won(ctx, id, sha, expected, gen, genOK)
 		}
 		live, found, err := l.Live(ctx, id)
 		if err != nil {
@@ -173,7 +176,7 @@ func (l *Lock) Replace(ctx context.Context, id, expected, state string) (*Result
 		}
 		switch {
 		case found && live == sha:
-			return l.won(ctx, id, sha, expected) // the reply was lost, not the push
+			return l.won(ctx, id, sha, expected, gen, genOK) // the reply was lost, not the push
 		case found && live == expected:
 			return nil, l.failure(out, pushErr) // nothing changed and nobody else wrote
 		case found:
@@ -193,8 +196,9 @@ func (l *Lock) Replace(ctx context.Context, id, expected, state string) (*Result
 }
 
 // won records a successful write. If that record cannot be saved a new claim
-// would have an owner nobody knows about, so its ref is taken back.
-func (l *Lock) won(ctx context.Context, id, sha, expected string) (*Result, error) {
+// would have an owner nobody knows about, so its ref is taken back. genOK is
+// false when the replaced commit could not be read, so gen is unrecorded.
+func (l *Lock) won(ctx context.Context, id, sha, expected string, gen int, genOK bool) (*Result, error) {
 	if err := l.Journal.Confirm(id, sha); err != nil {
 		if expected != "" {
 			return nil, &Error{Code: CodeHoldNotRecorded, SHA: sha, Err: err}
@@ -205,7 +209,10 @@ func (l *Lock) won(ctx context.Context, id, sha, expected string) (*Result, erro
 		}
 		return nil, &Error{Code: CodeHoldNotRecorded, SHA: sha, Err: err}
 	}
-	res := &Result{Outcome: Owned, SHA: sha}
+	res := &Result{Outcome: Owned, SHA: sha, Gen: gen}
+	if !genOK {
+		res.Warnings = append(res.Warnings, "claim generation not recorded: the replaced claim's commit could not be read here as a claim, or is at the largest generation")
+	}
 	if _, err := l.Git.Run(ctx, Cmd{Args: []string{"update-ref", seenRoot + id, sha}}); err != nil {
 		res.Warnings = append(res.Warnings, "local seen copy not updated: "+err.Error())
 	}
@@ -386,12 +393,42 @@ func (l *Lock) seen(ctx context.Context, pattern string) ([]Ref, error) {
 	return refs, nil
 }
 
-func (l *Lock) commit(ctx context.Context, state string) (string, error) {
+// nextGen is the generation of a write leasing on expected: 1 for a new
+// claim, expected's own for a write by the run it names (a refresh, a
+// landing), and one more for a takeover by another run. Callers normally have
+// expected's commit locally (they wrote it, or Read fetched it). When it is
+// not, cannot be read or parsed, or is at the largest generation, the
+// generation is 0, unrecorded, rather than a guess, and ok is false; the lease
+// on expected still decides the write. A ref from a bops before generations
+// reads as 0, so its run's writes stay 0 and a takeover of it writes 1. The value is display, never an ownership decision:
+// anyone with push access can write any gen=.
+func (l *Lock) nextGen(ctx context.Context, expected string) (gen int, ok bool) {
+	if expected == "" {
+		return 1, true
+	}
+	out, err := l.Git.Run(ctx, Cmd{Args: []string{"cat-file", "commit", expected}})
+	if err != nil {
+		return 0, false
+	}
+	_, body, _ := strings.Cut(out.Stdout, "\n\n")
+	m := ParseMessage(body)
+	switch {
+	case m.Run == "":
+		return 0, false // oversized or not a claim: nothing to count from
+	case m.Run == l.Run:
+		return m.Gen, true
+	case m.Gen == math.MaxInt:
+		return 0, false // no later generation can be written
+	}
+	return m.Gen + 1, true
+}
+
+func (l *Lock) commit(ctx context.Context, state string, gen int) (string, error) {
 	nonce := make([]byte, 16)
 	if _, err := rand.Read(nonce); err != nil {
 		return "", &Error{Code: CodeGit, Err: err}
 	}
-	body, err := Message{Run: l.Run, Actor: l.Actor, Machine: l.Machine, State: state, Nonce: hex.EncodeToString(nonce), At: l.now()}.encode()
+	body, err := Message{Run: l.Run, Actor: l.Actor, Machine: l.Machine, State: state, Nonce: hex.EncodeToString(nonce), At: l.now(), Gen: gen}.encode()
 	if err != nil {
 		return "", err
 	}

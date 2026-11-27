@@ -3,9 +3,11 @@ package lock
 import (
 	"context"
 	"errors"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -719,5 +721,124 @@ func TestMessageMachine(t *testing.T) {
 	}
 	if _, err := (Message{Machine: "a\nrun=forged"}).encode(); CodeOf(err) != CodeBadMessage {
 		t.Errorf("err = %v", err)
+	}
+}
+
+// gen= is written when recorded and read back; a ref from an older bops has
+// none, and anything but a positive decimal reads as unrecorded.
+func TestMessageGeneration(t *testing.T) {
+	at := time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)
+	body, err := Message{Run: "r", Actor: "a", State: StateHeld, Nonce: "n", At: at, Gen: 3}.encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := ParseMessage(body); m.Gen != 3 || m.Run != "r" || m.State != StateHeld {
+		t.Errorf("round trip = %+v from %q", m, body)
+	}
+	old, _ := Message{Run: "r", Actor: "a", State: StateHeld, Nonce: "n", At: at}.encode()
+	if strings.Contains(old, "gen=") {
+		t.Errorf("unrecorded generation written: %q", old)
+	}
+	for _, v := range []string{"0", "-1", "007", "+2", "x", "", "99999999999999999999999"} {
+		if m := ParseMessage("run=r\ngen=" + v + "\n"); m.Gen != 0 {
+			t.Errorf("gen=%s read as %d", v, m.Gen)
+		}
+	}
+	if m := ParseMessage("gen=2\ngen=9\n"); m.Gen != 2 {
+		t.Errorf("first value should win: %d", m.Gen)
+	}
+}
+
+// A claim starts at generation 1, keeps it through its own run's writes and
+// goes up by one with each takeover, so a superseded holder can see that a
+// later claim replaced its own.
+func TestGenerationCountsTakeovers(t *testing.T) {
+	r := bare(t)
+	a, b := client(t, r, "A"), client(t, r, "B")
+	res, err := a.lock.Acquire(ctx, "x-1")
+	if err != nil || res.Outcome != Owned || res.Gen != 1 {
+		t.Fatalf("acquire: %+v, %v", res, err)
+	}
+	if res, err = a.lock.Replace(ctx, "x-1", res.SHA, StateHeld); err != nil || res.Gen != 1 {
+		t.Fatalf("refresh: %+v, %v", res, err)
+	}
+	ref, err := b.lock.Read(ctx, "x-1") // a takeover reads the ref first
+	if err != nil || ref == nil || ref.Gen != 1 {
+		t.Fatalf("read: %+v, %v", ref, err)
+	}
+	if res, err = b.lock.Replace(ctx, "x-1", ref.SHA, StateHeld); err != nil || res.Outcome != Owned || res.Gen != 2 {
+		t.Fatalf("takeover: %+v, %v", res, err)
+	}
+	if res, err = b.lock.Replace(ctx, "x-1", res.SHA, StateLanding); err != nil || res.Gen != 2 {
+		t.Fatalf("landing: %+v, %v", res, err)
+	}
+	// The superseded holder's lease fails and names the later generation.
+	lost, err := a.lock.Replace(ctx, "x-1", a.jr.entries["x-1"].SHA, StateHeld)
+	if err != nil || lost.Outcome != Lost || lost.Holder == nil || lost.Holder.Run != "B" || lost.Holder.Gen != 2 {
+		t.Fatalf("superseded holder: %+v, %v", lost, err)
+	}
+	if ref, err = a.lock.Read(ctx, "x-1"); err != nil || ref.Gen != 2 || ref.State != StateLanding {
+		t.Errorf("ref = %+v, %v", ref, err)
+	}
+}
+
+// A ref written by a bops before generations has no gen=: its own run's
+// writes keep it unrecorded, and a takeover of it starts the count at 1. A
+// predecessor whose commit is not here is unrecorded rather than guessed.
+func TestGenerationOfAnOlderRef(t *testing.T) {
+	r := bare(t)
+	a, b := client(t, r, "A"), client(t, r, "B")
+	tree := sh(t, a.dir, "hash-object", "-w", "-t", "tree", "/dev/null")
+	cmd := exec.Command("git", "commit-tree", tree)
+	cmd.Dir, cmd.Stdin = a.dir, strings.NewReader("run=A\nactor=actor-A\nstate=held\nnonce=n\nat=2026-11-20T00:00:00Z\n")
+	cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=bops", "GIT_AUTHOR_EMAIL=bops@invalid", "GIT_COMMITTER_NAME=bops", "GIT_COMMITTER_EMAIL=bops@invalid")
+	raw, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := strings.TrimSpace(string(raw))
+	sh(t, a.dir, "push", "-q", "origin", old+":refs/bops/claims/x-1")
+
+	res, err := a.lock.Replace(ctx, "x-1", old, StateHeld)
+	if err != nil || res.Outcome != Owned || res.Gen != 0 {
+		t.Fatalf("own write of an older ref: %+v, %v", res, err)
+	}
+	if res, err = b.lock.Replace(ctx, "x-1", res.SHA, StateHeld); err != nil || res.Outcome != Owned || res.Gen != 0 || len(res.Warnings) != 1 || !strings.Contains(res.Warnings[0], "generation not recorded") {
+		t.Fatalf("takeover of a commit not fetched: %+v, %v", res, err)
+	}
+	ref, err := a.lock.Read(ctx, "x-1")
+	if err != nil || ref == nil {
+		t.Fatalf("read: %+v, %v", ref, err)
+	}
+	if res, err = a.lock.Replace(ctx, "x-1", ref.SHA, StateHeld); err != nil || res.Outcome != Owned || res.Gen != 1 {
+		t.Fatalf("takeover of an unrecorded ref: %+v, %v", res, err)
+	}
+}
+
+// A predecessor that is not a readable claim (oversized here) or is at the
+// largest generation gives an unrecorded generation and a warning.
+func TestGenerationOfAnUnreadablePredecessor(t *testing.T) {
+	for name, body := range map[string]string{
+		"oversized": "run=B\nstate=held\n" + strings.Repeat("x", maxMessage) + "\n",
+		"largest":   "run=B\nstate=held\ngen=" + strconv.Itoa(math.MaxInt) + "\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := bare(t)
+			a := client(t, r, "A")
+			tree := sh(t, a.dir, "hash-object", "-w", "-t", "tree", "/dev/null")
+			cmd := exec.Command("git", "commit-tree", tree)
+			cmd.Dir, cmd.Stdin = a.dir, strings.NewReader(body)
+			cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@invalid", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@invalid")
+			raw, err := cmd.Output()
+			if err != nil {
+				t.Fatal(err)
+			}
+			old := strings.TrimSpace(string(raw))
+			sh(t, a.dir, "push", "-q", "origin", old+":refs/bops/claims/x-1")
+			res, err := a.lock.Replace(ctx, "x-1", old, StateHeld)
+			if err != nil || res.Outcome != Owned || res.Gen != 0 || len(res.Warnings) != 1 {
+				t.Fatalf("%+v, %v", res, err)
+			}
+		})
 	}
 }

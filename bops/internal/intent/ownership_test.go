@@ -3089,3 +3089,79 @@ func TestConcurrentResumesLeaveOneHolder(t *testing.T) {
 		}
 	}
 }
+
+// A claim carries generation 1 and claim --force writes 2. The holder it
+// superseded cannot land, note or release: each answers lost, names the
+// later generation, and writes nothing to the ledger.
+func TestForcedHolderIsFencedByTheLaterGeneration(t *testing.T) {
+	for _, cmd := range []string{"land", "note", "release"} {
+		t.Run(cmd, func(t *testing.T) {
+			a, b, bdA, _ := pair(t, "x-1")
+			if out := mustClaim(t, a, "x-1"); out.Generation != 1 {
+				t.Fatalf("first claim generation = %d", out.Generation)
+			}
+			later(b, 3*time.Hour)
+			if out := mustForce(t, b, "x-1"); out.Generation != 2 {
+				t.Fatalf("forced claim generation = %d", out.Generation)
+			}
+			bdA.calls = nil
+			var outcome string
+			var holder *intent.Holder
+			switch cmd {
+			case "land":
+				out, err := intent.Land(bg, a.env, "x-1", intent.LandOpts{Ref: "https://github.com/o/r/pull/1", SHA: "abc1234"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				outcome, holder = out.Outcome, out.Holder
+				if len(bdA.beads["x-1"].Metadata) != 0 {
+					t.Errorf("superseded holder landed: %s", bdA.beads["x-1"].Metadata)
+				}
+			case "note":
+				out, err := intent.Note(bg, a.env, "x-1", "late work\n\nNEXT: none")
+				if err != nil {
+					t.Fatal(err)
+				}
+				outcome, holder = out.Outcome, out.Holder
+				_ = os.Remove(out.SavedTo)
+			case "release":
+				out, err := intent.Release(bg, a.env, "x-1", "scope")
+				if err != nil {
+					t.Fatal(err)
+				}
+				outcome, holder = out.Outcome, out.Holder
+			}
+			if outcome != intent.OutcomeLost || holder == nil || holder.Run != "B" || holder.Generation != 2 {
+				t.Fatalf("outcome = %s, holder = %+v", outcome, holder)
+			}
+			if bdA.wrote("x-1") {
+				t.Errorf("superseded holder wrote: %v", bdA.calls)
+			}
+			if _, ok := a.store.Entry("x-1"); ok {
+				t.Error("hold should be dropped")
+			}
+		})
+	}
+}
+
+// claim --resume from another machine is a takeover by another run: it writes
+// the next generation, and the run it displaced answers lost naming it.
+func TestResumeWritesTheNextGeneration(t *testing.T) {
+	remote := bareRemote(t)
+	bdA, bdB := newBD(), newBD()
+	bdA.add("x-1")
+	bdB.add("x-1")
+	a := clientOn(t, remote, "A", bdA, "laptop")
+	if out := mustClaim(t, a, "x-1"); out.Generation != 1 {
+		t.Fatalf("claim generation = %d", out.Generation)
+	}
+	b := clientOn(t, remote, "B", bdB, "desktop")
+	out, err := intent.ClaimResume(bg, b.env, "x-1")
+	if err != nil || out.Outcome != intent.OutcomeClaimed || out.Generation != 2 {
+		t.Fatalf("resume: %+v, %v", out, err)
+	}
+	rel, err := intent.Release(bg, a.env, "x-1", "scope")
+	if err != nil || rel.Outcome != intent.OutcomeLost || rel.Holder == nil || rel.Holder.Generation != 2 {
+		t.Fatalf("displaced release: %+v, %v", rel, err)
+	}
+}

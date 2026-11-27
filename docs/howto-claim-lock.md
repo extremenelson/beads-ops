@@ -128,7 +128,9 @@ git log -1 --format=%B refs/bops/seen/shr-d10
 ```
 run=01M7AWP55YNR97RWZJ0TB1XQDK
 actor=alice
+machine=laptop
 state=held
+gen=1
 nonce=28d281cb2d746f70b5c63f8c7cc0134a
 at=2026-11-13T16:43:38Z
 ```

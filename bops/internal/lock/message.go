@@ -2,6 +2,7 @@ package lock
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -27,6 +28,11 @@ type Message struct {
 	State   string // StateHeld, StateLanding, or "" if unreadable
 	Nonce   string
 	At      time.Time // zero if unreadable
+	// Gen is the claim's generation: 1 for a new claim, unchanged by its own
+	// run's writes, one more for each takeover (claim --force, claim
+	// --resume). 0 means unrecorded: a ref written by a bops before
+	// generations, or one whose predecessor could not be read.
+	Gen int
 }
 
 // Ref is one claim as read from git.
@@ -46,7 +52,11 @@ func (m Message) encode() (string, error) {
 	if m.Machine != "" { // omitted when unknown, so the line is never empty
 		machine = "machine=" + m.Machine + "\n"
 	}
-	return fmt.Sprintf("run=%s\nactor=%s\n%sstate=%s\nnonce=%s\nat=%s\n", m.Run, m.Actor, machine, m.State, m.Nonce, m.At.UTC().Format(time.RFC3339)), nil
+	gen := ""
+	if m.Gen > 0 { // omitted when unrecorded, as machine is
+		gen = "gen=" + strconv.Itoa(m.Gen) + "\n"
+	}
+	return fmt.Sprintf("run=%s\nactor=%s\n%sstate=%s\n%snonce=%s\nat=%s\n", m.Run, m.Actor, machine, m.State, gen, m.Nonce, m.At.UTC().Format(time.RFC3339)), nil
 }
 
 // ParseMessage reads untrusted text and never fails. Unknown keys are ignored,
@@ -76,6 +86,10 @@ func ParseMessage(s string) Message {
 		case "state":
 			if v == StateHeld || v == StateLanding {
 				m.State = v
+			}
+		case "gen":
+			if n, err := strconv.Atoi(v); err == nil && n > 0 && v == strconv.Itoa(n) {
+				m.Gen = n
 			}
 		case "at":
 			if t, err := time.Parse(time.RFC3339, v); err == nil {

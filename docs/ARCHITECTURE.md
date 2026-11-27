@@ -78,7 +78,7 @@ Each package owns one outside system, so no other code has to know about it:
 
 ### The claim lock
 
-Ownership is one git ref per claimed bead, on the same remote the ledger already syncs through. No server, no new service. Its value is a commit on the empty tree whose message records `run`, `actor`, `state` (`held` or `landing`), a random `nonce` and `at`.
+Ownership is one git ref per claimed bead, on the same remote the ledger already syncs through. No server, no new service. Its value is a commit on the empty tree whose message records `run`, `actor`, `machine`, `state` (`held` or `landing`), `gen` (the claim's generation, one more after each takeover), a random `nonce` and `at`.
 
 A claim is a **create-only push**: `git push --force-with-lease=<ref>: <sha>:<ref>`. Git applies a lease atomically on the server, so when two machines push at once, exactly one wins. Measured on GitHub: one winner in 40 of 40 create races and 20 of 20 takeover races.
 
