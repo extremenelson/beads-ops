@@ -698,6 +698,9 @@ func TestReapDefaultsToADryRun(t *testing.T) {
 	if code := cmdReap(context.Background(), m, []string{"--bogus"}, true, stderr, stderr); code != exitUsage {
 		t.Errorf("unknown flag: exit %d, want %d", code, exitUsage)
 	}
+	if code := cmdReap(context.Background(), m, []string{"--forge", "bogus"}, true, stderr, stderr); code != exitUsage {
+		t.Errorf("unknown forge: exit %d, want %d", code, exitUsage)
+	}
 	// An empty --only (a preview that listed nothing) must not widen to every claim.
 	for _, only := range []string{"", ",", " , "} {
 		if code := cmdReap(context.Background(), m, []string{"--dry-run=false", "--only", only}, true, stderr, stderr); code != exitUsage {

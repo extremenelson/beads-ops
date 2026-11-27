@@ -199,7 +199,7 @@ Rules the bead alone cannot answer (W09 needs comments, W10 needs the whole list
 
 ## 7. Forge adapter
 
-Only `sweep` (and optionally `land --verify`) touch a forge. Adapter interface: `is_merged(ref) → true|false|unknown`, `ref_sha(ref)`. Implementations: `github` (`gh api`), `gitlab` (`glab api`), `none`. Selection: `--forge` when given, else `forge` in config (§10), else (`auto`) inferred from the host of `git remote get-url <lock.remote>` (default `origin`), github or gitlab by name and `none` otherwise or when that remote is missing. Inference reads `lock.remote` even under `lock.mode: none`: it is the remote the repo is configured to share through. Nothing else in `bops` knows what a PR is.
+Only `sweep`, `reap` and (optionally) `land --verify` touch a forge. Adapter interface: `is_merged(ref) → true|false|unknown`, `ref_sha(ref)`, and for `github` and `gitlab` `search_mrs(text) → [{url, title, branch, state: open|merged|closed}]` (at most 100; a full page is reported incomplete) in the repository named by the lock remote's URL, which `reap` uses for a stale claim with no other evidence, before and after its takeover, and treats a failure, a 20 s timeout or an incomplete page with no match as evidence. Implementations: `github` (`gh api`, and `gh pr list --search` for `search_mrs`), `gitlab` (`glab api`), `none`. Selection: `--forge` when given, else `forge` in config (§10), else (`auto`) inferred from the host of `git remote get-url <lock.remote>` (default `origin`), github or gitlab by name and `none` otherwise or when that remote is missing. Inference reads `lock.remote` even under `lock.mode: none`: it is the remote the repo is configured to share through. Nothing else in `bops` knows what a PR is.
 
 ## 8. Harness bindings (generated)
 
@@ -235,7 +235,7 @@ Precedence, lowest to highest: built-in defaults, `.bops.json` in the worktree r
 | `stale_minutes` | 120 | `next` (W06s), `claim --force`, `stale` and `status` when `--older-than` is not given, `session-start` |
 | `hold_minutes` | 120 | `next` and `lint` (W12) |
 | `pool`, `caps[]` | none | every command's run; `next --pool/--caps` override |
-| `forge` | `auto` | `land --verify` and `sweep` when `--forge` is not given (§7) |
+| `forge` | `auto` | `land --verify`, `sweep` and `reap` when `--forge` is not given (§7) |
 | `lint.strict`, `lint.disable[]` | `false`, none | loaded and validated; not applied yet (`lint --strict` is the flag). Only `.bops.json` may disable `W15`, so no layer undoes `blocking_labels` (bops-jmp) |
 | `note.require_next` | `false` | loaded and validated; not applied yet |
 | `lock.mode` (`BOPS_LOCK_MODE`) | `ref` | every command and `doctor`: `none` turns the claim lock off for a one-machine ledger (§3.0). Only `.bops.json` may set `none` |

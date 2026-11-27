@@ -684,16 +684,12 @@ func cmdReap(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 	older := fs.Duration("older-than", 0, "idle longer than this is stale (default stale_minutes)")
 	dryRun := fs.Bool("dry-run", true, "report what would be released without releasing it")
 	only := fs.String("only", "", "comma-separated bead ids: act on these only")
+	fs.String("forge", "auto", "auto|github|gitlab|none")
 	fs.Bool("json", false, "")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 || *older < 0 {
-		fmt.Fprintln(stderr, "usage: bops reap [--older-than 2h] [--dry-run=false] [--only <id>,<id>]")
+		fmt.Fprintln(stderr, "usage: bops reap [--older-than 2h] [--dry-run=false] [--only <id>,<id>] [--forge auto|github|gitlab|none]")
 		return exitUsage
 	}
-	env, store, err := newEnv(runstate.Read)
-	if err != nil {
-		return emit(m, "reap", asJSON, nil, err, stdout, stderr)
-	}
-	defer store.Close()
 	ids, ok := onlyIDs(fs, *only)
 	if !ok {
 		// An empty list (a preview that listed nothing, a failed expansion)
@@ -701,7 +697,21 @@ func cmdReap(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 		fmt.Fprintln(stderr, "bops reap: --only names no bead ids")
 		return exitUsage
 	}
-	out, err := intent.Reap(ctx, env, intent.ReapOpts{OlderThan: *older, DryRun: *dryRun, Only: ids})
+	cfg, err := loadConfig()
+	if err != nil {
+		return emit(m, "reap", asJSON, nil, err, stdout, stderr)
+	}
+	f, err := selectForge(ctx, fs, cfg, forge.Exec)
+	if err != nil {
+		fmt.Fprintln(stderr, "bops reap:", err)
+		return exitUsage
+	}
+	env, store, err := newEnv(runstate.Read)
+	if err != nil {
+		return emit(m, "reap", asJSON, nil, err, stdout, stderr)
+	}
+	defer store.Close()
+	out, err := intent.Reap(ctx, env, intent.ReapOpts{OlderThan: *older, DryRun: *dryRun, Only: ids, Forge: f})
 	code := emit(m, "reap", asJSON, out, err, stdout, stderr)
 	if !asJSON && out != nil {
 		reapDetails(stdout, out)
