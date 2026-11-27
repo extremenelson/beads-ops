@@ -215,7 +215,7 @@ func TestLiveNote(t *testing.T) {
 	}
 	found := false
 	for _, c := range comments {
-		found = found || (c.ID == out.CommentID && c.Text == "bops:note run=ITRUN\n"+text)
+		found = found || (c.ID == out.CommentID && c.Text == "bops:note run=ITRUN op="+out.OpID+"\n"+text)
 	}
 	if !found {
 		t.Errorf("note not stored verbatim: %+v", comments)

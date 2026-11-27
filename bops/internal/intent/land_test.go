@@ -43,9 +43,15 @@ func (f *fakeForge) RefSHA(context.Context, string) (string, error) {
 type metaRunner struct {
 	bdx.Fake
 	metadata string
+	event    string // the bops:landed comment
 }
 
 func (r *metaRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
+	if len(args) == 4 && args[0] == "comments" && args[1] == "add" && strings.HasPrefix(args[3], "bops:landed run=RUN1 ref="+prURL+" sha="+sha+" op=") {
+		r.Calls = append(r.Calls, args)
+		r.event = args[3]
+		return []byte(``), nil
+	}
 	if len(args) == 4 && args[0] == "update" && args[2] == "--metadata" && strings.HasPrefix(args[3], "@") {
 		r.Calls = append(r.Calls, args)
 		b, err := os.ReadFile(strings.TrimPrefix(args[3], "@"))
@@ -60,9 +66,9 @@ func (r *metaRunner) Run(ctx context.Context, args ...string) ([]byte, error) {
 
 func landRunner(show string) *metaRunner {
 	return &metaRunner{Fake: bdx.Fake{Responses: map[string][]byte{
-		"show x-1 --json": []byte(show),
-		"comments add x-1 bops:landed run=RUN1 ref=" + prURL + " sha=" + sha: []byte(``),
-		"dolt push": []byte(``),
+		"show x-1 --json":     []byte(show),
+		"comments x-1 --json": []byte(`[]`),
+		"dolt push":           []byte(``),
 	}}}
 }
 
@@ -152,13 +158,14 @@ func TestLandRefusesWhenRunDoesNotHoldBead(t *testing.T) {
 	if err != nil || out.Outcome != intent.OutcomeRefused || !out.Negative() {
 		t.Fatalf("%+v, %v", out, err)
 	}
-	if len(r.Calls) != 0 {
-		t.Errorf("must not write; calls = %v", r.Calls)
+	if w := writeCalls(r.Calls); len(w) != 0 {
+		t.Errorf("must not write; calls = %v", w)
 	}
 }
 
 func TestLandRepeatWritesNothing(t *testing.T) {
 	r := landRunner(heldWith(`{"bops":{"landed":[{"ref":"` + prURL + `","sha":"` + sha + `","run":"RUN1","at":"t0"}]}}`))
+	r.Responses["comments x-1 --json"] = []byte(`[{"text":"bops:landed run=RUN1 ref=` + prURL + ` sha=` + sha + `"}]`)
 	out, err := intent.Land(context.Background(), noteEnv(r), "x-1", intent.LandOpts{Ref: prURL, SHA: sha})
 	if err != nil {
 		t.Fatal(err)
@@ -166,8 +173,8 @@ func TestLandRepeatWritesNothing(t *testing.T) {
 	if out.Landed.At != "t0" {
 		t.Errorf("should return the original record: %+v", out.Landed)
 	}
-	if len(r.Calls) != 1 {
-		t.Errorf("repeat must not write; calls = %v", r.Calls)
+	if w := writeCalls(r.Calls); len(w) != 0 || !out.Replayed {
+		t.Errorf("repeat must not write; calls = %v, %+v", w, out)
 	}
 }
 
@@ -206,5 +213,18 @@ func TestLiveLand(t *testing.T) {
 	landed, err := got.Landed()
 	if err != nil || len(landed) != 1 || landed[0].Ref != prURL {
 		t.Fatalf("landed = %+v, %v", landed, err)
+	}
+}
+
+// Another run's landing of the same ref and sha is answered, but this run
+// posts no event for a record it did not write.
+func TestLandRepeatOfAnotherRunsLandingPostsNoEvent(t *testing.T) {
+	r := landRunner(heldWith(`{"bops":{"landed":[{"ref":"` + prURL + `","sha":"` + sha + `","run":"OTHER","at":"t0"}]}}`))
+	out, err := intent.Land(context.Background(), noteEnv(r), "x-1", intent.LandOpts{Ref: prURL, SHA: sha})
+	if err != nil || !out.Replayed || out.Landed.Run != "OTHER" {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if w := writeCalls(r.Calls); len(w) != 0 || r.event != "" {
+		t.Errorf("must not write; calls = %v", w)
 	}
 }

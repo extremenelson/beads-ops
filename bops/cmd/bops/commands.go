@@ -301,12 +301,16 @@ func noteText(file string, stdin io.Reader, stdinIsTerminal bool) (string, error
 	return string(b), err
 }
 
+// opIDUsage describes --op-id on note, release and land.
+const opIDUsage = "name this write, so running it again is a no-op that reports the earlier result (default: derived from the run and content)"
+
 func cmdNote(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
 	fs := newFlagSet("note", stderr)
 	file := fs.String("file", "", "read the note from this file instead of stdin")
+	opID := fs.String("op-id", "", opIDUsage)
 	fs.Bool("json", false, "")
 	if err := parseAnyOrder(fs, args); err != nil || fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: bops note <id> [--file <path>]   (text from stdin or --file)")
+		fmt.Fprintln(stderr, "usage: bops note <id> [--file <path>] [--op-id <id>]   (text from stdin or --file)")
 		return exitUsage
 	}
 	text, err := noteText(*file, os.Stdin, isTerminal(os.Stdin))
@@ -319,7 +323,7 @@ func cmdNote(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 		return emit(m, "note", asJSON, nil, err, stdout, stderr)
 	}
 	defer store.Close()
-	out, err := intent.Note(ctx, env, fs.Arg(0), text)
+	out, err := intent.NoteOp(ctx, env, fs.Arg(0), text, *opID)
 	return emit(m, "note", asJSON, out, err, stdout, stderr)
 }
 
@@ -360,9 +364,10 @@ func cmdLand(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 	sha := fs.String("sha", "", "commit the work landed as")
 	verify := fs.Bool("verify", false, "check the ref's commit on the forge first")
 	fs.String("forge", "auto", "auto|github|gitlab|none (used with --verify)")
+	opID := fs.String("op-id", "", opIDUsage)
 	fs.Bool("json", false, "")
 	if err := parseAnyOrder(fs, args); err != nil || fs.NArg() != 1 || *ref == "" || *sha == "" {
-		fmt.Fprintln(stderr, "usage: bops land <id> --ref <url> --sha <sha> [--verify] [--forge auto|github|gitlab|none]")
+		fmt.Fprintln(stderr, "usage: bops land <id> --ref <url> --sha <sha> [--verify] [--forge auto|github|gitlab|none] [--op-id <id>]")
 		return exitUsage
 	}
 	env, store, err := newEnv(runstate.Read)
@@ -370,7 +375,7 @@ func cmdLand(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 		return emit(m, "land", asJSON, nil, err, stdout, stderr)
 	}
 	defer store.Close()
-	opts := intent.LandOpts{Ref: *ref, SHA: *sha}
+	opts := intent.LandOpts{Ref: *ref, SHA: *sha, OpID: *opID}
 	if *verify {
 		cfg, err := loadConfig()
 		if err != nil {
@@ -434,9 +439,10 @@ func cmdRelease(ctx context.Context, m *manifest.Manifest, args []string, asJSON
 	fs := newFlagSet("release", stderr)
 	reason := fs.String("reason", "", strings.Join(intent.ReleaseReasons, "|"))
 	file := fs.String("file", "", "optional text for the release comment from this file; - reads stdin")
+	opID := fs.String("op-id", "", opIDUsage)
 	fs.Bool("json", false, "")
 	if err := parseAnyOrder(fs, args); err != nil || fs.NArg() != 1 || *reason == "" {
-		fmt.Fprintln(stderr, "usage: bops release <id> --reason "+strings.Join(intent.ReleaseReasons, "|")+" [--file <path> | --file -]")
+		fmt.Fprintln(stderr, "usage: bops release <id> --reason "+strings.Join(intent.ReleaseReasons, "|")+" [--file <path> | --file -] [--op-id <id>]")
 		return exitUsage
 	}
 	text, err := releaseText(*file, os.Stdin)
@@ -452,7 +458,7 @@ func cmdRelease(ctx context.Context, m *manifest.Manifest, args []string, asJSON
 		return emit(m, "release", asJSON, nil, err, stdout, stderr)
 	}
 	defer store.Close()
-	out, err := intent.ReleaseWithText(ctx, env, fs.Arg(0), *reason, text)
+	out, err := intent.ReleaseOp(ctx, env, fs.Arg(0), *reason, text, *opID)
 	return emit(m, "release", asJSON, out, err, stdout, stderr)
 }
 

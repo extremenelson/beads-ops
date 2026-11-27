@@ -184,8 +184,26 @@ func ledgerActivity(i *ledger.Issue, comments []bdComment) time.Time {
 }
 
 type bdComment struct {
+	ID        flexID    `json:"id"`
 	Text      string    `json:"text"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// flexID is a comment id bd prints as a string or a number.
+type flexID string
+
+func (f *flexID) UnmarshalJSON(b []byte) error {
+	var s string
+	if json.Unmarshal(b, &s) == nil {
+		*f = flexID(s)
+		return nil
+	}
+	var n json.Number
+	if err := json.Unmarshal(b, &n); err != nil {
+		return err
+	}
+	*f = flexID(n.String())
+	return nil
 }
 
 func (e *Env) comments(ctx context.Context, id string) ([]bdComment, error) {
@@ -194,7 +212,7 @@ func (e *Env) comments(ctx context.Context, id string) ([]bdComment, error) {
 		return nil, err
 	}
 	out := []bdComment{}
-	if err := json.Unmarshal(raw, &out); err != nil {
+	if err := json.Unmarshal(ledger.Unwrap(raw), &out); err != nil {
 		return nil, err
 	}
 	return out, nil

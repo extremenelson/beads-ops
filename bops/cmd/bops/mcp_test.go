@@ -31,6 +31,8 @@ func TestMCPArgv(t *testing.T) {
 		{"note", map[string]any{"id": "x-1", "text": "done\nNEXT: ship"}, []string{"note", "x-1", "--json"}, "done\nNEXT: ship"},
 		{"release", map[string]any{"id": "x-1", "reason": "done", "text": "why"}, []string{"release", "x-1", "--reason=done", "--file", "-", "--json"}, "why"},
 		{"release", map[string]any{"id": "x-1", "reason": "done"}, []string{"release", "x-1", "--reason=done", "--json"}, ""},
+		{"note", map[string]any{"id": "x-1", "text": "t", "op-id": "op-1"}, []string{"note", "x-1", "--op-id=op-1", "--json"}, "t"},
+		{"release", map[string]any{"id": "x-1", "reason": "scope", "op-id": "op-2"}, []string{"release", "x-1", "--op-id=op-2", "--reason=scope", "--json"}, ""},
 		{"version", map[string]any{}, []string{"version", "--json"}, ""},
 		// claim's id is optional: claim --next takes none.
 		{"claim", map[string]any{"next": true}, []string{"claim", "--next=true", "--json"}, ""},

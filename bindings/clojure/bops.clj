@@ -29,10 +29,10 @@
    on stdin, :optional on stdin with --file -), and each option's kind."
   {"next" {:id? false :text nil :opts {:caps :list, :include-unworkable :bool, :n :value, :pool :value} :required #{}}
    "claim" {:id? :optional :text nil :opts {:force :bool, :next :bool, :resume :bool} :required #{}}
-   "note" {:id? true :text :required :opts {} :required #{}}
+   "note" {:id? true :text :required :opts {:op-id :value} :required #{}}
    "renew" {:id? true :text nil :opts {} :required #{}}
-   "release" {:id? true :text :optional :opts {:reason :value} :required #{:reason}}
-   "land" {:id? true :text nil :opts {:forge :value, :ref :value, :sha :value, :verify :bool} :required #{:ref :sha}}
+   "release" {:id? true :text :optional :opts {:op-id :value, :reason :value} :required #{:reason}}
+   "land" {:id? true :text nil :opts {:forge :value, :op-id :value, :ref :value, :sha :value, :verify :bool} :required #{:ref :sha}}
    "sweep" {:id? false :text nil :opts {:dry-run :bool, :forge :value} :required #{}}
    "stale" {:id? false :text nil :opts {:all-machines :bool, :older-than :value} :required #{}}
    "status" {:id? false :text nil :opts {:mine :bool, :older-than :value, :stale :bool} :required #{}}
@@ -51,10 +51,10 @@
    3 for a negative verdict): the envelope plus the command's own output."
   {"next" [:map [:candidates [:vector [:map [:blocked_by_gates [:vector :string]] [:id :string] [:parent {:optional true} [:maybe :string]] [:priority :int] [:title :string] [:type :string] [:why [:vector :string]] [:why_not [:vector :string]] [:workable :boolean]]]] [:code {:optional true} [:maybe :string]] [:command :string] [:contract :int] [:error {:optional true} [:maybe :string]] [:excluded_count :int] [:ledger_revision :string] [:ok :boolean] [:warnings {:optional true} [:maybe [:vector :string]]]]
    "claim" [:map [:age_minutes {:optional true} [:maybe :int]] [:claimed_at {:optional true} [:maybe :string]] [:code {:optional true} [:maybe :string]] [:command :string] [:contract :int] [:error {:optional true} [:maybe :string]] [:holder {:optional true} [:maybe :map]] [:id :string] [:ledger_pending {:optional true} [:maybe :boolean]] [:next_candidate {:optional true} [:maybe :string]] [:ok :boolean] [:outcome :string] [:previous {:optional true} [:maybe :map]] [:readback_ok {:optional true} [:maybe :boolean]] [:reason {:optional true} [:maybe :string]] [:ref_pending {:optional true} [:maybe :boolean]] [:retry {:optional true} [:maybe :string]] [:run :string] [:side_effects {:optional true} [:maybe :string]] [:skipped {:optional true} [:maybe [:vector :map]]] [:stale_minutes {:optional true} [:maybe :int]] [:warnings {:optional true} [:maybe [:vector :string]]]]
-   "note" [:map [:code {:optional true} [:maybe :string]] [:command :string] [:comment_id {:optional true} [:maybe :string]] [:contract :int] [:error {:optional true} [:maybe :string]] [:holder {:optional true} [:maybe :map]] [:id :string] [:ok :boolean] [:outcome :string] [:reason {:optional true} [:maybe :string]] [:saved_to {:optional true} [:maybe :string]] [:warnings [:vector :string]]]
+   "note" [:map [:code {:optional true} [:maybe :string]] [:command :string] [:comment_id {:optional true} [:maybe :string]] [:contract :int] [:error {:optional true} [:maybe :string]] [:holder {:optional true} [:maybe :map]] [:id :string] [:ok :boolean] [:op_id {:optional true} [:maybe :string]] [:outcome :string] [:reason {:optional true} [:maybe :string]] [:replayed {:optional true} [:maybe :boolean]] [:saved_to {:optional true} [:maybe :string]] [:warnings [:vector :string]]]
    "renew" [:map [:beads [:vector [:map [:code {:optional true} [:maybe :string]] [:holder {:optional true} [:maybe :map]] [:id :string] [:outcome [:enum "renewed" "lost" "refused" "unreachable" "error"]] [:reason {:optional true} [:maybe :string]]]]] [:code {:optional true} [:maybe :string]] [:command :string] [:contract :int] [:error {:optional true} [:maybe :string]] [:ok :boolean] [:warnings [:vector :string]]]
-   "release" [:map [:code {:optional true} [:maybe :string]] [:command :string] [:contract :int] [:detail {:optional true} [:maybe :string]] [:error {:optional true} [:maybe :string]] [:holder {:optional true} [:maybe :map]] [:id :string] [:ledger_pending {:optional true} [:maybe :boolean]] [:ok :boolean] [:outcome :string] [:reason :string] [:ref_pending {:optional true} [:maybe :boolean]] [:saved_to {:optional true} [:maybe :string]] [:warnings {:optional true} [:maybe [:vector :string]]]]
-   "land" [:map [:code {:optional true} [:maybe :string]] [:command :string] [:contract :int] [:error {:optional true} [:maybe :string]] [:holder {:optional true} [:maybe :map]] [:id :string] [:landed [:map [:at :string] [:ref :string] [:run :string] [:sha :string]]] [:ok :boolean] [:outcome :string] [:reason {:optional true} [:maybe :string]] [:warnings {:optional true} [:maybe [:vector :string]]]]
+   "release" [:map [:code {:optional true} [:maybe :string]] [:command :string] [:contract :int] [:detail {:optional true} [:maybe :string]] [:error {:optional true} [:maybe :string]] [:holder {:optional true} [:maybe :map]] [:id :string] [:ledger_pending {:optional true} [:maybe :boolean]] [:ok :boolean] [:op_id {:optional true} [:maybe :string]] [:outcome :string] [:reason :string] [:ref_pending {:optional true} [:maybe :boolean]] [:replayed {:optional true} [:maybe :boolean]] [:saved_to {:optional true} [:maybe :string]] [:warnings {:optional true} [:maybe [:vector :string]]]]
+   "land" [:map [:code {:optional true} [:maybe :string]] [:command :string] [:contract :int] [:error {:optional true} [:maybe :string]] [:holder {:optional true} [:maybe :map]] [:id :string] [:landed [:map [:at :string] [:ref :string] [:run :string] [:sha :string]]] [:ok :boolean] [:op_id {:optional true} [:maybe :string]] [:outcome :string] [:reason {:optional true} [:maybe :string]] [:replayed {:optional true} [:maybe :boolean]] [:warnings {:optional true} [:maybe [:vector :string]]]]
    "sweep" [:map [:closed [:vector :string]] [:code {:optional true} [:maybe :string]] [:command :string] [:contract :int] [:dry_run :boolean] [:error {:optional true} [:maybe :string]] [:ok :boolean] [:pending [:vector :string]] [:unknown [:vector :string]] [:warnings {:optional true} [:maybe [:vector :string]]] [:would_close [:vector :string]]]
    "stale" [:map [:code {:optional true} [:maybe :string]] [:command :string] [:contract :int] [:error {:optional true} [:maybe :string]] [:ok :boolean] [:orphans [:vector [:map [:actor :string] [:age_minutes :int] [:at :string] [:id :string] [:run :string] [:same_machine :boolean]]]] [:stale [:vector [:map [:actor :string] [:age_minutes :int] [:id :string] [:last_event_at :string] [:run :string] [:same_machine :boolean] [:source [:enum "ref" "ledger"]]]]] [:warnings [:vector :string]]]
    "status" [:map [:claims [:vector [:map [:actor :string] [:age_minutes {:optional true} [:maybe :int]] [:branch {:optional true} [:maybe :string]] [:id :string] [:idle_minutes {:optional true} [:maybe :int]] [:last_event_at {:optional true} [:maybe :string]] [:last_note_minutes {:optional true} [:maybe :int]] [:machine {:optional true} [:maybe :string]] [:mr {:optional true} [:maybe :string]] [:run :string] [:same_machine :boolean] [:source [:enum "ref" "ledger" "ref+ledger"]] [:state [:enum "live" "stale" "landing" "orphan" "unknown"]] [:title {:optional true} [:maybe :string]]]]] [:code {:optional true} [:maybe :string]] [:command :string] [:contract :int] [:error {:optional true} [:maybe :string]] [:ok :boolean] [:warnings [:vector :string]]]
@@ -147,7 +147,7 @@
   ([cfg id opts] (call cfg "claim" id opts)))
 
 (defn note
-  "Record where I am, keep the claim. Runs `bops note`; returns {:exit :doc :err}.\n   text is sent on stdin."
+  "Record where I am, keep the claim. Runs `bops note`; returns {:exit :doc :err}.\n   opts: :op-id (string?).\n   text is sent on stdin."
   ([cfg id text] (note cfg id text {}))
   ([cfg id text opts] (call cfg "note" id (assoc opts :text text))))
 
@@ -157,12 +157,12 @@
   ([cfg id opts] (call cfg "renew" id opts)))
 
 (defn release
-  "Give the claim back. Runs `bops release`; returns {:exit :doc :err}.\n   opts: :reason (one of done, blocked, scope, abandoned, human, required); :text (string, sent on stdin)."
+  "Give the claim back. Runs `bops release`; returns {:exit :doc :err}.\n   opts: :op-id (string?); :reason (one of done, blocked, scope, abandoned, human, required); :text (string, sent on stdin)."
   ([cfg id] (release cfg id {}))
   ([cfg id opts] (call cfg "release" id opts)))
 
 (defn land
-  "Record that work reached its destination. Runs `bops land`; returns {:exit :doc :err}.\n   opts: :forge (one of auto, github, gitlab, none); :ref (url, required); :sha (string, required); :verify (bool)."
+  "Record that work reached its destination. Runs `bops land`; returns {:exit :doc :err}.\n   opts: :forge (one of auto, github, gitlab, none); :op-id (string?); :ref (url, required); :sha (string, required); :verify (bool)."
   ([cfg id] (land cfg id {}))
   ([cfg id opts] (call cfg "land" id opts)))
 

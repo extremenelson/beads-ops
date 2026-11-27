@@ -108,11 +108,12 @@ Record where I am, keep the claim
 | Arg | Type | Default | Doc |
 |---|---|---|---|
 | `<id>` (positional) | string |  |  |
+| `--op-id` | string? |  | Names this write (op=<id> on its event comment). Running the same op again (same run) writes nothing and answers with replayed:true, so a write that hit a busy bead, a rejected push, a timeout or a lost answer is simply re-run. Default: derived from command, bead, run and content. |
 | `--file <path>` | stdin\|file |  | Never on the command line. |
 
 Preconditions: this run holds the bead and its ref still matches; no other bops process on this machine is working on the bead (waits up to 10 seconds, then ref_contention).
 
-Wraps: `git push refs/bops/claims/<id> (lease; a network failure is a warning)`, `bd comments add <id> -f <file>`, `bd heartbeat <id>`.
+Wraps: `bd comments <id> --json (op id check)`, `git push refs/bops/claims/<id> (lease; a network failure is a warning)`, `bd comments add <id> -f <file>`, `bd heartbeat <id>`.
 
 Output:
 
@@ -124,7 +125,9 @@ Output:
   "warnings": "string[]",
   "holder": "object?",
   "reason": "string?",
-  "saved_to": "string?"
+  "saved_to": "string?",
+  "op_id": "string?",
+  "replayed": "bool?"
 }
 ```
 
@@ -166,6 +169,7 @@ Give the claim back
 | Arg | Type | Default | Doc |
 |---|---|---|---|
 | `<id>` (positional) | string |  |  |
+| `--op-id` | string? |  | As for note. Replays only once this run no longer holds the bead, with the same reason, and pushes the ledger again; a release still held runs in full. |
 | `--reason` | enum: done \| blocked \| scope \| abandoned \| human |  |  |
 | `--file <path>` \| `--file -` | stdin\|file? |  | Optional. Read only when asked: --file <path>, or --file - for stdin. Never on the command line. Recorded below the event line of the release's bops:released comment; a lost or refused release writes none of it. |
 
@@ -173,7 +177,7 @@ Preconditions: this run holds the bead and its ref still matches; done: the bead
 
 Effects by reason: `abandoned` → +bops:hold; `blocked` → status→blocked; `done` → none; await land/sweep; `human` → +needs-human; `scope` → +bops:hold.
 
-Wraps: `git fetch refs/bops/claims/<id>`, `bd show <id> --json (done: the landed record)`, `git push (lease): state=landing on done, delete otherwise`, `bd update <id> --assignee ''`, `bd label remove <id> run:*`, `bd comments add <id> <event> (no text), or bd comments add <id> -f <file> (event line, then the --file text)`, `bd dolt push`.
+Wraps: `bd comments <id> --json (op id check, when not held)`, `git fetch refs/bops/claims/<id>`, `bd show <id> --json (done: the landed record)`, `git push (lease): state=landing on done, delete otherwise`, `bd update <id> --assignee ''`, `bd label remove <id> run:*`, `bd comments add <id> <event> (no text), or bd comments add <id> -f <file> (event line, then the --file text)`, `bd dolt push`.
 
 Output:
 
@@ -187,7 +191,9 @@ Output:
   "holder": "object?",
   "detail": "string?",
   "saved_to": "string?",
-  "warnings": "string[]?"
+  "warnings": "string[]?",
+  "op_id": "string?",
+  "replayed": "bool?"
 }
 ```
 
@@ -199,6 +205,7 @@ Record that work reached its destination
 |---|---|---|---|
 | `--forge` | enum: auto \| github \| gitlab \| none | `auto` |  |
 | `<id>` (positional) | string |  |  |
+| `--op-id` | string? |  | As for note. A repeat of the same ref and sha adds no record; the op id also answers one retried after the release. A replay pushes the ledger again. |
 | `--ref` | url |  |  |
 | `--sha` | string |  |  |
 | `--verify` | bool | `false` |  |
@@ -207,7 +214,7 @@ Preconditions: this run holds the bead and its ref still matches; no other bops 
 
 Never: merge, push a branch, close.
 
-Wraps: `bd update <id> --metadata @<file> (merge bops.landed)`, `bd comments add <id>`, `bd dolt push`.
+Wraps: `bd comments <id> --json (op id check, when not held or a repeat)`, `bd update <id> --metadata @<file> (merge bops.landed)`, `bd comments add <id>`, `bd dolt push`.
 
 Output:
 
@@ -223,7 +230,9 @@ Output:
   },
   "holder": "object?",
   "reason": "string?",
-  "warnings": "string[]?"
+  "warnings": "string[]?",
+  "op_id": "string?",
+  "replayed": "bool?"
 }
 ```
 

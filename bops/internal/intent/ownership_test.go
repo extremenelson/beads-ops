@@ -1090,7 +1090,7 @@ func TestReleaseRecordsItsTextInTheReleasedComment(t *testing.T) {
 	if b.Status != "blocked" || len(b.Comments) != comments+1 {
 		t.Fatalf("ledger = %+v", b)
 	}
-	if got, want := b.Comments[len(b.Comments)-1], "bops:released run=A reason=blocked\n"+text; got != want {
+	if got, want := b.Comments[len(b.Comments)-1], "bops:released run=A reason=blocked op="+out.OpID+"\n"+text; got != want {
 		t.Errorf("comment = %q, want %q", got, want)
 	}
 	for _, c := range bd.calls {
@@ -1105,11 +1105,12 @@ func TestReleaseWithoutTextKeepsTheOneLineEvent(t *testing.T) {
 	bd.add("x-1")
 	a := client(t, remote, "A", bd)
 	mustClaim(t, a, "x-1")
-	if out, err := intent.ReleaseWithText(bg, a.env, "x-1", "scope", ""); err != nil || out.Outcome != intent.OutcomeReleased {
+	out, err := intent.ReleaseWithText(bg, a.env, "x-1", "scope", "")
+	if err != nil || out.Outcome != intent.OutcomeReleased {
 		t.Fatalf("%+v, %v", out, err)
 	}
 	c := bd.beads["x-1"].Comments
-	if got := c[len(c)-1]; got != "bops:released run=A reason=scope" {
+	if got := c[len(c)-1]; got != "bops:released run=A reason=scope op="+out.OpID {
 		t.Errorf("comment = %q", got)
 	}
 }
@@ -1148,8 +1149,8 @@ func TestLostOrRefusedReleaseDoesNotWriteItsText(t *testing.T) {
 	if out, err := intent.ReleaseWithText(bg, a.env, "x-2", "blocked", "BLOCKER: x"); err != nil || out.Outcome != intent.OutcomeRefused {
 		t.Fatalf("refused: %+v, %v", out, err)
 	}
-	if len(bdA.calls) != writes {
-		t.Errorf("wrote: %v", bdA.calls[writes:])
+	if w := writeCalls(bdA.calls[writes:]); len(w) != 0 {
+		t.Errorf("wrote: %v", w)
 	}
 }
 

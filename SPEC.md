@@ -99,13 +99,15 @@ Each `bops` write adds exactly one comment whose first line is a typed event, so
 
 ```
 bops:claimed run=<ulid> actor=<actor> machine=<name> [takeover=<old-run> | resumed=<old-run>]
-bops:note run=<ulid>
+bops:note run=<ulid> op=<op-id>
 <free text, ≥1 line; last paragraph SHOULD start with NEXT: / BLOCKER: / KEY DECISION: / REF:>
-bops:released run=<ulid> reason=<done|blocked|scope|abandoned|human>
+bops:released run=<ulid> reason=<done|blocked|scope|abandoned|human> op=<op-id>
 [<optional free text from --file <path> or --file - (stdin); written only with a successful release>]
-bops:landed run=<ulid> ref=<url> sha=<sha>
+bops:landed run=<ulid> ref=<url> sha=<sha> op=<op-id>
 bops:heartbeat run=<ulid>            (only if lease heartbeats are configured to be recorded)
 ```
+
+`op=<op-id>` names the write, so it is idempotent: `--op-id` (1-64 of `[A-Za-z0-9._:-]`, starting alphanumeric) or, by default, `d-` and 16 hex digits of the SHA-256 of the command, bead, run and content (note: the text; release: reason and text; land: ref and sha). A `note`, `release` or `land` that finds its kind of event with its op id and its own run on the bead writes nothing and answers the earlier outcome with `replayed: true`: a replayed `note` still refreshes the claim while held, and answers `refused` or `lost` once it is not; `release` replays only once its hold is gone and only with the recorded reason (a held one runs in full); `land` answers from its `metadata.bops.landed` record, not the comment. A replayed `release` or `land` pushes the ledger again; a failed push is a warning, since the write is recorded. `land` replays only for the recorded ref and sha. Another run's comment, or one with no landed record behind it, matches nothing. Comments written before op ids carry none and match nothing.
 
 ### 3.3 `metadata` keys (structured, merge-safe)
 

@@ -64,9 +64,9 @@ func TestCljSpecs(t *testing.T) {
 	out := cljOut(t)
 	for _, want := range []string{
 		`"claim" {:id? :optional :text nil :opts {:force :bool, :next :bool, :resume :bool} :required #{}}`,
-		`"note" {:id? true :text :required :opts {} :required #{}}`,
-		`"release" {:id? true :text :optional :opts {:reason :value} :required #{:reason}}`,
-		`"land" {:id? true :text nil :opts {:forge :value, :ref :value, :sha :value, :verify :bool} :required #{:ref :sha}}`,
+		`"note" {:id? true :text :required :opts {:op-id :value} :required #{}}`,
+		`"release" {:id? true :text :optional :opts {:op-id :value, :reason :value} :required #{:reason}}`,
+		`"land" {:id? true :text nil :opts {:forge :value, :op-id :value, :ref :value, :sha :value, :verify :bool} :required #{:ref :sha}}`,
 		`"next" {:id? false :text nil :opts {:caps :list, :include-unworkable :bool, :n :value, :pool :value} :required #{}}`,
 		"(:refer-clojure :exclude [next sync])",
 		"\n(defn note\n",

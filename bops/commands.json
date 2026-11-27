@@ -49,12 +49,12 @@
       "name": "note",
       "intent": "Record where I am, keep the claim",
       "kind": "write",
-      "args": { "id": { "type": "string" }, "text": { "type": "stdin|file", "doc": "Never on the command line." } },
+      "args": { "id": { "type": "string" }, "text": { "type": "stdin|file", "doc": "Never on the command line." }, "op-id": { "type": "string?", "doc": "Names this write (op=<id> on its event comment). Running the same op again (same run) writes nothing and answers with replayed:true, so a write that hit a busy bead, a rejected push, a timeout or a lost answer is simply re-run. Default: derived from command, bead, run and content." } },
       "preconditions": ["this run holds the bead and its ref still matches", "no other bops process on this machine is working on the bead (waits up to 10 seconds, then ref_contention)"],
       "lint": ["last paragraph starts with NEXT:|BLOCKER:|KEY DECISION:|REF: (warn)"],
-      "wraps": ["git push refs/bops/claims/<id> (lease; a network failure is a warning)", "bd comments add <id> -f <file>", "bd heartbeat <id>"],
+      "wraps": ["bd comments <id> --json (op id check)", "git push refs/bops/claims/<id> (lease; a network failure is a warning)", "bd comments add <id> -f <file>", "bd heartbeat <id>"],
       "outcomes": { "noted": 0, "lost": 3, "refused": 3 },
-      "output": { "id": "string", "outcome": "string", "comment_id": "string?", "warnings": "string[]", "holder": "object?", "reason": "string?", "saved_to": "string?" },
+      "output": { "id": "string", "outcome": "string", "comment_id": "string?", "warnings": "string[]", "holder": "object?", "reason": "string?", "saved_to": "string?", "op_id": "string?", "replayed": "bool?" },
       "surfaces": { "cc": ["skill"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": false } }
     },
     {
@@ -76,13 +76,14 @@
       "args": {
         "id": { "type": "string" },
         "reason": { "type": "enum", "values": ["done", "blocked", "scope", "abandoned", "human"] },
-        "text": { "type": "stdin|file?", "doc": "Optional. Read only when asked: --file <path>, or --file - for stdin. Never on the command line. Recorded below the event line of the release's bops:released comment; a lost or refused release writes none of it." }
+        "text": { "type": "stdin|file?", "doc": "Optional. Read only when asked: --file <path>, or --file - for stdin. Never on the command line. Recorded below the event line of the release's bops:released comment; a lost or refused release writes none of it." },
+        "op-id": { "type": "string?", "doc": "As for note. Replays only once this run no longer holds the bead, with the same reason, and pushes the ledger again; a release still held runs in full." }
       },
       "preconditions": ["this run holds the bead and its ref still matches", "done: the bead has a landed record (bops land first); else refused, before the ref or the ledger changes", "no other bops process on this machine is working on the bead (waits up to 10 seconds, then ref_contention)"],
       "effects": { "blocked": "status→blocked", "human": "+needs-human", "scope": "+bops:hold", "abandoned": "+bops:hold", "done": "none; await land/sweep" },
-      "wraps": ["git fetch refs/bops/claims/<id>", "bd show <id> --json (done: the landed record)", "git push (lease): state=landing on done, delete otherwise", "bd update <id> --assignee ''", "bd label remove <id> run:*", "bd comments add <id> <event> (no text), or bd comments add <id> -f <file> (event line, then the --file text)", "bd dolt push"],
+      "wraps": ["bd comments <id> --json (op id check, when not held)", "git fetch refs/bops/claims/<id>", "bd show <id> --json (done: the landed record)", "git push (lease): state=landing on done, delete otherwise", "bd update <id> --assignee ''", "bd label remove <id> run:*", "bd comments add <id> <event> (no text), or bd comments add <id> -f <file> (event line, then the --file text)", "bd dolt push"],
       "outcomes": { "released": 0, "lost": 3, "refused": 3, "unreachable": 1 },
-      "output": { "id": "string", "reason": "string", "outcome": "string", "ledger_pending": "bool?", "ref_pending": "bool?", "holder": "object?", "detail": "string?", "saved_to": "string?", "warnings": "string[]?" },
+      "output": { "id": "string", "reason": "string", "outcome": "string", "ledger_pending": "bool?", "ref_pending": "bool?", "holder": "object?", "detail": "string?", "saved_to": "string?", "warnings": "string[]?", "op_id": "string?", "replayed": "bool?" },
       "surfaces": { "cc": ["skill"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": false } }
     },
     {
@@ -94,13 +95,14 @@
         "ref": { "type": "url" },
         "sha": { "type": "string" },
         "verify": { "type": "bool", "default": false },
-        "forge": { "type": "enum", "values": ["auto", "github", "gitlab", "none"], "default": "auto" }
+        "forge": { "type": "enum", "values": ["auto", "github", "gitlab", "none"], "default": "auto" },
+        "op-id": { "type": "string?", "doc": "As for note. A repeat of the same ref and sha adds no record; the op id also answers one retried after the release. A replay pushes the ledger again." }
       },
       "preconditions": ["this run holds the bead and its ref still matches", "no other bops process on this machine is working on the bead (waits up to 10 seconds, then ref_contention)"],
       "never": ["merge", "push a branch", "close"],
-      "wraps": ["bd update <id> --metadata @<file> (merge bops.landed)", "bd comments add <id>", "bd dolt push"],
+      "wraps": ["bd comments <id> --json (op id check, when not held or a repeat)", "bd update <id> --metadata @<file> (merge bops.landed)", "bd comments add <id>", "bd dolt push"],
       "outcomes": { "landed": 0, "lost": 3, "refused": 3, "unreachable": 1 },
-      "output": { "id": "string", "outcome": "string", "landed": { "ref": "string", "sha": "string", "run": "string", "at": "string" }, "holder": "object?", "reason": "string?", "warnings": "string[]?" },
+      "output": { "id": "string", "outcome": "string", "landed": { "ref": "string", "sha": "string", "run": "string", "at": "string" }, "holder": "object?", "reason": "string?", "warnings": "string[]?", "op_id": "string?", "replayed": "bool?" },
       "surfaces": { "cc": ["skill"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": false } }
     },
     {

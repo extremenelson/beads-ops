@@ -195,8 +195,8 @@ const heldByRun1 = `[{"id":"x-1","status":"in_progress","assignee":"tester","lab
 func TestNoteWritesViaFileAndHeartbeatsAfter(t *testing.T) {
 	text := "did \"the\" thing; $(not run)\n\nNEXT: finish it"
 	r := &noteRunner{Fake: bdx.Fake{Responses: map[string][]byte{
-		"show x-1 --json": []byte(heldByRun1),
-		"heartbeat x-1":   []byte(`{}`),
+		"show x-1 --json": []byte(heldByRun1), "comments x-1 --json": []byte(`[]`),
+		"heartbeat x-1": []byte(`{}`),
 	}}}
 	out, err := intent.Note(context.Background(), noteEnv(r), "x-1", text)
 	if err != nil {
@@ -205,10 +205,10 @@ func TestNoteWritesViaFileAndHeartbeatsAfter(t *testing.T) {
 	if out.CommentID != "c-1" || len(out.Warnings) != 0 {
 		t.Fatalf("%+v", out)
 	}
-	if want := "bops:note run=RUN1\n" + text; r.body != want {
+	if want := "bops:note run=RUN1 op=" + out.OpID + "\n" + text; r.body != want || !strings.HasPrefix(out.OpID, "d-") {
 		t.Errorf("comment body = %q, want %q", r.body, want)
 	}
-	if got := strings.Join(callNames(r.Calls), ","); got != "comments,heartbeat" {
+	if got := strings.Join(callNames(r.Calls), ","); got != "comments,comments,heartbeat" { // the op check, the note
 		t.Errorf("call order = %s", got)
 	}
 	for _, call := range r.Calls {
@@ -229,8 +229,8 @@ func TestNoteRefusesWhenRunDoesNotHoldBead(t *testing.T) {
 	if err != nil || out.Outcome != intent.OutcomeRefused || !out.Negative() {
 		t.Fatalf("%+v, %v", out, err)
 	}
-	if len(r.Calls) != 0 {
-		t.Errorf("must not write; calls = %v", r.Calls)
+	if w := writeCalls(r.Calls); len(w) != 0 {
+		t.Errorf("must not write; calls = %v", w)
 	}
 	saved, err := os.ReadFile(out.SavedTo)
 	if err != nil || string(saved) != "text\n\nNEXT: x" {
@@ -264,8 +264,8 @@ func TestNoteWarnsAboutLastParagraph(t *testing.T) {
 		{"just prose", true},
 	} {
 		r := &noteRunner{Fake: bdx.Fake{Responses: map[string][]byte{
-			"show x-1 --json": []byte(heldByRun1),
-			"heartbeat x-1":   []byte(`{}`),
+			"show x-1 --json": []byte(heldByRun1), "comments x-1 --json": []byte(`[]`),
+			"heartbeat x-1": []byte(`{}`),
 		}}}
 		out, err := intent.Note(context.Background(), noteEnv(r), "x-1", tc.text)
 		if err != nil {
@@ -280,7 +280,7 @@ func TestNoteWarnsAboutLastParagraph(t *testing.T) {
 
 func TestNoteSurvivesAFailedHeartbeat(t *testing.T) {
 	r := &noteRunner{Fake: bdx.Fake{Responses: map[string][]byte{
-		"show x-1 --json": []byte(heldByRun1),
+		"show x-1 --json": []byte(heldByRun1), "comments x-1 --json": []byte(`[]`),
 	}}} // no heartbeat response, so the fake fails it
 	out, err := intent.Note(context.Background(), noteEnv(r), "x-1", "t\n\nNEXT: x")
 	if err != nil {
@@ -292,6 +292,19 @@ func TestNoteSurvivesAFailedHeartbeat(t *testing.T) {
 }
 
 // --- helpers
+
+// writeCalls keeps the calls that change the ledger: it drops show, listing a
+// bead's comments, and dolt (publishing, which changes no bead).
+func writeCalls(calls [][]string) [][]string {
+	var out [][]string
+	for _, c := range calls {
+		if c[0] == "show" || c[0] == "dolt" || (c[0] == "comments" && len(c) == 3 && c[2] == "--json") {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
 
 // noteEnv holds x-1 as a legacy claim, which has no ref to refresh. The ref
 // paths are covered in ownership_test.go.

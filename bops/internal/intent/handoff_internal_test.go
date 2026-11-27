@@ -65,6 +65,10 @@ func TestLastNote(t *testing.T) {
 	if got, _ := lastNote(mixed, "A"); got != "NEXT: last" {
 		t.Errorf("mixed times go by position: %q", got)
 	}
+	withOp := []bdComment{{Text: notePrefix + "A op=d-0123456789abcdef\nNEXT: with an op id"}}
+	if got, by := lastNote(withOp, "A"); got != "NEXT: with an op id" || by != "A" {
+		t.Errorf("op id in the header: %q by %q", got, by)
+	}
 	long, _ := lastNote([]bdComment{{Text: notePrefix + "A\nNEXT: " + strings.Repeat("é", 3000)}}, "A")
 	if r := []rune(long); len(r) != maxLastNote+len(" [truncated]") || !strings.HasSuffix(long, " [truncated]") {
 		t.Errorf("long note: %d runes", len(r))

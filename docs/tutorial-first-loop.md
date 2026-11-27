@@ -227,13 +227,13 @@ bd comments demo-iq1 --json | jq -r '.[].text'
 
 ```
 bops:claimed run=01M7AWMGT9QKRY2YVF4YWA0VKZ actor=alice machine=laptop
-bops:note run=01M7AWMGT9QKRY2YVF4YWA0VKZ
+bops:note run=01M7AWMGT9QKRY2YVF4YWA0VKZ op=d-3f9a1c0e7b2d4a6f
 COMPLETED: flag parsed
 
 NEXT: print each bd call before running it
 
-bops:landed run=01M7AWMGT9QKRY2YVF4YWA0VKZ ref=https://github.com/example/demo/pull/1 sha=0123abc
-bops:released run=01M7AWMGT9QKRY2YVF4YWA0VKZ reason=done
+bops:landed run=01M7AWMGT9QKRY2YVF4YWA0VKZ ref=https://github.com/example/demo/pull/1 sha=0123abc op=d-81c4e2a9f0b37d15
+bops:released run=01M7AWMGT9QKRY2YVF4YWA0VKZ reason=done op=d-5e07b9d2c4a18f63
 ```
 
 The bead is still `in_progress` and labelled `bops:landing`: it waits for its PR to merge. Workers never close beads. On a real repo, `bops sweep --dry-run=false` asks GitHub or GitLab whether the PR merged and closes the bead. This scratch repo has no forge, so `sweep` can't check and lists the bead under `unknown`:
