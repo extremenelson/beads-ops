@@ -13,8 +13,8 @@ A claim is held by a git ref on `origin`, which makes it safe across machines an
 
 ## The loop
 
-1. **Orient.** Run `bd list --status in_progress --json`. Work the bead the person named; otherwise unfinished work comes first. A bead assigned to your name may be another session's (agents share names): read `bd comments <id>`, and ask if unsure. `bops:landing` means the work is done and waiting on its PR.
-2. **Choose.** Run `bops next`. Take the first candidate unless you have a reason not to. `bops next` never claims for you. Read the bead with `bd show <id>` for its description and acceptance criteria.
+1. **Orient.** Run `bd list --status in_progress --json`. Work the bead the person named; otherwise unfinished work comes first. A bead assigned to your name may be another session's (agents share names): read `bd comments <id>`, and ask if unsure. `bops:landing` means done and waiting on its PR.
+2. **Choose.** Run `bops next`. Take the first candidate unless you have a reason not to. `bops next` never claims for you. Read it with `bd show <id>` for its acceptance criteria.
 3. **Make a worktree, then claim inside it.** Your run identity belongs to the worktree:
    ```bash
    bd worktree create .worktrees/<id> --branch work/<id>
@@ -64,7 +64,7 @@ Do not close beads yourself. `bops sweep` previews which landed beads have merge
 - **`sync` lists `lost_claims`:** those beads were taken over. Stop work on them.
 - **`unreachable` or `git_auth`:** `bops` could not reach `origin`. Follow `retry`, or run the credential command in `error`.
 - **`could not save run state` or `state lock`:** another `bops` process is busy. Wait and retry once.
-- **`ref_contention`:** another `bops` process here has the bead for a moment. Rerun the command after a few seconds, at most 3 times. A refused note's text is at `saved_to`.
+- **`ref_contention`:** another `bops` process here has the bead for a moment. Rerun it after a few seconds, at most 3 times. A refused note's text is at `saved_to`.
 - **`ledger_pending: true`:** you still own the bead. Run `bops sync`, and report it if that does not clear it.
 - **Moving machines:** after `bops note` and a branch push, the person runs `bops claim --resume <id>` from the new machine's worktree. Never in an autonomous loop.
 - **A reviewer asks for changes after `release --reason done`:** run `bops claim --resume <id>` from a worktree, then continue from step 4. Only the actor who landed it can.
@@ -82,6 +82,7 @@ Exit codes: **0** done, or a read's verdict; **1** could not run: remote or ledg
 | `bops next [--caps] [--include-unworkable] [--n] [--pool]` | read | What should I work on? |
 | `bops claim <id> [--force] [--resume]` | write | Take this bead for this run |
 | `bops note <id> [--file <path>]` | write | Record where I am, keep the claim |
+| `bops renew <id>` | write | Heartbeat my claims, no comment |
 | `bops release <id> --reason <reason> [--file <path>\|-]` | write | Give the claim back |
 | `bops land <id> [--forge] --ref <ref> --sha <sha> [--verify]` | write | Record that work reached its destination |
 | `bops sweep [--dry-run] [--forge]` | write | Close landed beads whose refs are merged |

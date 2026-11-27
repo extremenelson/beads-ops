@@ -9,6 +9,7 @@ Exit codes: **0** = done, or a read's verdict; **1** = could not run: remote or 
 | `next` | What should I work on? | read |
 | `claim` | Take this bead for this run | write |
 | `note` | Record where I am, keep the claim | write |
+| `renew` | Heartbeat my claims, no comment | write |
 | `release` | Give the claim back | write |
 | `land` | Record that work reached its destination | write |
 | `sweep` | Close landed beads whose refs are merged | write |
@@ -119,6 +120,37 @@ Output:
   "holder": "object?",
   "reason": "string?",
   "saved_to": "string?"
+}
+```
+
+## `bops renew`
+
+Heartbeat my claims, no comment
+
+| Arg | Type | Default | Doc |
+|---|---|---|---|
+| `<id>` (positional) | string |  | The bead to renew; the command line takes several, space-separated, each with its own outcome. Run as the run that claimed (the same checkout and BOPS_RUN). On any non-zero exit, read beads[].outcome: a run with a bead not refreshed exits 1 even when another is lost. |
+
+Preconditions: the claim lock is on (lock.mode is not none); this run holds the bead and its ref still matches (an invalid id is refused, code bad_id); the hold has a claim ref: one taken before the claim lock is refused, code legacy_hold; no other bops process on this machine is working on the bead (waits up to 10 seconds, then ref_contention).
+
+Never: write the ledger (no comment, no bd heartbeat).
+
+Wraps: `git push refs/bops/claims/<id> (lease), per bead; after an unreachable or git_auth failure the rest are not tried`, `git push (lease): delete the ref of a release whose delete never finished, as note does`.
+
+Output:
+
+```json
+{
+  "beads": [
+    {
+      "id": "string",
+      "outcome": "renewed|lost|refused|unreachable|error",
+      "reason": "string?",
+      "code": "string?",
+      "holder": "object?"
+    }
+  ],
+  "warnings": "string[]"
 }
 ```
 

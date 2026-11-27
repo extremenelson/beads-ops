@@ -293,6 +293,37 @@ func cmdNote(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 	return emit(m, "note", asJSON, out, err, stdout, stderr)
 }
 
+func cmdRenew(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
+	fs := newFlagSet("renew", stderr)
+	fs.Bool("json", false, "")
+	if err := parseAnyOrder(fs, args); err != nil || fs.NArg() == 0 {
+		fmt.Fprintln(stderr, "usage: bops renew <id> [<id>...]")
+		return exitUsage
+	}
+	env, store, err := newEnv(runstate.Read)
+	if err != nil {
+		return emit(m, "renew", asJSON, nil, err, stdout, stderr)
+	}
+	defer store.Close()
+	out, err := intent.Renew(ctx, env, fs.Args())
+	code := emit(m, "renew", asJSON, out, err, stdout, stderr)
+	if !asJSON && out != nil {
+		renewDetails(stdout, out)
+	}
+	return code
+}
+
+// renewDetails prints each bead's outcome, which printKV's id list leaves out.
+func renewDetails(w io.Writer, out *intent.RenewOut) {
+	for _, b := range out.Beads {
+		line := cleanText(b.ID) + " " + b.Outcome
+		if b.Reason != "" {
+			line += ": " + cleanText(b.Reason)
+		}
+		fmt.Fprintln(w, line)
+	}
+}
+
 func cmdLand(ctx context.Context, m *manifest.Manifest, args []string, asJSON bool, stdout, stderr *os.File) int {
 	fs := newFlagSet("land", stderr)
 	ref := fs.String("ref", "", "URL of the merge request")
