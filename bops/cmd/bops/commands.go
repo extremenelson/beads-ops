@@ -215,11 +215,12 @@ func cmdNext(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 	fs := newFlagSet("next", stderr)
 	n := fs.Int("n", 3, "candidates to return")
 	inc := fs.Bool("include-unworkable", false, "also return excluded candidates with why_not")
+	avoid := fs.Bool("avoid-conflicts", false, "exclude candidates whose touches: paths overlap a live claim's")
 	pool := fs.String("pool", "", "serve only pool:<pool>")
 	caps := fs.String("caps", "", "comma-separated capabilities this run offers")
 	fs.Bool("json", false, "")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
-		fmt.Fprintln(stderr, "usage: bops next [--n 3] [--pool <name>] [--caps a,b] [--include-unworkable]")
+		fmt.Fprintln(stderr, "usage: bops next [--n 3] [--pool <name>] [--caps a,b] [--include-unworkable] [--avoid-conflicts]")
 		return exitUsage
 	}
 	env, store, err := newEnv(runstate.Read)
@@ -233,7 +234,7 @@ func cmdNext(ctx context.Context, m *manifest.Manifest, args []string, asJSON bo
 	if *caps != "" {
 		env.Run.Caps = strings.Split(*caps, ",")
 	}
-	out, err := intent.Next(ctx, env, intent.NextOpts{N: *n, IncludeUnworkable: *inc})
+	out, err := intent.Next(ctx, env, intent.NextOpts{N: *n, IncludeUnworkable: *inc, AvoidConflicts: *avoid})
 	return emit(m, "next", asJSON, out, err, stdout, stderr)
 }
 
@@ -647,7 +648,7 @@ func statusTable(w io.Writer, out *intent.StatusOut) {
 		return
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tSTATE\tHOLDER\tMACHINE\tRUN\tAGE\tIDLE\tNOTE\tBRANCH\tMR")
+	fmt.Fprintln(tw, "ID\tSTATE\tHOLDER\tMACHINE\tRUN\tAGE\tIDLE\tNOTE\tBRANCH\tMR\tTOUCHES")
 	for _, c := range out.Claims {
 		machine := c.Machine
 		if c.SameMachine {
@@ -655,7 +656,7 @@ func statusTable(w io.Writer, out *intent.StatusOut) {
 		}
 		machine = orDashText(machine)
 		cells := []string{c.ID, c.State, orDashText(c.Actor), machine, orDashText(c.Run),
-			minutesText(c.AgeMinutes), minutesText(c.IdleMinutes), minutesText(c.LastNoteMinutes), orDashText(c.Branch), orDashText(c.MR)}
+			minutesText(c.AgeMinutes), minutesText(c.IdleMinutes), minutesText(c.LastNoteMinutes), orDashText(c.Branch), orDashText(c.MR), orDashText(strings.Join(c.Touches, "; "))}
 		for k := range cells {
 			cells[k] = cleanText(cells[k]) // a tab, a control rune, becomes ? and cannot shift the columns
 		}

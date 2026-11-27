@@ -9,7 +9,7 @@ description: Work a beads issue through the bops loop (next, claim, note, land, 
 
 An agent whose orchestrator claimed for it (`/bead-loop`) follows the orchestrator, not this skill. A repo protocol file (`docs/agent-protocol.md`) wins on branch, worktree, landing and sync.
 
-A claim is held by a git ref on `origin`, which makes it safe across machines and which raw `bd update --claim` bypasses. `claim`, `release` and `land` need the network.
+A claim is held by a git ref on `origin`, safe across machines; raw `bd update --claim` bypasses it. `claim`, `release` and `land` need the network.
 
 ## The loop
 
@@ -80,7 +80,7 @@ Exit codes: **0** done, or a read's verdict; **1** could not run: remote or ledg
 
 | Command | Kind | Intent |
 |---|---|---|
-| `bops next [--caps] [--include-unworkable] [--n] [--pool]` | read | What should I work on? |
+| `bops next [--avoid-conflicts] [--caps] [--include-unworkable] [--n] [--pool]` | read | What should I work on? |
 | `bops claim [<id>] [--force] [--next] [--resume]` | write | Take this bead for this run |
 | `bops note <id> [--op-id] [--file <path>]` | write | Record where I am, keep the claim |
 | `bops renew <id>` | write | Heartbeat my claims, no comment |

@@ -17,7 +17,8 @@
         "pool": { "type": "string?", "doc": "Serve only beads labelled pool:<pool>." },
         "caps": { "type": "string[]?", "doc": "Capabilities this run offers; beads with unmet needs:<cap> are excluded." },
         "n": { "type": "int", "default": 3 },
-        "include-unworkable": { "type": "bool", "default": false, "doc": "Also return excluded candidates with why_not, and the beads open gates alone keep out of bd ready (W05, blocked_by_gates; not in excluded_count)." }
+        "include-unworkable": { "type": "bool", "default": false, "doc": "Also return excluded candidates with why_not, and the beads open gates alone keep out of bd ready (W05, blocked_by_gates; not in excluded_count)." },
+        "avoid-conflicts": { "type": "bool", "default": false, "doc": "Also exclude candidates whose touches:<path> labels overlap a live claim's (advisory; a bead with none never conflicts)." }
       },
       "wraps": ["bd ready --json", "bd list --status in_progress --json", "git fetch refs/bops/claims/* (one round trip, so W14 sees claims the ledger has not caught up with; on failure a warning and the last sync's copy)", "with --include-unworkable: bd gate list --limit 0 --json, bd blocked --json, bd show <id> --json (each bead open gates alone hold back)"],
       "output": {
@@ -25,7 +26,7 @@
           {
             "id": "string", "title": "string", "priority": "int", "type": "string",
             "workable": "bool", "why": "string[]", "why_not": "string[]",
-            "blocked_by_gates": "string[]", "parent": "string?"
+            "blocked_by_gates": "string[]", "parent": "string?", "touches": "string[]?"
           }
         ],
         "excluded_count": "int",
@@ -134,7 +135,7 @@
       "args": { "mine": { "type": "bool", "default": false, "doc": "Only claims made on this machine (same_machine: a run of this clone, or a ref or bops:claimed comment naming this machine)." }, "stale": { "type": "bool", "default": false, "doc": "Only stale, orphan and unknown claims (unknown: staleness could not be judged, so it may be stale). A held ref that is stale and does not match its ledger claim is one orphan row, where stale lists it under both." }, "older-than": { "type": "duration", "default": "stale_minutes", "doc": "Idle longer than this is stale, as for stale." } },
       "never": ["write the ledger or a ref", "call a claim stale when stale would not: a ref whose state or at is unreadable or whose at is in the future, or a no-ref claim whose comments could not be read, is unknown", "ask the forge: branch and mr are inferred from branch names and the ledger, as claim --force's previous infers them"],
       "wraps": ["git fetch --prune refs/bops/claims/* (the last sync's copy if offline, with a warning)", "bd list --status in_progress --limit 0 --json", "bd comments <id> --json", "git ls-remote --heads <lock remote> (and origin)", "git for-each-ref refs/heads refs/remotes"],
-      "output": { "claims": [ { "id": "string", "title": "string?", "state": "live|stale|landing|orphan|unknown", "actor": "string", "machine": "string?", "run": "string", "age_minutes": "int?", "idle_minutes": "int?", "last_event_at": "string?", "last_note_minutes": "int?", "branch": "string?", "mr": "string?", "same_machine": "bool", "source": "ref|ledger|ref+ledger" } ], "warnings": "string[]" },
+      "output": { "claims": [ { "id": "string", "title": "string?", "state": "live|stale|landing|orphan|unknown", "actor": "string", "machine": "string?", "run": "string", "age_minutes": "int?", "idle_minutes": "int?", "last_event_at": "string?", "last_note_minutes": "int?", "branch": "string?", "mr": "string?", "same_machine": "bool", "source": "ref|ledger|ref+ledger", "touches": "string[]?" } ], "warnings": "string[]" },
       "surfaces": { "cc": ["skill"], "codex": ["skill"], "hermes": "tool", "clj": "fn", "mcp": { "readOnly": true } }
     },
     {

@@ -928,12 +928,12 @@ func TestStatusTablePrintsEveryClaimWithoutControlBytes(t *testing.T) {
 	}
 	n := func(v int) *int { return &v }
 	statusTable(f, &intent.StatusOut{Claims: []intent.StatusClaim{
-		{ID: "x-1", State: intent.StatusStale, Actor: "alice", Machine: "box", Run: "R1", SameMachine: true, AgeMinutes: n(185), IdleMinutes: n(130), LastNoteMinutes: n(130), Branch: "work/x-1"},
+		{ID: "x-1", State: intent.StatusStale, Actor: "alice", Machine: "box", Run: "R1", SameMachine: true, AgeMinutes: n(185), IdleMinutes: n(130), LastNoteMinutes: n(130), Branch: "work/x-1", Touches: []string{"bops/", "docs/x.md"}},
 		{ID: "x-2", State: intent.StatusLanding, Actor: "bob\x1b[31m\u202e\u200b", Machine: "far", Run: "R2", AgeMinutes: n(3 * 24 * 60), IdleMinutes: n(5), MR: "https://github.com/o/r/pull/9"},
 	}})
 	b, _ := os.ReadFile(f.Name())
 	got := string(b)
-	for _, want := range []string{"ID", "STATE", "MACHINE", "x-1", "stale", "alice", "box*", "3h05m", "2h10m", "work/x-1", "x-2", "landing", "far ", "3d00h", "5m", "https://github.com/o/r/pull/9"} {
+	for _, want := range []string{"ID", "STATE", "MACHINE", "x-1", "stale", "alice", "box*", "3h05m", "2h10m", "work/x-1", "x-2", "landing", "far ", "3d00h", "5m", "https://github.com/o/r/pull/9", "TOUCHES", "bops/; docs/x.md"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in:\n%s", want, got)
 		}

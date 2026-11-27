@@ -154,6 +154,8 @@ bd list --all --label needs:human -n 0 --json | jq -r '.[].id' | while read -r i
 done
 ```
 
+**Optional: `touches:<path>`.** A bead may declare the repo-relative paths it expects to change, one label each (`bd label add <id> touches:bops/internal/intent/`). Paths are case-sensitive. A directory covers everything under it; a glob covers the directory above its first wildcard (`bops/*.go` covers `bops/`, `*` the whole repo). `bops next --avoid-conflicts` then leaves out a candidate whose paths overlap those of a claimed bead, yours included, naming the overlap in `why_not`; `next` and `bops status` show each bead's `touches`. It is advisory only: nothing stops a claim or an edit, `claim --next` does not screen, two candidates in one answer may overlap each other, and a bead that declares nothing never conflicts. Use it when parallel agents keep colliding on the same files; skip it otherwise.
+
 ### 3.6 Workability — what must be true before a bead is claimed
 
 "Workable" has two layers. **Mechanical** is what `bd ready` computes; bd enforces it. **Executable** is whether a cold agent can finish the bead without rediscovering context; nothing enforces it except this section and `scripts/bd-lint-claim.sh` (§3.7).
