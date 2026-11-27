@@ -23,6 +23,21 @@ func TestEmbeddedManifestIsValid(t *testing.T) {
 	}
 }
 
+// reap and gc take over or delete other runs' claims, so agents only preview
+// them (PROCESS §12).
+func TestReapAndGCArePreviewOnlyForAgents(t *testing.T) {
+	m, err := manifest.Parse(bops.ManifestJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range m.Commands {
+		want := c.Name == "reap" || c.Name == "gc"
+		if c.PreviewOnly() != want {
+			t.Errorf("%s: PreviewOnly = %v, want %v", c.Name, c.PreviewOnly(), want)
+		}
+	}
+}
+
 func TestArgFlag(t *testing.T) {
 	cases := []struct {
 		name string
@@ -44,13 +59,16 @@ func TestArgFlag(t *testing.T) {
 
 func TestValidateRejects(t *testing.T) {
 	cases := map[string]string{
-		"dup":        `{"contract":1,"commands":[{"name":"a","intent":"x","kind":"read","output":{},"surfaces":{"cc":[]}},{"name":"a","intent":"x","kind":"read","output":{},"surfaces":{"cc":[]}}]}`,
-		"bad kind":   `{"contract":1,"commands":[{"name":"a","intent":"x","kind":"rw","output":{},"surfaces":{"cc":[]}}]}`,
-		"bad name":   `{"contract":1,"commands":[{"name":"Bad_Name","intent":"x","kind":"read","output":{},"surfaces":{"cc":[]}}]}`,
-		"no output":  `{"contract":1,"commands":[{"name":"a","intent":"x","kind":"read","surfaces":{"cc":[]}}]}`,
-		"enum empty": `{"contract":1,"commands":[{"name":"a","intent":"x","kind":"read","args":{"r":{"type":"enum"}},"output":{},"surfaces":{"cc":[]}}]}`,
-		"write ro":   `{"contract":1,"commands":[{"name":"a","intent":"x","kind":"write","output":{},"surfaces":{"mcp":{"readOnly":true}}}]}`,
-		"contract 0": `{"contract":0,"commands":[{"name":"a","intent":"x","kind":"read","output":{},"surfaces":{"cc":[]}}]}`,
+		"dup":                     `{"contract":1,"commands":[{"name":"a","intent":"x","kind":"read","output":{},"surfaces":{"cc":[]}},{"name":"a","intent":"x","kind":"read","output":{},"surfaces":{"cc":[]}}]}`,
+		"bad kind":                `{"contract":1,"commands":[{"name":"a","intent":"x","kind":"rw","output":{},"surfaces":{"cc":[]}}]}`,
+		"bad name":                `{"contract":1,"commands":[{"name":"Bad_Name","intent":"x","kind":"read","output":{},"surfaces":{"cc":[]}}]}`,
+		"no output":               `{"contract":1,"commands":[{"name":"a","intent":"x","kind":"read","surfaces":{"cc":[]}}]}`,
+		"enum empty":              `{"contract":1,"commands":[{"name":"a","intent":"x","kind":"read","args":{"r":{"type":"enum"}},"output":{},"surfaces":{"cc":[]}}]}`,
+		"write ro":                `{"contract":1,"commands":[{"name":"a","intent":"x","kind":"write","output":{},"surfaces":{"mcp":{"readOnly":true}}}]}`,
+		"bad agents":              `{"contract":1,"commands":[{"name":"a","intent":"x","kind":"write","agents":"none","args":{"dry-run":{"type":"bool","default":true}},"output":{},"surfaces":{"cc":[]}}]}`,
+		"preview no dry-run":      `{"contract":1,"commands":[{"name":"a","intent":"x","kind":"write","agents":"preview","output":{},"surfaces":{"cc":[]}}]}`,
+		"preview dry-run default": `{"contract":1,"commands":[{"name":"a","intent":"x","kind":"write","agents":"preview","args":{"dry-run":{"type":"bool","default":false}},"output":{},"surfaces":{"cc":[]}}]}`,
+		"contract 0":              `{"contract":0,"commands":[{"name":"a","intent":"x","kind":"read","output":{},"surfaces":{"cc":[]}}]}`,
 	}
 	for name, src := range cases {
 		if _, err := manifest.Parse([]byte(src)); err == nil {

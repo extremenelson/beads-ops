@@ -142,6 +142,7 @@
       "name": "reap",
       "intent": "Release stale claims that hold no work",
       "kind": "write",
+      "agents": "preview",
       "preconditions": ["the claim lock is on (lock.mode is not none)", "a Dolt remote on the lock remote's repository (not with --dry-run)", "--older-than, when given, is at least stale_minutes"],
       "args": { "older-than": { "type": "duration", "default": "stale_minutes", "doc": "Idle longer than this is stale, as for stale; shorter than stale_minutes is refused." }, "dry-run": { "type": "bool", "default": true }, "only": { "type": "string?", "doc": "Comma-separated bead ids, normally the ones a preview listed under would_release: act on these only. <id>@<run> also pins the holder the preview showed: a claim held now by another run is listed under skipped, not released. One that is no longer a stale claim is listed under skipped; an empty list is a usage error. A claim made outside bops (no run label, no ref) is released only when named here." }, "forge": { "type": "enum", "values": ["auto", "github", "gitlab", "none"], "default": "auto", "doc": "Forge searched for open or merged merge requests naming each claim with no other evidence; none searches nothing, with a warning." } },
       "never": [
@@ -180,6 +181,7 @@
       "name": "gc",
       "intent": "Delete refs of closed beads and orphans",
       "kind": "write",
+      "agents": "preview",
       "preconditions": ["the claim lock is on (lock.mode is not none)", "a Dolt remote on the lock remote's repository (not with --dry-run)"],
       "args": { "dry-run": { "type": "bool", "default": true }, "only": { "type": "string?", "doc": "Comma-separated bead ids, normally the ones a preview listed under would_delete: act on these only. One whose ref is no longer one gc deletes is listed under skipped; one with no ref at all is a warning; an empty list is a usage error." } },
       "never": [

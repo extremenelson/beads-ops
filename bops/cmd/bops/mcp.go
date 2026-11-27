@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"slices"
@@ -73,12 +74,26 @@ func cmdServeMCP(m *manifest.Manifest, rest []string, stdin io.Reader, stdout, s
 // mcpArgv is the command line for a tool call: the bead id first and
 // positional, every other argument as --name=value in name order, text on stdin (with
 // --file - when the text is optional), then --json. An argument the command
-// does not take, or a missing id, text or required value, is an error.
+// does not take, or a missing id, text or required value, is an error, as is
+// dry-run other than true on a preview-only command, which always passes
+// --dry-run=true.
 func mcpArgv(c *manifest.Command, args map[string]any) ([]string, *string, error) {
 	for k := range args {
 		if _, ok := c.Args[k]; !ok {
 			return nil, nil, fmt.Errorf("bops %s takes no argument %q", c.Name, k)
 		}
+	}
+	if c.PreviewOnly() {
+		// Agents preview only (manifest agents "preview"): a real run is a
+		// person's decision, at the CLI (PROCESS §12).
+		if v := args["dry-run"]; v != nil && v != true { // null is absent: a preview
+			return nil, nil, fmt.Errorf("bops %s: dry-run must be true here: over MCP %s only previews, and a real run is a person's decision (PROCESS §12). Hand them the command: bops %s --dry-run=false --only %s", c.Name, c.Name, c.Name, gen.OnlyHint(c))
+		}
+		args = maps.Clone(args)
+		if args == nil {
+			args = map[string]any{}
+		}
+		args["dry-run"] = true // explicit, whatever the CLI's default
 	}
 	argv := []string{c.Name}
 	var in *string

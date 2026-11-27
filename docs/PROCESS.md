@@ -449,7 +449,7 @@ git log -1 --format=%B refs/bops/seen/<id>     # run=, actor=, state=held|landin
 | `code: state_write_failed` | The state directory is not writable | Fix permissions on `~/.local/state/bops/`. Nothing was pushed: the journal is written before the ref |
 | `code: hold_not_recorded`, error names a sha | The ref was won but the state file was not written | Fix the state directory, then remove the ref as an orphan (below), using that sha |
 
-**Who may take over what.** Every takeover is a person's decision; an autonomous loop never forces, resumes or deletes a claim.
+**Who may take over what.** Every takeover is a person's decision; an autonomous loop never forces, resumes or deletes a claim. So agents only preview `reap` and `gc`: the generated skills list them as `preview` and tell the agent to leave the real run to a person, and the MCP tools refuse `dry-run: false` even under `--enable-writes`. The skills are instructions, not enforcement: an agent with a shell can still type the command, as it can `claim --force`. An agent that finds claims to release or refs to delete hands a person the `bops reap --dry-run=false --only <id>@<run>` (or `bops gc --dry-run=false --only <id>`) command to run at the CLI.
 
 | Takeover | Who may | First |
 |---|---|---|

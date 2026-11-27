@@ -66,6 +66,33 @@ func TestCCSkillReferencesTheSkillCommands(t *testing.T) {
 	}
 }
 
+// A preview-only command is listed with the kind preview and no --dry-run,
+// and the preamble says a real run is a person's.
+func TestSkillListsReapAndGCAsPreviewOnly(t *testing.T) {
+	for name, files := range map[string]func(*manifest.Manifest) ([]gen.File, error){"cc": gen.CC, "codex": gen.Codex} {
+		fs, err := files(embedded(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range fs {
+			if f.Path != "skills/bops/SKILL.md" {
+				continue
+			}
+			s := string(f.Data)
+			for _, want := range []string{
+				"| `bops reap [--forge] [--older-than] [--only]` | preview |",
+				"| `bops gc [--only]` | preview |",
+				"| `bops sweep [--dry-run] [--forge]` | write |",
+				"Only a person acts (`--dry-run=false --only`, reap `<id>@<run>`, gc `<id>`)",
+			} {
+				if !strings.Contains(s, want) {
+					t.Errorf("%s: SKILL.md lacks %q", name, want)
+				}
+			}
+		}
+	}
+}
+
 // SPEC §8 caps the skill at 2k tokens; chars/4 is the usual estimate.
 func TestCCSkillUnderTwoThousandTokens(t *testing.T) {
 	skill := ccFiles(t, embedded(t))["skills/bops/SKILL.md"]

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,9 +39,15 @@ func TestMCPArgv(t *testing.T) {
 		{"claim", map[string]any{"next": true}, []string{"claim", "--next=true", "--json"}, ""},
 		{"claim", map[string]any{"id": "x-1"}, []string{"claim", "x-1", "--json"}, ""},
 		// An explicit null --only is an empty list (refused), never "no filter".
-		{"reap", map[string]any{"dry-run": false, "only": nil}, []string{"reap", "--dry-run=false", "--only=", "--json"}, ""},
-		{"reap", map[string]any{"dry-run": false}, []string{"reap", "--dry-run=false", "--json"}, ""},
-		{"gc", map[string]any{"dry-run": false, "only": nil}, []string{"gc", "--dry-run=false", "--only=", "--json"}, ""},
+		{"reap", map[string]any{"dry-run": true, "only": nil}, []string{"reap", "--dry-run=true", "--only=", "--json"}, ""},
+		{"gc", map[string]any{"only": nil}, []string{"gc", "--dry-run=true", "--only=", "--json"}, ""},
+		// reap and gc preview only over MCP: the dry run is always passed.
+		{"reap", map[string]any{"only": "x-1@01ABC"}, []string{"reap", "--dry-run=true", "--only=x-1@01ABC", "--json"}, ""},
+		{"reap", nil, []string{"reap", "--dry-run=true", "--json"}, ""},
+		{"gc", map[string]any{"dry-run": true}, []string{"gc", "--dry-run=true", "--json"}, ""},
+		{"reap", map[string]any{"dry-run": nil}, []string{"reap", "--dry-run=true", "--json"}, ""},
+		// Other write commands with a dry run are not limited.
+		{"sweep", map[string]any{"dry-run": false}, []string{"sweep", "--dry-run=false", "--json"}, ""},
 	} {
 		argv, in, err := mcpArgv(cmd(c.cmd), c.args)
 		got := ""
@@ -65,6 +72,11 @@ func TestMCPArgv(t *testing.T) {
 		{"next", map[string]any{"caps": []any{"a,b"}}, "without commas"},
 		{"deps", map[string]any{"id": 7}, "non-empty string"},
 		{"claim", map[string]any{"id": "--next"}, "must not start with -"},
+		// A real reap or gc is a person's, at the CLI (PROCESS §12).
+		{"reap", map[string]any{"dry-run": false, "only": "x-1@01ABC"}, "bops reap --dry-run=false --only <id>@<run>"},
+		{"reap", map[string]any{"dry-run": false}, "a real run is a person's decision"},
+		{"reap", map[string]any{"dry-run": "false"}, "dry-run must be true"},
+		{"gc", map[string]any{"dry-run": false, "only": "x-1"}, "bops gc --dry-run=false --only"},
 	} {
 		if _, _, err := mcpArgv(cmd(c.cmd), c.args); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s %v: err %v, want %q", c.cmd, c.args, err, c.want)
@@ -121,6 +133,7 @@ func TestServeMCP(t *testing.T) {
 			`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`,
 			`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"deps","arguments":{}}}`,
 			`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"claim","arguments":{"id":"x-1","force":true}}}`,
+			`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"reap","arguments":{"dry-run":false,"only":"x-1"}}}`,
 		}, "\n") + "\n")
 		out, err := cmd.Output()
 		if err != nil {
@@ -135,7 +148,7 @@ func TestServeMCP(t *testing.T) {
 			}
 			resps = append(resps, r)
 		}
-		if len(resps) != 4 {
+		if len(resps) != 5 {
 			t.Fatalf("writes=%v: %d responses: %s", writes, len(resps), out)
 		}
 		tools := resps[1]["result"].(map[string]any)["tools"].([]any)
@@ -153,6 +166,36 @@ func TestServeMCP(t *testing.T) {
 			}
 		} else if e, _ := resps[3]["error"].(map[string]any); e == nil || !strings.Contains(e["message"].(string), "unknown tool claim") {
 			t.Errorf("claim without --enable-writes = %v", resps[3])
+		}
+		if writes {
+			// Even with the write tools, reap only previews: a real run is a
+			// person's, at the CLI, and is refused before bops runs.
+			r := resps[4]["result"].(map[string]any)
+			if text := r["content"].([]any)[0].(map[string]any)["text"].(string); r["isError"] != true || !strings.Contains(text, "a real run is a person's decision") {
+				t.Errorf("reap dry-run false = %v", r)
+			}
+			for _, tl := range tools {
+				tool := tl.(map[string]any)
+				if tool["name"] != "reap" && tool["name"] != "gc" {
+					continue
+				}
+				dry, _ := tool["inputSchema"].(map[string]any)["properties"].(map[string]any)["dry-run"].(map[string]any)
+				if dry == nil || !strings.Contains(dry["description"].(string), "Only true") || !strings.Contains(tool["description"].(string), "Preview only here") || strings.Contains(tool["description"].(string), "Writes:") {
+					t.Errorf("%s tool does not say it previews only: %v", tool["name"], tool)
+				}
+			}
+		} else if e, _ := resps[4]["error"].(map[string]any); e == nil || !strings.Contains(e["message"].(string), "unknown tool reap") {
+			t.Errorf("reap without --enable-writes = %v", resps[4])
+		}
+	}
+	// The CLI still takes a real run: it gets past its flags to the repo
+	// check (exit 1 here, with no git repo), not a refusal or a usage error.
+	for _, c := range []string{"reap", "gc"} {
+		cmd := exec.Command(bin, c, "--dry-run=false", "--only", "x-1", "--json")
+		out, err := cmd.Output()
+		var ee *exec.ExitError
+		if !errors.As(err, &ee) || ee.ExitCode() != exitCantRun || strings.Contains(string(out), "person's decision") {
+			t.Errorf("bops %s --dry-run=false: err %v, out %s; want exit %d past the flags", c, err, out, exitCantRun)
 		}
 	}
 }
