@@ -36,7 +36,7 @@ What should I work on?
 | `--n` | int | `3` |  |
 | `--pool` | string? |  | Serve only beads labelled pool:<pool>. |
 
-Wraps: `bd ready --json`, `bd list --status in_progress --json`, `with --include-unworkable: bd gate list --limit 0 --json, bd blocked --json, bd show <id> --json (each bead open gates alone hold back)`.
+Wraps: `bd ready --json`, `bd list --status in_progress --json`, `git fetch refs/bops/claims/* (one round trip, so W14 sees claims the ledger has not caught up with; on failure a warning and the last sync's copy)`, `with --include-unworkable: bd gate list --limit 0 --json, bd blocked --json, bd show <id> --json (each bead open gates alone hold back)`.
 
 Output:
 
@@ -68,12 +68,13 @@ Take this bead for this run
 | Arg | Type | Default | Doc |
 |---|---|---|---|
 | `--force` | bool | `false` | Take over a claim idle for stale_minutes (default 120), or an orphan. Refused on a landing bead. |
-| `<id>` (positional) | string |  |  |
+| `<id>` (positional) | string? |  | The bead to claim. Required unless --next. |
+| `--next` | bool | `false` | No id: claim the first workable bead in next's order, trying the next on lost, refused, ref_contention or a bead bd cannot show (at most 5 tries, while 30s of budget is left; skipped lists them). Refused, naming them, when the run already holds a bead. |
 | `--resume` | bool | `false` | Take back a landing bead for PR rework, or your own held bead from another machine. Only the ref's actor can. |
 
-Preconditions: assignee is empty OR --force; status in (open, ready); no run: label; no label listed in blocking_labels (config; --force skips it, and a bead this run already holds answers held); the lock remote (lock.remote, default origin) matches the Dolt remote (lock.mode ref); no other bops process on this machine is working on the bead (waits up to 10 seconds, then ref_contention); --resume: the claim ref's actor is this run's, and its state is landing, or held with a machine= that is not this machine (a held ref with no machine= is refused).
+Preconditions: an id, or --next and no id (--next takes neither --force nor --resume, and is refused while the run holds any bead); assignee is empty OR --force; status in (open, ready); no run: label; no label listed in blocking_labels (config; --force skips it, and a bead this run already holds answers held); the lock remote (lock.remote, default origin) matches the Dolt remote (lock.mode ref); no other bops process on this machine is working on the bead (waits up to 10 seconds, then ref_contention); --resume: the claim ref's actor is this run's, and its state is landing, or held with a machine= that is not this machine (a held ref with no machine= is refused).
 
-Wraps: `git push refs/bops/claims/<id> (create-only)`, `bd dolt pull`, `bd update <id> --claim`, `bd label add <id> run:<ulid>`, `bd comments add <id>`, `bd dolt push`.
+Wraps: `with --next: next's reads, then the steps below per candidate (bead wait 2 seconds)`, `git push refs/bops/claims/<id> (create-only)`, `bd dolt pull`, `bd update <id> --claim`, `bd label add <id> run:<ulid>`, `bd comments add <id>`, `bd dolt push`.
 
 Output:
 
@@ -92,6 +93,8 @@ Output:
   "stale_minutes": "int?",
   "retry": "string?",
   "side_effects": "string?",
+  "next_candidate": "string?",
+  "skipped": "object[]?",
   "warnings": "string[]?"
 }
 ```

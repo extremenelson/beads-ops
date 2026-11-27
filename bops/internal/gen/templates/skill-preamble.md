@@ -14,14 +14,14 @@ A claim is held by a git ref on `origin`, which makes it safe across machines an
 ## The loop
 
 1. **Orient.** Run `bd list --status in_progress --json`. Work the bead the person named; otherwise unfinished work comes first. A bead assigned to your name may be another session's (agents share names): read `bd comments <id>`, and ask if unsure. `bops:landing` means done and waiting on its PR.
-2. **Choose.** Run `bops next`. Take the first candidate unless you have a reason not to. `bops next` never claims for you. Read it with `bd show <id>` for its acceptance criteria.
+2. **Choose.** Run `bops next`. Take the first unless you have a reason not to; `next` never claims. `bd show <id>` gives its acceptance criteria.
 3. **Make a worktree, then claim inside it.** Your run identity belongs to the worktree:
    ```bash
    bd worktree create .worktrees/<id> --branch {branch}
    cd .worktrees/<id>
    bops claim <id>
    ```
-   If `bd worktree create` refuses, use `git worktree add .worktrees/<id> -b {branch}` instead. If the outcome is `lost` or `refused`, run `git worktree remove .worktrees/<id>` and choose again. `held` means this run already has it, so carry on. `ledger_pending: true` means you own the bead and `bops sync` will finish the bookkeeping. Never use `--force` on a claim that may be live: it works only after `stale_minutes` idle (`.bops.json`, default 120), and only a person decides that.
+   If `bd worktree create` refuses, use `git worktree add .worktrees/<id> -b {branch}` instead. If the outcome is `lost` or `refused`, run `git worktree remove .worktrees/<id>` and choose again: `next_candidate` names one. `held` means this run already has it, so carry on. `ledger_pending: true` means you own the bead and `bops sync` will finish the bookkeeping. Never `--force` a claim that may be live: it works only after `stale_minutes` idle (`.bops.json`, default 120), and only a person decides that.
 4. **Work.** Run `bops` commands from inside the worktree until you remove it in step 7. Put the bead id in commit subjects.
 5. **Note your progress.** Run `bops note` at each milestone, **at least once an hour during long turns**, and before you stop. After `stale_minutes` with no note, a claim counts as abandoned on other machines. `note` refreshes the claim directly, and works offline with a warning:
    ```bash

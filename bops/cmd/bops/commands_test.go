@@ -774,6 +774,28 @@ func TestGCDetailsPrintsEachRefWithoutControlBytes(t *testing.T) {
 	}
 }
 
+func TestClaimUsage(t *testing.T) {
+	m, err := manifest.Parse(bops.ManifestJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		nil,                    // neither an id nor --next
+		{"--next", "x-1"},      // --next takes no id
+		{"x-1", "--next"},      // in either order
+		{"--next", "--force"},  // nor --force
+		{"--next", "--resume"}, // nor --resume
+		{"x-1", "--force", "--resume"},
+	} {
+		stderr, _ := os.CreateTemp(t.TempDir(), "err")
+		code := cmdClaim(context.Background(), m, args, true, stderr, stderr)
+		msg, _ := os.ReadFile(stderr.Name())
+		if code != exitUsage || !strings.Contains(string(msg), "bops claim --next") {
+			t.Errorf("%v: exit %d, stderr %q; want usage", args, code, msg)
+		}
+	}
+}
+
 func TestRenewNeedsAnID(t *testing.T) {
 	m, err := manifest.Parse(bops.ManifestJSON)
 	if err != nil {

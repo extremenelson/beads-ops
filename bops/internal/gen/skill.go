@@ -242,8 +242,12 @@ func surfaces(c manifest.Command, key string) []string {
 // escaped because the signature sits in a table cell.
 func signature(c manifest.Command) string {
 	parts := []string{"bops " + c.Name}
-	if _, ok := c.Args["id"]; ok {
-		parts = append(parts, "<id>")
+	if a, ok := c.Args["id"]; ok {
+		if strings.HasSuffix(a.Type, "?") {
+			parts = append(parts, "[<id>]")
+		} else {
+			parts = append(parts, "<id>")
+		}
 	}
 	for _, an := range c.ArgNames() {
 		a := c.Args[an]

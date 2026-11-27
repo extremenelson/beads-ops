@@ -90,7 +90,7 @@ func SessionStart(ctx context.Context, env *Env) (*SessionStartOut, error) {
 		out.Stale = len(st.Stale) + len(st.Orphans)
 	}
 
-	if n, err := Next(ctx, env, NextOpts{N: 1 << 20}); err != nil {
+	if n, err := Next(ctx, env, NextOpts{N: 1 << 20, Local: syncErr == nil}); err != nil { // a sync that worked just fetched the refs
 		warn("next", err)
 	} else {
 		for _, c := range n.Candidates {

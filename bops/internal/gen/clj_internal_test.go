@@ -63,7 +63,7 @@ func cljOut(t *testing.T) string {
 func TestCljSpecs(t *testing.T) {
 	out := cljOut(t)
 	for _, want := range []string{
-		`"claim" {:id? true :text nil :opts {:force :bool, :resume :bool} :required #{}}`,
+		`"claim" {:id? :optional :text nil :opts {:force :bool, :next :bool, :resume :bool} :required #{}}`,
 		`"note" {:id? true :text :required :opts {} :required #{}}`,
 		`"release" {:id? true :text :optional :opts {:reason :value} :required #{:reason}}`,
 		`"land" {:id? true :text nil :opts {:forge :value, :ref :value, :sha :value, :verify :bool} :required #{:ref :sha}}`,

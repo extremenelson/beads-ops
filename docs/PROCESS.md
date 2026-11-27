@@ -57,6 +57,7 @@ Rule: **in_progress beats ready.** Finish or hand off before claiming new work. 
 ```bash
 bd show <id> --long                   # read description, design, acceptance, notes, deps
 bops claim <id>                       # the lock: one git ref per bead, then assignee + in_progress
+bops claim --next                     # or: claim next's first free bead, moving on if one is lost
 ```
 
 Never start editing files before the claim lands. In a multi-agent setup the claim *is* the lock, and on a `bops` ledger the lock is the claim ref, not the assignee. Act on the exit code:
@@ -64,7 +65,7 @@ Never start editing files before the claim lands. In a multi-agent setup the cla
 | Exit | `outcome` | Do |
 |---|---|---|
 | 0 | `claimed`, `held` | Work. `ledger_pending: true` only means the assignee shows up after `bops sync` |
-| 3 | `lost`, `refused` | Do not work. Pick another bead; `holder` or `reason` says why |
+| 3 | `lost`, `refused` | Do not work. Pick another bead; `holder` or `reason` says why, and `next_candidate` names one to try |
 | 1 | `unreachable` and the rest | Stop. Rerun when the remote is reachable; the result's `side_effects` says what may have been written |
 
 Claiming needs the network: the lock lives on the remote. Notes work offline (§8). The exception is a ledger used on one machine with `lock.mode: none` in `.bops.json` (§8): claims then go through `bd update --claim` with no ref and no network, and every result warns `lock.mode is none`. A ledger without `bops` keeps `bd update <id> --claim`, with the one-replica limit above.

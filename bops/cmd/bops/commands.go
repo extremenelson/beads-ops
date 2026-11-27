@@ -239,9 +239,14 @@ func cmdClaim(ctx context.Context, m *manifest.Manifest, args []string, asJSON b
 	fs := newFlagSet("claim", stderr)
 	force := fs.Bool("force", false, "take over an expired claim or an orphan")
 	resume := fs.Bool("resume", false, "take back a landing bead for PR rework")
+	next := fs.Bool("next", false, "claim the first free bead next offers")
 	fs.Bool("json", false, "")
-	if err := parseAnyOrder(fs, args); err != nil || fs.NArg() != 1 || (*force && *resume) {
-		fmt.Fprintln(stderr, "usage: bops claim <id> [--force | --resume]")
+	err := parseAnyOrder(fs, args)
+	if err == nil && *next && (fs.NArg() != 0 || *force || *resume) {
+		err = errors.New("--next takes no id, --force or --resume")
+	}
+	if err != nil || (!*next && fs.NArg() != 1) || (*force && *resume) {
+		fmt.Fprintln(stderr, "usage: bops claim <id> [--force | --resume] | bops claim --next")
 		return exitUsage
 	}
 	env, store, err := newEnv(runstate.Read)
@@ -250,9 +255,12 @@ func cmdClaim(ctx context.Context, m *manifest.Manifest, args []string, asJSON b
 	}
 	defer store.Close()
 	var out *intent.ClaimOut
-	if *resume {
+	switch {
+	case *next:
+		out, err = intent.ClaimNext(ctx, env)
+	case *resume:
 		out, err = intent.ClaimResume(ctx, env, fs.Arg(0))
-	} else {
+	default:
 		out, err = intent.Claim(ctx, env, fs.Arg(0), *force)
 	}
 	return emit(m, "claim", asJSON, out, err, stdout, stderr)

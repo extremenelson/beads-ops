@@ -98,14 +98,17 @@ func cljRequired(a manifest.Arg) bool {
 }
 
 func cljSpec(c manifest.Command) string {
-	var id bool
+	id := "false"
 	text := "nil"
 	var opts, req []string
 	for _, an := range c.ArgNames() {
 		a := c.Args[an]
 		switch k := cljArgKind(an, a); k {
 		case "id":
-			id = true
+			id = "true"
+			if strings.HasSuffix(a.Type, "?") {
+				id = ":optional"
+			}
 		case "text":
 			text = ":required"
 		case "text?":
@@ -117,17 +120,17 @@ func cljSpec(c manifest.Command) string {
 			}
 		}
 	}
-	return fmt.Sprintf("{:id? %t :text %s :opts {%s} :required #{%s}}", id, text, strings.Join(opts, ", "), strings.Join(req, " "))
+	return fmt.Sprintf("{:id? %s :text %s :opts {%s} :required #{%s}}", id, text, strings.Join(opts, ", "), strings.Join(req, " "))
 }
 
 func cljFn(c manifest.Command) string {
-	var id, text bool
+	var id, idOptional, text bool
 	var optDoc []string
 	for _, an := range c.ArgNames() {
 		a := c.Args[an]
 		switch k := cljArgKind(an, a); k {
 		case "id":
-			id = true
+			id, idOptional = true, strings.HasSuffix(a.Type, "?")
 		case "text":
 			text = true
 		case "text?":
@@ -157,6 +160,9 @@ func cljFn(c manifest.Command) string {
 		doc = "bops " + c.Name
 	}
 	doc += ". Runs `bops " + c.Name + "`; returns {:exit :doc :err}."
+	if idOptional {
+		doc += " id may be nil."
+	}
 	if len(optDoc) > 0 {
 		doc += "\n   opts: " + strings.Join(optDoc, "; ") + "."
 	}
@@ -305,15 +311,17 @@ const cljCall = `
         extra (remove (conj (set (keys kinds)) :text) (keys opts))]
     (when (seq extra)
       (throw (ex-info (str "bops " command " takes no option " (str/join ", " extra)) {:command command :options extra})))
-    (when (and id? (str/blank? id))
+    (when (and (true? id?) (str/blank? id))
       (throw (ex-info (str "bops " command " needs a bead id") {:command command})))
+    (when (and id? (string? id) (str/starts-with? id "-"))
+      (throw (ex-info (str "bops " command ": a bead id must not start with -") {:command command :id id})))
     (when (and (= :required text) (str/blank? (:text opts)))
       (throw (ex-info (str "bops " command " needs text") {:command command})))
     (doseq [k required]
       (when (nil? (get opts k))
         (throw (ex-info (str "bops " command " needs " k) {:command command :option k}))))
     (-> [command]
-        (cond-> id? (conj id))
+        (cond-> (and id? (not (str/blank? id))) (conj id))
         (into (mapcat (fn [[k kind]]
                         (let [v (get opts k) flag (str "--" (name k))]
                           (cond
