@@ -5,6 +5,10 @@
 - Fixtures used by `internal/intent` tests are inline and **synthetic**: they
   copy the field names of `bd 1.3.x --json` output (`ready`, `list`, `show`)
   with invented content. Never commit a real ledger export here.
+  The exception is `internal/intent/testdata/bd-1.3.4-*`: bd 1.3.4's real
+  stderr for a pull that stops for a person, and its `bd diff HEAD
+  origin/main --json` on the same clone, captured from the throwaway ledger
+  of `docs/research/2026-11-ledger-contention.sh pulls <dir> delete`.
 
 ## bd JSON shapes we rely on (bd 1.3.2, raw mode)
 

@@ -53,6 +53,7 @@ func run(args []string, stdout, stderr *os.File) int {
 	ctx, cancel := context.WithTimeout(context.Background(), budget(name))
 	defer cancel()
 	gateWarnings = nil
+	commandName = name
 	if name == "guard" { // a hook on every Bash call: no gate, no network, fails open
 		return cmdGuard(m, rest, wantJSON, os.Stdin, isTerminal(os.Stdin), stdout, stderr)
 	}

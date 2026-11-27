@@ -304,6 +304,8 @@ bd sync                            # re-run; expect 0
 
 Policy: whoever owns the *claim* on the conflicting bead resolves it; their copy of notes wins (`ours` from their machine). Record the resolution in the bead's notes.
 
+A bead deleted on one machine while another holds it and has changed its row stops the holder's `bd dolt pull` with `merge conflicts in issues require operator resolution; merge aborted and working set restored` (measured on bd 1.3.4: [same-row pulls](research/2026-11-ledger-contention.md#same-row-pulls-on-an-unpushed-claim-display-2026-11-27)). The merge is aborted, so `bd doctor` finds no conflict table, and every later pull and push from that clone fails the same way. `bops` reports it as `code: ledger_conflict`, stops retrying, and `bops status` and `bops doctor` show it with the beads only one side has (the clone, or the remote) until a pull succeeds. Ask whoever deleted the bead whether the delete stands. `bd dolt pull --strategy theirs` keeps the remote's side (a delete made there stays), but on bd 1.3.4 it can instead fail with a foreign key error; `bd dolt pull --strategy ours` keeps this clone's and brings a bead deleted there back without its labels and comments, after which `bd delete <id> --force` deletes it again if the delete stands. Either strategy leaves tables uncommitted: run `bd dolt commit`, then `bops sync`.
+
 ### Exit-4 runbook (stuck dirty working set)
 
 Something left uncommitted edits in the local Dolt working set and they aren't clearing. `bd vc status` shows them. `bd dolt commit` if they're legitimate; `bd doctor --fix` if they're junk. Then `bd sync`.

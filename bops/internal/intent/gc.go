@@ -152,7 +152,7 @@ func GC(ctx context.Context, env *Env, o GCOpts) (*GCOut, error) {
 		if err := env.checkRemote(ctx); err != nil {
 			return out, err
 		}
-		if _, err := withLockRetry(ctx, env, "dolt", "pull"); err != nil {
+		if _, err := env.doltPull(ctx); err != nil {
 			return out, fmt.Errorf("gc: ledger pull failed, so nothing was deleted: %w", err)
 		}
 		if err := env.Lock.Fetch(ctx); err != nil {

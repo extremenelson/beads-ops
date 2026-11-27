@@ -49,6 +49,7 @@ type fakeBD struct {
 	onPull  func()
 	ready   []byte // bd ready output; nil means two fixed beads
 	prime   string
+	diff    []byte // `diff HEAD <ref> --json`; nil fails it
 }
 
 func newBD() *fakeBD {
@@ -105,6 +106,11 @@ func (b *fakeBD) Run(_ context.Context, args ...string) ([]byte, error) {
 		return nil, nil
 	case "heartbeat":
 		return nil, nil
+	case "diff":
+		if b.diff == nil {
+			return nil, errors.New("fakeBD: no diff")
+		}
+		return b.diff, nil
 	case "show":
 		n, ok := b.beads[args[1]]
 		if !ok {

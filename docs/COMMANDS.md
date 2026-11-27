@@ -317,7 +317,7 @@ Every claim on every machine
 
 Never: write the ledger or a ref, call a claim stale when stale would not: a ref whose state or at is unreadable or whose at is in the future, or a no-ref claim whose comments could not be read, is unknown, ask the forge: branch and mr are inferred from branch names and the ledger, as claim --force's previous infers them.
 
-Wraps: `git fetch --prune refs/bops/claims/* (the last sync's copy if offline, with a warning)`, `bd list --status in_progress --limit 0 --json`, `bd comments <id> --json`, `git ls-remote --heads <lock remote> (and origin)`, `git for-each-ref refs/heads refs/remotes`.
+Wraps: `git fetch --prune refs/bops/claims/* (the last sync's copy if offline, with a warning)`, `bd list --status in_progress --limit 0 --json`, `bd comments <id> --json`, `git ls-remote --heads <lock remote> (and origin)`, `git for-each-ref refs/heads refs/remotes`, `ledger-conflict.json in this clone's state directory (read only: the record a command's stopped ledger pull left)`.
 
 Output:
 
@@ -342,6 +342,7 @@ Output:
       "touches": "string[]?"
     }
   ],
+  "ledger_conflict": "object? (this clone's last ledger pull stopped on a merge conflict needing a person, and no pull has succeeded since: at, command, ref, beads (this clone has, the remote does not), remote_only (the remote has, this clone does not), beads_read, detail, next)",
   "warnings": "string[]"
 }
 ```
@@ -638,7 +639,7 @@ Can the claim lock work against its remote (lock.remote, default origin)?
 
 Never: write a claim ref or the ledger, leave its probe ref behind silently (a failed delete is a warning naming the command).
 
-Wraps: `origin: git remote get-url <lock.remote>`, `fetch: git ls-remote <lock.remote> refs/bops/claims/*`, `push: git push --dry-run (create-only) refs/bops/doctor/<nonce>`, `lock: git push (create-only) refs/bops/doctor/<nonce>, then a second create-only push that must be refused`, `git push (lease): delete the probe ref`, `dolt_remote: bd dolt remote list --json (a Dolt remote on the lock remote's repository, else remote_mismatch)`, `blocking_labels: bd list --all --include-gates --limit 0 --json, once, when blocking_labels are set: a label no bead carries, matched exactly, is a warning, and a list bd cannot give is a not-checked warning, neither a failed check`, `git log -1 -- bops/ and git merge-base --is-ancestor, only in bops's own source checkout: a binary built before the last bops/ commit is a warning, not a failed check`, `bops_version: only when .bops.json sets min_bops: this bops older than it fails (bops_too_old), and a build with no version is a warning`.
+Wraps: `origin: git remote get-url <lock.remote>`, `fetch: git ls-remote <lock.remote> refs/bops/claims/*`, `push: git push --dry-run (create-only) refs/bops/doctor/<nonce>`, `lock: git push (create-only) refs/bops/doctor/<nonce>, then a second create-only push that must be refused`, `git push (lease): delete the probe ref`, `dolt_remote: bd dolt remote list --json (a Dolt remote on the lock remote's repository, else remote_mismatch)`, `blocking_labels: bd list --all --include-gates --limit 0 --json, once, when blocking_labels are set: a label no bead carries, matched exactly, is a warning, and a list bd cannot give is a not-checked warning, neither a failed check`, `git log -1 -- bops/ and git merge-base --is-ancestor, only in bops's own source checkout: a binary built before the last bops/ commit is a warning, not a failed check`, `bops_version: only when .bops.json sets min_bops: this bops older than it fails (bops_too_old), and a build with no version is a warning`, `ledger_conflict: only when this clone's state directory records a ledger pull that stopped on a merge conflict needing a person (read, never pulled): fails with ledger_conflict, the beads and the runbook in next`.
 
 Output:
 
@@ -648,7 +649,7 @@ Output:
   "probe_ref": "string",
   "checks": [
     {
-      "id": "origin|fetch|push|lock|dolt_remote|bops_version",
+      "id": "origin|fetch|push|lock|dolt_remote|bops_version|ledger_conflict",
       "status": "ok|fail|skip",
       "detail": "string",
       "code": "string?",
