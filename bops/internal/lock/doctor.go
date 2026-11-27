@@ -101,7 +101,7 @@ func (l *Lock) Doctor(ctx context.Context) *Diagnosis {
 		return d
 	}
 	d.ProbeRef = probeRoot + hex.EncodeToString(nonce)
-	first, err := l.commit(ctx, "probe")
+	first, err := l.commit(ctx, "probe", 0)
 	if err != nil {
 		d.Add(failed("push", err, "check that this is a writable git repository: `git status`"))
 		d.skip("lock")
@@ -148,7 +148,7 @@ func (l *Lock) probeLock(ctx context.Context, ref, first string) Check {
 	case noStatus:
 		return failed("lock", l.failure(out, err), "rerun bops doctor; if it keeps failing, check "+r+" with `git push --dry-run "+r+" HEAD`")
 	}
-	second, cerr := l.commit(ctx, "probe")
+	second, cerr := l.commit(ctx, "probe", 0)
 	if cerr != nil {
 		return failed("lock", cerr, "check that this is a writable git repository: `git status`")
 	}

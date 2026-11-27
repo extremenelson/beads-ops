@@ -46,6 +46,11 @@ type Holder struct {
 	Actor      string `json:"actor"`
 	Run        string `json:"run"`
 	AgeMinutes int    `json:"age_minutes"`
+	// Generation is the holder's claim generation from its ref (SPEC §3.0),
+	// normally higher than the caller's when a takeover superseded it; it is
+	// display, never compared to decide ownership. Omitted when unrecorded,
+	// as on a ref from an older bops or a ledger holder.
+	Generation int `json:"generation,omitempty"`
 }
 
 func negative(outcome string) bool { return outcome == OutcomeLost || outcome == OutcomeRefused }
@@ -54,7 +59,7 @@ func (e *Env) holder(r *lock.Ref) *Holder {
 	if r == nil {
 		return nil
 	}
-	h := &Holder{Actor: r.Actor, Run: r.Run}
+	h := &Holder{Actor: r.Actor, Run: r.Run, Generation: r.Gen}
 	if !r.At.IsZero() && e.now().After(r.At) {
 		h.AgeMinutes = int(e.now().Sub(r.At).Minutes())
 	}
@@ -372,19 +377,22 @@ func (e *Env) addClaimComment(ctx context.Context, id, actor, run, extra string)
 
 // ClaimOut is the `claim` output.
 type ClaimOut struct {
-	ID            string    `json:"id"`
-	Run           string    `json:"run"`
-	Outcome       string    `json:"outcome"`
-	ClaimedAt     time.Time `json:"claimed_at,omitzero"`
-	ReadbackOK    bool      `json:"readback_ok,omitempty"`
-	LedgerPending bool      `json:"ledger_pending,omitempty"`
-	RefPending    bool      `json:"ref_pending,omitempty"`
-	Holder        *Holder   `json:"holder,omitempty"`
-	Reason        string    `json:"reason,omitempty"`
-	AgeMinutes    int       `json:"age_minutes,omitempty"`
-	StaleMinutes  int       `json:"stale_minutes,omitempty"`
-	Retry         string    `json:"retry,omitempty"`
-	SideEffects   string    `json:"side_effects,omitempty"`
+	ID        string    `json:"id"`
+	Run       string    `json:"run"`
+	Outcome   string    `json:"outcome"`
+	ClaimedAt time.Time `json:"claimed_at,omitzero"`
+	// Generation is the claimed ref's generation (SPEC §3.0); omitted when
+	// unrecorded or when no ref was written (lock.mode none).
+	Generation    int     `json:"generation,omitempty"`
+	ReadbackOK    bool    `json:"readback_ok,omitempty"`
+	LedgerPending bool    `json:"ledger_pending,omitempty"`
+	RefPending    bool    `json:"ref_pending,omitempty"`
+	Holder        *Holder `json:"holder,omitempty"`
+	Reason        string  `json:"reason,omitempty"`
+	AgeMinutes    int     `json:"age_minutes,omitempty"`
+	StaleMinutes  int     `json:"stale_minutes,omitempty"`
+	Retry         string  `json:"retry,omitempty"`
+	SideEffects   string  `json:"side_effects,omitempty"`
 	// NextCandidate is, on lost or refused, the bead `next` would offer now.
 	NextCandidate string `json:"next_candidate,omitempty"`
 	// Skipped lists, for claim --next, the candidates lost or refused first.
@@ -508,7 +516,7 @@ func claimOne(ctx context.Context, env *Env, id string, force bool) (*ClaimOut, 
 		cur = fresh
 	}
 
-	out.Outcome, out.ClaimedAt = OutcomeClaimed, env.now()
+	out.Outcome, out.ClaimedAt, out.Generation = OutcomeClaimed, env.now(), res.Gen
 	if err := env.publishClaim(ctx, cur, "", out); err != nil {
 		out.LedgerPending = true
 		out.Warnings = append(out.Warnings, "ledger display pending: "+err.Error())
@@ -828,7 +836,7 @@ func claimForce(ctx context.Context, env *Env, id string) (*ClaimOut, error) {
 		return out, nil
 	}
 	env.event("claim", id, "ref_replace", OutcomeClaimed, res.SHA, nil)
-	out.Outcome, out.ClaimedAt = OutcomeClaimed, now
+	out.Outcome, out.ClaimedAt, out.Generation = OutcomeClaimed, now, res.Gen
 	env.finishTakeover(ctx, cur, res.SHA, " takeover="+previous, out)
 	out.handoff = &handoffSrc{cur, prev}
 	return out, nil
@@ -886,13 +894,14 @@ func ClaimResume(ctx context.Context, env *Env, id string) (*ClaimOut, error) {
 		env.event("claim", id, "ref_replace", OutcomeUnreachable, "", err)
 		return out.fail(err)
 	}
+	out.Warnings = append(out.Warnings, res.Warnings...)
 	if res.Outcome == lock.Lost {
 		out.Outcome, out.Holder = OutcomeLost, env.holder(res.Holder)
 		env.event("claim", id, "ref_replace", OutcomeLost, "", nil)
 		return out, nil
 	}
 	env.event("claim", id, "ref_replace", OutcomeClaimed, res.SHA, nil)
-	out.Outcome, out.ClaimedAt = OutcomeClaimed, env.now()
+	out.Outcome, out.ClaimedAt, out.Generation = OutcomeClaimed, env.now(), res.Gen
 	if _, err := withLockRetry(ctx, env, "dolt", "pull"); err != nil {
 		out.Warnings = append(out.Warnings, "ledger not pulled: "+err.Error())
 	}
@@ -1225,6 +1234,7 @@ func (e *Env) verifyHold(ctx context.Context, id, reason string, out *ReleaseOut
 		_, err = out.fail(err)
 		return "", true, err
 	}
+	out.Warnings = append(out.Warnings, res.Warnings...)
 	if res.Outcome == lock.Lost {
 		if err := e.Lock.Journal.Drop(id); err != nil {
 			_, err = out.fail(err)

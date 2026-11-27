@@ -625,6 +625,7 @@ func (e *Env) refreshRef(ctx context.Context, cmd, id, done string, warnings *[]
 		e.event(cmd, id, "ref_refresh", "pending", entry.SHA, err)
 		return refreshResult{outcome: refreshFailed, err: err}
 	}
+	*warnings = append(*warnings, prefixed(id, res.Warnings)...)
 	if res.Outcome == lock.Lost {
 		if err := e.Lock.Journal.Drop(id); err != nil {
 			*warnings = append(*warnings, err.Error())

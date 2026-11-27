@@ -87,6 +87,7 @@ Output:
   "run": "string",
   "outcome": "string",
   "claimed_at": "string?",
+  "generation": "int?",
   "readback_ok": "bool?",
   "ledger_pending": "bool?",
   "ref_pending": "bool?",
