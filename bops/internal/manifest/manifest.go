@@ -25,9 +25,13 @@ type Common struct {
 
 // Command is one intent-level command.
 type Command struct {
-	Name          string            `json:"name"`
-	Intent        string            `json:"intent"`
-	Kind          string            `json:"kind"` // read | write | read+sync
+	Name   string `json:"name"`
+	Intent string `json:"intent"`
+	Kind   string `json:"kind"` // read | write | read+sync
+	// Agents is "preview" when the agent surfaces (the cc and codex skills
+	// and the MCP tool) may run only the command's dry run: a real run is a
+	// person's, at the CLI (SPEC §4). Empty means no such limit.
+	Agents        string            `json:"agents,omitempty"`
 	Args          map[string]Arg    `json:"args"`
 	Preconditions []string          `json:"preconditions,omitempty"`
 	Effects       map[string]string `json:"effects,omitempty"`
@@ -123,6 +127,15 @@ func (m *Manifest) Validate() error {
 				return fmt.Errorf("%s: enum arg %q has no values", where, an)
 			}
 		}
+		switch c.Agents {
+		case "":
+		case "preview":
+			if d, ok := c.Args["dry-run"]; !ok || d.Type != "bool" || d.Default != true {
+				return fmt.Errorf("%s: agents preview needs a dry-run bool arg defaulting to true", where)
+			}
+		default:
+			return fmt.Errorf("%s: bad agents %q", where, c.Agents)
+		}
 		if c.Kind == "write" {
 			if mcp, ok := c.Surfaces["mcp"].(map[string]any); ok {
 				if ro, _ := mcp["readOnly"].(bool); ro {
@@ -152,6 +165,10 @@ func (m *Manifest) Names() []string {
 	}
 	return out
 }
+
+// PreviewOnly reports whether the agent surfaces may run only the
+// command's dry run (Agents "preview").
+func (c *Command) PreviewOnly() bool { return c.Agents == "preview" }
 
 // ArgNames returns a command's argument names, sorted, for deterministic output.
 func (c *Command) ArgNames() []string {

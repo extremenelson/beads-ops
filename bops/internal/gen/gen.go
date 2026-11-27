@@ -126,6 +126,9 @@ func Docs(m *manifest.Manifest) ([]byte, error) {
 			}
 			b.WriteString("\n")
 		}
+		if c.PreviewOnly() {
+			b.WriteString("Agents: preview only. The MCP tool refuses `dry-run: false`, and the generated skills tell the agent to leave the real run to a person (instructions only: an agent with a shell can still type it). `--dry-run=false` is a person's, at the CLI.\n\n")
+		}
 		if len(c.Preconditions) > 0 {
 			b.WriteString("Preconditions: " + strings.Join(c.Preconditions, "; ") + ".\n\n")
 		}

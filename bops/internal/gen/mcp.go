@@ -26,7 +26,9 @@ const MCPPageBytes = 20 * 1024
 // order: kind=write commands only with enableWrites (SPEC §8). A tool's
 // arguments are the command's: the bead id, text as a string (bops reads it
 // on stdin), and every other argument by its own name. Each tool also takes
-// cursor, to fetch the next page of a result over MCPPageBytes.
+// cursor, to fetch the next page of a result over MCPPageBytes. A
+// preview-only command (manifest agents "preview") keeps its dry-run
+// argument, documented as true only; serve-mcp refuses false.
 func MCPTools(m *manifest.Manifest, enableWrites bool) []MCPTool {
 	var out []MCPTool
 	for _, c := range m.Commands {
@@ -40,6 +42,9 @@ func MCPTools(m *manifest.Manifest, enableWrites bool) []MCPTool {
 		for _, an := range c.ArgNames() {
 			a := c.Args[an]
 			p := mcpProperty(an, a)
+			if an == "dry-run" && c.PreviewOnly() {
+				p["description"] = "Only true (or absent) here: false is refused. A real run is a person's, at the CLI."
+			}
 			props[an] = p
 			switch k := cljArgKind(an, a); {
 			case k == "id" && !strings.HasSuffix(a.Type, "?"), k == "text", k == "value" && cljRequired(a):
@@ -51,7 +56,10 @@ func MCPTools(m *manifest.Manifest, enableWrites bool) []MCPTool {
 			"description": "Only to continue a paginated result: the cursor the previous page gave. Other arguments are then ignored.",
 		}
 		desc := c.Intent + ". Runs `bops " + c.Name + " --json` and returns its JSON document; exit 3 (a negative verdict, ok:false) is a result, not an error."
-		if c.Kind == "write" {
+		switch {
+		case c.PreviewOnly():
+			desc += " Preview only here: it changes neither the ledger nor the claim refs, and dry-run false is refused; hand a person the `bops " + c.Name + " --dry-run=false --only " + OnlyHint(&c) + "` command to run."
+		case c.Kind == "write":
 			desc += " Writes: it changes the ledger or the claim refs on origin."
 		}
 		out = append(out, MCPTool{
@@ -68,6 +76,16 @@ func MCPTools(m *manifest.Manifest, enableWrites bool) []MCPTool {
 		})
 	}
 	return out
+}
+
+// OnlyHint is what a person passes to a preview-only command's --only, built
+// from the preview: reap's <id>@<run> pins the holder each would_release
+// entry showed, so a claim taken over since is skipped, not released.
+func OnlyHint(c *manifest.Command) string {
+	if c.Name == "reap" {
+		return "<id>@<run>,... (each would_release entry's id and run)"
+	}
+	return "<id>,... (from the preview)"
 }
 
 // mcpProperty is the JSON Schema for one argument.

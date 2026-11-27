@@ -158,7 +158,13 @@ func agentBinding(m *manifest.Manifest, h harness, o Options) ([]File, []manifes
 	}
 	b.WriteString(".\n\n| Command | Kind | Intent |\n|---|---|---|\n")
 	for _, c := range skill {
-		fmt.Fprintf(&b, "| `%s` | %s | %s |\n", signature(c), c.Kind, c.Intent)
+		// A preview-only command shows no --dry-run and the kind preview: the
+		// skill runs its dry run, and a person the real one (SPEC §4).
+		kind := c.Kind
+		if c.PreviewOnly() {
+			kind = "preview"
+		}
+		fmt.Fprintf(&b, "| `%s` | %s | %s |\n", signature(c), kind, c.Intent)
 	}
 	files := []File{{Path: "skills/bops/SKILL.md", Data: b.Bytes()}}
 
@@ -237,7 +243,8 @@ func surfaces(c manifest.Command, key string) []string {
 // signature renders how the command line takes the command's arguments,
 // by the rule in manifest.Arg.Flag: the id positional and first, text through
 // --file (stdin when absent, or --file - when the text is optional), every
-// other argument a flag of its own name. A flag is shown optional ([...])
+// other argument a flag of its own name, except a preview-only command's
+// dry-run, which agents never pass. A flag is shown optional ([...])
 // when its type ends in ?, it has a default, or it is a bool. Pipes are
 // escaped because the signature sits in a table cell.
 func signature(c manifest.Command) string {
@@ -255,6 +262,8 @@ func signature(c manifest.Command) string {
 		switch {
 		case f == "":
 			continue // the id, already placed
+		case an == "dry-run" && c.PreviewOnly():
+			continue // agents run only the dry run, the default
 		case strings.HasPrefix(a.Type, "stdin|file"):
 			if strings.HasSuffix(a.Type, "?") {
 				parts = append(parts, "[--file <path>\\|-]")
