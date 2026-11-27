@@ -263,7 +263,27 @@ func cmdClaim(ctx context.Context, m *manifest.Manifest, args []string, asJSON b
 	default:
 		out, err = intent.Claim(ctx, env, fs.Arg(0), *force)
 	}
-	return emit(m, "claim", asJSON, out, err, stdout, stderr)
+	code := emit(m, "claim", asJSON, out, err, stdout, stderr)
+	if !asJSON && out != nil {
+		previousDetails(stdout, out.Previous)
+	}
+	return code
+}
+
+// previousDetails prints the previous attempt of a forced claim, which
+// printKV skips as a nested object. Its text comes from the ledger.
+func previousDetails(w io.Writer, p *intent.Previous) {
+	if p == nil {
+		return
+	}
+	line := func(s string) string { return cleanText(orDashText(strings.Join(strings.Fields(s), " "))) }
+	fmt.Fprintf(w, "previous_holder=%s (run %s, idle %dm)\n", line(p.Actor), line(p.Run), p.AgeMinutes)
+	fmt.Fprintf(w, "previous_last_note=%s\n", line(p.LastNote))
+	if p.NoteRun != "" && p.NoteRun != p.Run {
+		fmt.Fprintf(w, "previous_note_run=%s\n", line(p.NoteRun))
+	}
+	fmt.Fprintf(w, "previous_branch=%s\n", line(p.Branch))
+	fmt.Fprintf(w, "previous_mr=%s\n", line(p.MR))
 }
 
 // noteText reads the note body. It is never taken from an argument.

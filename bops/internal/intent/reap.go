@@ -268,7 +268,9 @@ func (e *Env) reapOne(ctx context.Context, c StaleClaim, d *ReapDone, warnings *
 		}
 		return "; this run now holds " + c.ID + "; once decided, run `bops release " + c.ID + " --reason abandoned` from this checkout"
 	}
-	cl, err := Claim(rctx, e, c.ID, true)
+	// Reap reads the evidence itself once the takeover is done, so it
+	// takes over through claimOne, which leaves the handoff unread.
+	cl, err := claimOne(rctx, e, c.ID, true)
 	if cl != nil {
 		warn(cl.Warnings)
 	}

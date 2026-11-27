@@ -67,7 +67,7 @@ Take this bead for this run
 
 | Arg | Type | Default | Doc |
 |---|---|---|---|
-| `--force` | bool | `false` | Take over a claim idle for stale_minutes (default 120), or an orphan. Refused on a landing bead. |
+| `--force` | bool | `false` | Take over a claim idle for stale_minutes (default 120), or an orphan. Refused on a landing bead. On success, previous names the last holder, its last note's NEXT/BLOCKER paragraph (note_run), branch and MR, all inferred ledger text. |
 | `<id>` (positional) | string? |  | The bead to claim. Required unless --next. |
 | `--next` | bool | `false` | No id: claim the first workable bead in next's order, trying the next on lost, refused, ref_contention or a bead bd cannot show (at most 5 tries, while 30s of budget is left; skipped lists them). Refused, naming them, when the run already holds a bead. |
 | `--resume` | bool | `false` | Take back a landing bead for PR rework, or your own held bead from another machine. Only the ref's actor can. |
@@ -95,6 +95,7 @@ Output:
   "side_effects": "string?",
   "next_candidate": "string?",
   "skipped": "object[]?",
+  "previous": "object?",
   "warnings": "string[]?"
 }
 ```

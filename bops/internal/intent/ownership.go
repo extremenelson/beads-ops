@@ -388,8 +388,14 @@ type ClaimOut struct {
 	// NextCandidate is, on lost or refused, the bead `next` would offer now.
 	NextCandidate string `json:"next_candidate,omitempty"`
 	// Skipped lists, for claim --next, the candidates lost or refused first.
-	Skipped  []ClaimSkip `json:"skipped,omitempty"`
-	Warnings []string    `json:"warnings,omitempty"`
+	Skipped []ClaimSkip `json:"skipped,omitempty"`
+	// Previous is, on a claim --force that took the bead, where the last
+	// attempt stopped: its holder, last note, branch and merge request.
+	Previous *Previous `json:"previous,omitempty"`
+	Warnings []string  `json:"warnings,omitempty"`
+	// handoff is what a takeover read of the bead, for Claim to fill
+	// Previous from once the bead lock is let go.
+	handoff *handoffSrc
 }
 
 // Negative reports a run that worked and an answer of no.
@@ -421,6 +427,15 @@ func Claim(ctx context.Context, env *Env, id string, force bool) (*ClaimOut, err
 	out, err := claimOne(ctx, env, id, force)
 	if err == nil && out != nil && out.Negative() {
 		out.NextCandidate = env.nextCandidate(ctx, map[string]bool{id: true}, &out.Warnings)
+	}
+	if out != nil && out.handoff != nil {
+		// After the bead lock is let go, and bounded by handoffClock within
+		// the command's own deadline: the reads are advisory and must not
+		// hold the bead or the claim's answer long.
+		hctx, cancel := context.WithTimeout(ctx, handoffClock)
+		env.fillPrevious(hctx, out.handoff.cur, out.handoff.prev, &out.Warnings)
+		cancel()
+		out.Previous, out.handoff = out.handoff.prev, nil
 	}
 	return out, err
 }
@@ -760,9 +775,11 @@ func claimForce(ctx context.Context, env *Env, id string) (*ClaimOut, error) {
 	}
 	now, window := env.now(), env.staleAfter()
 	expected, previous := "", ""
+	prev := &Previous{}
 	if ref != nil {
 		expected, previous = ref.SHA, ref.Run
 		age := now.Sub(ref.At)
+		prev.Actor, prev.Run, prev.AgeMinutes = ref.Actor, ref.Run, max(0, int(age.Minutes()))
 		switch {
 		case ref.State == lock.StateLanding:
 			return env.refuseStale(out, "its work has landed and is waiting on the PR; use claim --resume as the holder, or see the recovery section of PROCESS", age)
@@ -781,6 +798,7 @@ func claimForce(ctx context.Context, env *Env, id string) (*ClaimOut, error) {
 			previous = runs[0]
 		}
 		age := now.Sub(cur.UpdatedAt)
+		prev.Actor, prev.Run, prev.AgeMinutes = cur.Assignee, previous, max(0, int(age.Minutes()))
 		if cur.UpdatedAt.IsZero() || cur.UpdatedAt.After(now) || age <= window {
 			return env.refuseStale(out, fmt.Sprintf("assigned to %q with recent activity; a person can wait or ask them to release it", cur.Assignee), age)
 		}
@@ -792,7 +810,11 @@ func claimForce(ctx context.Context, env *Env, id string) (*ClaimOut, error) {
 			env.event("claim", id, "ledger_takeover", OutcomeError, "", err)
 			return out.fail(err)
 		}
-		return env.takeLedger(ctx, id, " takeover="+previous, publish, out)
+		out, err := env.takeLedger(ctx, id, " takeover="+previous, publish, out)
+		if err == nil && out.Outcome == OutcomeClaimed {
+			out.handoff = &handoffSrc{cur, prev}
+		}
+		return out, err
 	}
 	res, err := env.Lock.Replace(ctx, id, expected, lock.StateHeld)
 	if err != nil {
@@ -808,6 +830,7 @@ func claimForce(ctx context.Context, env *Env, id string) (*ClaimOut, error) {
 	env.event("claim", id, "ref_replace", OutcomeClaimed, res.SHA, nil)
 	out.Outcome, out.ClaimedAt = OutcomeClaimed, now
 	env.finishTakeover(ctx, cur, res.SHA, " takeover="+previous, out)
+	out.handoff = &handoffSrc{cur, prev}
 	return out, nil
 }
 
