@@ -2,6 +2,7 @@ package intent_test
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -109,7 +110,17 @@ func (b *fakeBD) Run(_ context.Context, args ...string) ([]byte, error) {
 		if !ok {
 			return nil, fmt.Errorf("no bead %s", args[1])
 		}
-		return json.Marshal([]map[string]any{b.issue(args[1], n)})
+		out := b.issue(args[1], n)
+		if slices.Contains(args, "--include-comments") && len(n.Comments) > 0 {
+			cs := []map[string]string{}
+			for _, c := range n.Comments {
+				cs = append(cs, map[string]string{"text": c})
+			}
+			out["comments"] = cs
+		} else if len(n.Comments) > 0 {
+			out["comments_omitted"] = true
+		}
+		return json.Marshal([]map[string]any{out})
 	case "comments":
 		if args[1] == "add" {
 			if args[3] == "-f" {
@@ -162,7 +173,27 @@ func (b *fakeBD) Run(_ context.Context, args ...string) ([]byte, error) {
 			case "--status":
 				n.Status = args[i+1]
 				i++
+			case "--add-label", "--remove-label":
+				// bd reads the value as a CSV record, as these do.
+				ls, err := csv.NewReader(strings.NewReader(args[i+1])).Read()
+				if err != nil {
+					return nil, fmt.Errorf("invalid argument %q for %s: %w", args[i+1], args[i], err)
+				}
+				for _, l := range ls {
+					l = strings.TrimSpace(l)
+					if args[i] == "--add-label" {
+						if !slices.Contains(n.Labels, l) {
+							n.Labels = append(n.Labels, l)
+						}
+					} else {
+						n.Labels = slices.DeleteFunc(n.Labels, func(x string) bool { return x == l })
+					}
+				}
+				i++
 			}
+		}
+		if slices.Contains(args, "--json") {
+			return json.Marshal([]map[string]any{b.issue(args[1], n)})
 		}
 		return nil, nil
 	case "prime":
@@ -194,7 +225,7 @@ func (b *fakeBD) Run(_ context.Context, args ...string) ([]byte, error) {
 }
 
 func (b *fakeBD) issue(id string, n *bead) map[string]any {
-	out := map[string]any{"id": id, "status": n.Status, "assignee": n.Assignee, "labels": n.Labels,
+	out := map[string]any{"id": id, "status": n.Status, "assignee": n.Assignee, "labels": n.Labels, "comment_count": len(n.Comments),
 		"created_at": "2026-10-01T00:00:00Z", "updated_at": n.Updated.Format(time.RFC3339)}
 	if n.Metadata != nil {
 		out["metadata"] = n.Metadata
@@ -1990,7 +2021,8 @@ func TestFailedLandingLabelStillRefusesForce(t *testing.T) {
 	a, b, bdA, _ := pair(t, "x-1")
 	mustClaim(t, a, "x-1")
 	bdA.fail = func(args []string) error {
-		if strings.Join(args, " ") == "label add x-1 bops:landing" {
+		// The release's one update carries the bops:landing label.
+		if args[0] == "update" && slices.Contains(args, "bops:landing") {
 			return errors.New("boom")
 		}
 		return nil

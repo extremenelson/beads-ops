@@ -333,71 +333,187 @@ func (e *Env) unpublished(ctx context.Context) bool {
 // what differs, so a retry adds no duplicate comment and repeats no claim.
 // With keepParked (sync's repair) a blocked or deferred status is left as
 // is; a claim always shows the bead in progress.
-func (e *Env) display(ctx context.Context, cur *ledger.Issue, actor, run string, comment, keepParked bool) error {
+//
+// The assignee, status and label changes are one `bd update`, so one wait
+// for the store and one Dolt commit. It returns the bead as that update
+// left it (cur when nothing differed, or nil when bd's output did not
+// decode), for the claim's readback.
+func (e *Env) display(ctx context.Context, cur *ledger.Issue, actor, run string, comment, keepParked bool) (*ledger.Issue, error) {
 	id := cur.ID
+	if cur.Status == "closed" {
+		return cur, nil
+	}
+	var fields []string
 	switch {
-	case cur.Status == "closed":
-		return nil
 	case cur.Assignee == "" && (cur.Status == "open" || cur.Status == "ready"):
-		if _, err := e.BD.Run(ctx, "update", id, "--claim"); err != nil {
-			return err
-		}
+		fields = []string{"--claim"}
 	case keepParked && (cur.Status == "blocked" || cur.Status == "deferred"):
 		// A person parked a held bead after the claim; sync repairs who holds
 		// it, never its status (bops-yr2).
 		if cur.Assignee != actor {
-			if _, err := e.BD.Run(ctx, "update", id, "--assignee", actor); err != nil {
-				return err
-			}
+			fields = []string{"--assignee", actor}
 		}
 	case cur.Assignee != actor || cur.Status != "in_progress":
-		if _, err := e.BD.Run(ctx, "update", id, "--assignee", actor, "--status", "in_progress", "--force"); err != nil {
-			return err
-		}
+		fields = []string{"--assignee", actor, "--status", "in_progress", "--force"}
 	}
-	for _, r := range cur.LabelsWithPrefix("run:") {
-		if r != run {
-			if _, err := e.BD.Run(ctx, "label", "remove", id, "run:"+r); err != nil {
-				return err
-			}
-		}
-	}
-	if !cur.HasLabel("run:" + run) {
-		if _, err := e.BD.Run(ctx, "label", "add", id, "run:"+run); err != nil {
-			return err
-		}
-	}
-	for _, l := range []string{"bops:hold", "bops:landing"} {
-		if cur.HasLabel(l) {
-			if _, err := e.BD.Run(ctx, "label", "remove", id, l); err != nil {
-				return err
-			}
+	after := cur
+	if labels := claimLabels(cur, run); len(fields) > 0 || !labels.empty() {
+		var err error
+		if after, err = e.update(ctx, id, append(fields, labels.args()...)...); err != nil {
+			return nil, err
 		}
 	}
 	if !comment {
-		return nil
+		return after, nil
 	}
-	return e.addClaimComment(ctx, id, actor, run, "")
+	return after, e.addClaimComment(ctx, cur, actor, run, "")
 }
 
-func (e *Env) addClaimComment(ctx context.Context, id, actor, run, extra string) error {
-	raw, err := e.BD.Run(ctx, "comments", id, "--json")
+// shellWords joins args for a command a person pastes. Labels come from the
+// shared ledger and may hold anything, so an arg that is not plainly safe is
+// single-quoted.
+func shellWords(args []string) string {
+	out := make([]string, len(args))
+	for i, a := range args {
+		if a == "" || strings.ContainsFunc(a, func(r rune) bool {
+			return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-_.:/=@+", r))
+		}) {
+			a = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+		}
+		out[i] = a
+	}
+	return strings.Join(out, " ")
+}
+
+// labelOps are the labels one `bd update` adds and removes.
+type labelOps struct{ add, remove []string }
+
+func (l labelOps) empty() bool { return len(l.add) == 0 && len(l.remove) == 0 }
+
+func (l labelOps) args() []string {
+	var args []string
+	for _, a := range l.add {
+		args = append(args, "--add-label", csvField(a))
+	}
+	for _, r := range l.remove {
+		args = append(args, "--remove-label", csvField(r))
+	}
+	return args
+}
+
+// csvField quotes a label for bd's --add-label and --remove-label, which
+// read their value as a CSV record: a bare `"` makes bd refuse the whole
+// update, a comma splits the value and outer spaces are trimmed. `bd label`
+// takes a label as it is, so a stale run: label with a quote in it must not
+// stop every later write to its bead.
+func csvField(l string) string {
+	if !strings.ContainsAny(l, "\",\r\n") && strings.TrimSpace(l) == l {
+		return l
+	}
+	return `"` + strings.ReplaceAll(l, `"`, `""`) + `"`
+}
+
+// inverse undoes l on the bead it was computed from.
+func (l labelOps) inverse() labelOps { return labelOps{add: l.remove, remove: l.add} }
+
+// claimLabels are the label changes that make cur show run holding it: its
+// run: label, no other run's, and no bops:hold or bops:landing.
+func claimLabels(cur *ledger.Issue, run string) labelOps {
+	var l labelOps
+	if !cur.HasLabel("run:" + run) {
+		l.add = append(l.add, "run:"+run)
+	}
+	for _, r := range cur.LabelsWithPrefix("run:") {
+		if r != run {
+			l.remove = append(l.remove, "run:"+r)
+		}
+	}
+	for _, x := range []string{"bops:hold", "bops:landing"} {
+		if cur.HasLabel(x) {
+			l.remove = append(l.remove, x)
+		}
+	}
+	return l
+}
+
+// update runs one `bd update id args... --json` and returns the bead as bd
+// printed it after the write, or nil when that output does not decode (an
+// older bd, or a fake), so a caller that needs the bead reads it again.
+func (e *Env) update(ctx context.Context, id string, args ...string) (*ledger.Issue, error) {
+	raw, err := e.BD.Run(ctx, append(append([]string{"update", id}, args...), "--json")...)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	var comments []struct {
-		Text string `json:"text"`
+	if got, decErr := ledger.DecodeIssue(raw); decErr == nil && got != nil && got.ID == id {
+		return got, nil
 	}
-	if err := json.Unmarshal(raw, &comments); err != nil {
-		return err
+	return nil, nil
+}
+
+// readback is the bead as a display write left it: after when update could
+// decode it, otherwise a fresh show.
+func (e *Env) readback(ctx context.Context, id string, after *ledger.Issue) (*ledger.Issue, error) {
+	if after != nil {
+		return after, nil
+	}
+	return e.show(ctx, id)
+}
+
+// showWithComments is show plus the bead's comments, which spares a claim
+// the separate comments read its duplicate check would make. CommentsRead
+// stays false when bd left comments out (comments_omitted, or fewer listed
+// than comment_count), so that check reads them after all.
+func (e *Env) showWithComments(ctx context.Context, id string) (*ledger.Issue, error) {
+	raw, err := e.BD.Run(ctx, "show", id, "--json", "--include-comments")
+	if err != nil {
+		return nil, err
+	}
+	cur, err := ledger.DecodeIssue(raw)
+	if err != nil {
+		return nil, err
+	}
+	var omitted []struct {
+		Omitted json.RawMessage `json:"comments_omitted"`
+	}
+	if json.Unmarshal(ledger.Unwrap(raw), &omitted) == nil && len(omitted) == 1 && len(cur.Comments) >= cur.CommentCount {
+		switch strings.TrimSpace(string(omitted[0].Omitted)) {
+		case "", "null", "false", "0":
+			cur.CommentsRead = true
+		}
+	}
+	return cur, nil
+}
+
+// addClaimComment writes run's bops:claimed comment unless cur already has
+// one, so a retry adds no second. It reads the comments only when cur was
+// shown without them.
+func (e *Env) addClaimComment(ctx context.Context, cur *ledger.Issue, actor, run, extra string) error {
+	id := cur.ID
+	var texts []string
+	if cur.CommentsRead {
+		for _, c := range cur.Comments {
+			texts = append(texts, c.Text)
+		}
+	} else {
+		raw, err := e.BD.Run(ctx, "comments", id, "--json")
+		if err != nil {
+			return err
+		}
+		var comments []ledger.Comment
+		if err := json.Unmarshal(raw, &comments); err != nil {
+			return err
+		}
+		for _, c := range comments {
+			texts = append(texts, c.Text)
+		}
 	}
 	prefix := "bops:claimed run=" + run + " "
-	for _, c := range comments {
-		if strings.HasPrefix(c.Text, prefix) {
+	for _, t := range texts {
+		if strings.HasPrefix(t, prefix) {
 			return nil
 		}
 	}
-	_, err = e.BD.Run(ctx, "comments", "add", id, fmt.Sprintf("bops:claimed run=%s actor=%s machine=%s%s", run, actor, e.Run.Machine, extra))
+	_, err := e.BD.Run(ctx, "comments", "add", id, fmt.Sprintf("bops:claimed run=%s actor=%s machine=%s%s", run, actor, e.Run.Machine, extra))
 	return err
 }
 
@@ -546,7 +662,9 @@ func claimLocked(ctx context.Context, env *Env, id string, force bool, from *str
 
 	if _, pullErr := withLockRetry(ctx, env, "dolt", "pull"); pullErr != nil {
 		out.Warnings = append(out.Warnings, "ledger not pulled: "+pullErr.Error())
-	} else if fresh, showErr := env.show(ctx, id); showErr == nil {
+	} else if fresh, showErr := env.showWithComments(ctx, id); showErr != nil {
+		out.Warnings = append(out.Warnings, "ledger not re-read after the pull: "+showErr.Error())
+	} else {
 		if why := env.notClaimable(fresh); why != "" {
 			return env.giveBack(ctx, id, res.SHA, why, out)
 		}
@@ -581,7 +699,7 @@ func claimLedger(ctx context.Context, env *Env, id string, out *ClaimOut) (*Clai
 		return out, err
 	}
 	publish := env.pullUnlessUnpublished(ctx, out)
-	cur, err := env.show(ctx, id)
+	cur, err := env.showWithComments(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -590,7 +708,11 @@ func claimLedger(ctx context.Context, env *Env, id string, out *ClaimOut) (*Clai
 		env.event("claim", id, "precondition", OutcomeRefused, "", nil)
 		return out, nil
 	}
-	if _, err := env.BD.Run(ctx, "update", id, "--claim"); err != nil {
+	// The labels ride on the compare-and-set: bd writes them only if the
+	// claim wins.
+	labels := claimLabels(cur, env.Run.ID)
+	after, err := env.update(ctx, id, append([]string{"--claim"}, labels.args()...)...)
+	if err != nil {
 		if fresh, showErr := env.show(ctx, id); showErr == nil && fresh.Assignee != "" {
 			out.Outcome, out.Holder = OutcomeLost, &Holder{Actor: fresh.Assignee}
 			if h := env.ledgerHolder(fresh); h != nil {
@@ -602,7 +724,7 @@ func claimLedger(ctx context.Context, env *Env, id string, out *ClaimOut) (*Clai
 		env.event("claim", id, "ledger_claim", OutcomeError, "", err)
 		return out.fail(err)
 	}
-	return env.takeLedger(ctx, id, "", publish, out)
+	return env.takeLedger(ctx, cur, after, labels, "", publish, out)
 }
 
 // pullUnlessUnpublished is a lock-off claim's best-effort pull. It reports
@@ -620,29 +742,36 @@ func (e *Env) pullUnlessUnpublished(ctx context.Context, out *ClaimOut) bool {
 }
 
 // takeLedger journals a hold the ledger has just given this run, then writes
-// the rest of the display. With the lock off nothing repairs the display
+// the rest of the display. cur is the bead before the deciding write, after
+// that write's output (nil when it did not decode) and labels the label
+// changes that rode on it. With the lock off nothing repairs the display
 // later, so a failure after the claim is a warning, not ledger_pending.
 // publish false (no Dolt remote) skips the push.
-func (e *Env) takeLedger(ctx context.Context, id, extra string, publish bool, out *ClaimOut) (*ClaimOut, error) {
+func (e *Env) takeLedger(ctx context.Context, cur, after *ledger.Issue, labels labelOps, extra string, publish bool, out *ClaimOut) (*ClaimOut, error) {
+	id := cur.ID
 	if err := e.Lock.Journal.Confirm(id, ""); err != nil { // no sha: a hold with no ref
-		if _, undoErr := e.BD.Run(ctx, "update", id, "--assignee", "", "--status", "open"); undoErr != nil {
-			out.Warnings = append(out.Warnings, "the ledger still shows this claim; clear it with `bd update "+id+" --assignee '' --status open`: "+undoErr.Error())
+		undo := append([]string{"update", id, "--assignee", "", "--status", "open"}, labels.inverse().args()...)
+		if _, undoErr := e.BD.Run(ctx, undo...); undoErr != nil {
+			out.Warnings = append(out.Warnings, "the ledger still shows this claim; clear it with `bd "+shellWords(undo)+"`: "+undoErr.Error())
 		}
 		return out.fail(&lock.Error{Code: lock.CodeHoldNotRecorded, Err: err})
 	}
 	out.Outcome, out.ClaimedAt = OutcomeClaimed, e.now()
 	e.event("claim", id, "ledger_claim", OutcomeClaimed, "", nil)
-	cur, err := e.show(ctx, id)
-	if err == nil {
-		err = e.display(ctx, cur, e.Run.Actor, e.Run.ID, false, false)
-	}
-	if err == nil {
-		err = e.addClaimComment(ctx, id, e.Run.Actor, e.Run.ID, extra)
-	}
-	if err == nil {
-		if got, showErr := e.show(ctx, id); showErr == nil {
-			out.ReadbackOK = got.Assignee != "" && got.HasLabel("run:"+e.Run.ID)
+	got, err := e.readback(ctx, id, after)
+	if err == nil && (got.Assignee != e.Run.Actor || got.Status != "in_progress" || !claimLabels(got, e.Run.ID).empty()) {
+		// The deciding write should have left the whole display; repair
+		// what it did not.
+		var repaired *ledger.Issue
+		if repaired, err = e.display(ctx, got, e.Run.Actor, e.Run.ID, false, false); err == nil {
+			got, err = e.readback(ctx, id, repaired)
 		}
+	}
+	if err == nil {
+		err = e.addClaimComment(ctx, cur, e.Run.Actor, e.Run.ID, extra)
+	}
+	if err == nil {
+		out.ReadbackOK = got.Assignee != "" && got.HasLabel("run:"+e.Run.ID)
 	}
 	if err != nil {
 		out.Warnings = append(out.Warnings, "ledger display incomplete: "+err.Error())
@@ -725,14 +854,17 @@ func (e *Env) giveBack(ctx context.Context, id, sha, why string, out *ClaimOut) 
 	return out, nil
 }
 
+// publishClaim writes the claim's display (one update, whose output is the
+// readback) and its comment, then pushes.
 func (e *Env) publishClaim(ctx context.Context, cur *ledger.Issue, extra string, out *ClaimOut) error {
-	if err := e.display(ctx, cur, e.Run.Actor, e.Run.ID, false, false); err != nil {
+	after, err := e.display(ctx, cur, e.Run.Actor, e.Run.ID, false, false)
+	if err != nil {
 		return err
 	}
-	if err := e.addClaimComment(ctx, cur.ID, e.Run.Actor, e.Run.ID, extra); err != nil {
+	if err := e.addClaimComment(ctx, cur, e.Run.Actor, e.Run.ID, extra); err != nil {
 		return err
 	}
-	if got, err := e.show(ctx, cur.ID); err == nil {
+	if got, err := e.readback(ctx, cur.ID, after); err == nil {
 		out.ReadbackOK = got.Assignee != "" && got.HasLabel("run:"+e.Run.ID)
 	}
 	if !out.ReadbackOK {
@@ -853,8 +985,9 @@ func claimForce(ctx context.Context, env *Env, id string, from *string) (*ClaimO
 			return env.refuseStale(out, fmt.Sprintf("assigned to %q with recent activity; a person can wait or ask them to release it", cur.Assignee), age)
 		}
 	}
-	// A ledger claim may carry more than one run: label (its relabel is not
-	// atomic), and bd need not list them in the same order twice, so there
+	// A ledger claim may carry more than one run: label (one written by an
+	// older bops, whose relabel was not atomic, or a merged pull's union),
+	// and bd need not list them in the same order twice, so there
 	// the run judged need only be one of them.
 	if from != nil && previous != *from && (ref != nil || *from == "" || !cur.HasLabel("run:"+*from)) {
 		out.moved = true
@@ -864,11 +997,13 @@ func claimForce(ctx context.Context, env *Env, id string, from *string) (*ClaimO
 	if env.LockOff {
 		// The forced write is the takeover. Unlike a lease, it does not stop
 		// a second takeover racing this one.
-		if _, err := env.BD.Run(ctx, "update", id, "--assignee", env.Run.Actor, "--status", "in_progress", "--force"); err != nil {
+		labels := claimLabels(cur, env.Run.ID)
+		after, err := env.update(ctx, id, append([]string{"--assignee", env.Run.Actor, "--status", "in_progress", "--force"}, labels.args()...)...)
+		if err != nil {
 			env.event("claim", id, "ledger_takeover", OutcomeError, "", err)
 			return out.fail(err)
 		}
-		out, err := env.takeLedger(ctx, id, " takeover="+previous, publish, out)
+		out, err := env.takeLedger(ctx, cur, after, labels, " takeover="+previous, publish, out)
 		if err == nil && out.Outcome == OutcomeClaimed {
 			out.handoff = &handoffSrc{cur, prev}
 		}
@@ -1356,6 +1491,7 @@ func (e *Env) releaseDisplay(ctx context.Context, id, reason, text, op string, p
 	if err != nil {
 		return err
 	}
+	// One update: the assignee, status and labels change together.
 	update := []string{"update", id, "--assignee", ""}
 	switch reason {
 	case "blocked":
@@ -1363,19 +1499,15 @@ func (e *Env) releaseDisplay(ctx context.Context, id, reason, text, op string, p
 	case "human", "scope", "abandoned":
 		update = append(update, "--status", "open")
 	}
-	if _, err := e.BD.Run(ctx, update...); err != nil {
-		return err
+	var labels labelOps
+	if label := map[string]string{"human": LabelNeedsHuman, "scope": "bops:hold", "abandoned": "bops:hold", "done": "bops:landing"}[reason]; label != "" {
+		labels.add = []string{label}
 	}
 	for _, r := range cur.LabelsWithPrefix("run:") {
-		if _, err := e.BD.Run(ctx, "label", "remove", id, "run:"+r); err != nil {
-			return err
-		}
+		labels.remove = append(labels.remove, "run:"+r)
 	}
-	label := map[string]string{"human": LabelNeedsHuman, "scope": "bops:hold", "abandoned": "bops:hold", "done": "bops:landing"}[reason]
-	if label != "" {
-		if _, err := e.BD.Run(ctx, "label", "add", id, label); err != nil {
-			return err
-		}
+	if _, err := e.BD.Run(ctx, append(update, labels.args()...)...); err != nil {
+		return err
 	}
 	// Always written, even when an earlier comment carries op: that may be
 	// an earlier hold's release by this run, whose record must not stand in
@@ -1450,10 +1582,7 @@ func (e *Env) clearOwnDisplay(ctx context.Context, h cloneHold) error {
 	if h.run == "" || cur.Status != "in_progress" || !cur.HasLabel("run:"+h.run) || cur.HasLabel("bops:landing") {
 		return nil
 	}
-	if _, err := e.BD.Run(ctx, "update", h.id, "--assignee", "", "--status", "open"); err != nil {
-		return err
-	}
-	if _, err := e.BD.Run(ctx, "label", "remove", h.id, "run:"+h.run); err != nil {
+	if _, err := e.BD.Run(ctx, "update", h.id, "--assignee", "", "--status", "open", "--remove-label", "run:"+h.run); err != nil {
 		return err
 	}
 	e.event("sync", h.id, "display_cleared", OutcomeLost, "", nil)
@@ -1739,9 +1868,13 @@ func (e *Env) syncHold(ctx context.Context, h cloneHold, refs map[string]lock.Re
 	if !mine {
 		return false // live, and its own run's sync repairs its display
 	}
-	cur, err := e.show(ctx, h.id)
+	show := e.show
+	if h.entry.LedgerPending { // the repair may owe the claim comment
+		show = e.showWithComments
+	}
+	cur, err := show(ctx, h.id)
 	if err == nil {
-		err = e.display(ctx, cur, ref.Actor, ref.Run, h.entry.LedgerPending, true)
+		_, err = e.display(ctx, cur, ref.Actor, ref.Run, h.entry.LedgerPending, true)
 	}
 	if err != nil {
 		out.Warnings = append(out.Warnings, h.id+": ledger display pending: "+err.Error())
