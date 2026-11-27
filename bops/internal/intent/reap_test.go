@@ -313,6 +313,21 @@ func TestReapReleasesALedgerClaimWithNoRef(t *testing.T) {
 	}
 }
 
+// A ledger claim (no ref) pins by its run label, and is matched by any of its
+// run labels, whatever order bd lists them in.
+func TestReapOnlyPinsALedgerClaim(t *testing.T) {
+	_, b, bdB := reapWorld(t)
+	n := bdB.add("x-raw")
+	n.Status, n.Assignee, n.Labels = "in_progress", "someone", []string{"run:OLD", "run:RAW"}
+	out, err := intent.Reap(bg, b.env, intent.ReapOpts{Only: []string{"x-raw@RAW"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reapIDs(out.Released) != "x-raw" || n.Status != "open" || n.Assignee != "" {
+		t.Fatalf("%+v; ledger %+v", out, n)
+	}
+}
+
 func TestReapRefusesAWindowShorterThanStaleMinutes(t *testing.T) {
 	_, b, _ := reapWorld(t, "x-1")
 	if _, err := intent.Reap(bg, b.env, intent.ReapOpts{OlderThan: 30 * time.Minute}); !errors.Is(err, intent.ErrPrecondition) {
@@ -344,6 +359,84 @@ func TestReapOnlyActsOnTheNamedClaims(t *testing.T) {
 	}
 	if _, err := intent.Reap(bg, b.env, intent.ReapOpts{DryRun: true, Only: []string{"bad id"}}); err == nil {
 		t.Error("a malformed id was accepted")
+	}
+}
+
+// A claim taken over between the preview and the real run is not the holder
+// the operator saw: --only id@run skips it, while a bare id reaps it as before.
+func TestReapOnlyPinsTheRunThePreviewShowed(t *testing.T) {
+	_, b, bdB := reapWorld(t, "x-pinned", "x-moved", "x-bare")
+	prev, err := intent.Reap(bg, b.env, intent.ReapOpts{DryRun: true})
+	if err != nil || reapIDs(prev.WouldRelease) != "x-bare,x-moved,x-pinned" || prev.WouldRelease[0].Run != "A" {
+		t.Fatalf("preview: %v, %+v", err, prev)
+	}
+	// Someone force-took x-moved and x-bare since, then went idle too. A
+	// ledger-only claim stands in for the new holder: its run label is the run.
+	for _, id := range []string{"x-moved", "x-bare"} {
+		git(t, b.dir, "push", "-q", "origin", ":refs/bops/claims/"+id)
+		bdB.beads[id].Labels = []string{"run:C"}
+	}
+	out, err := intent.Reap(bg, b.env, intent.ReapOpts{Only: []string{"x-pinned@A", "x-moved@A", "x-bare"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reapIDs(out.Released) != "x-pinned,x-bare" || reapIDs(out.Skipped) != "x-moved" || !out.Negative() {
+		t.Fatalf("%+v", out)
+	}
+	if d := out.Skipped[0]; d.Run != "C" || !strings.Contains(d.Detail, "held now by run C, not run A") {
+		t.Errorf("skipped = %+v", d)
+	}
+	if n := bdB.beads["x-moved"]; n.Assignee != "tester" || n.Status != "in_progress" || bdB.wrote("x-moved") {
+		t.Errorf("a claim of another run was touched: %+v", n)
+	}
+}
+
+func TestReapOnlyRejectsBadPins(t *testing.T) {
+	_, b, _ := reapWorld(t, "x-1")
+	for _, only := range [][]string{{"x-1@"}, {"x-1@A B"}, {"x-1@A@B"}, {"x-1@-"}, {"x-1@A\u200b"}, {"@A"}, {"x-1@A", "x-1@B"}, {"x-1", "x-1@A"}} {
+		if _, err := intent.Reap(bg, b.env, intent.ReapOpts{DryRun: true, Only: only}); err == nil {
+			t.Errorf("--only %q was accepted", only)
+		}
+	}
+	out, err := intent.Reap(bg, b.env, intent.ReapOpts{DryRun: true, Only: []string{"x-1@A", "x-1@A"}})
+	if err != nil || reapIDs(out.WouldRelease) != "x-1" {
+		t.Fatalf("the same pin twice: %v, %+v", err, out)
+	}
+}
+
+// The takeover itself re-checks the run, on the read its lease is taken on:
+// a claim another run took between stale's read and the takeover is refused,
+// pinned or not, whether the new holder has a ref or only the ledger shows it.
+func TestReapTakeoverRefusesAClaimAnotherRunTook(t *testing.T) {
+	for _, viaRef := range []bool{false, true} {
+		for _, only := range [][]string{nil, {"x-1"}, {"x-1@A"}} {
+			_, b, bdB := reapWorld(t, "x-1")
+			b.git.afterSeen = func() {
+				git(t, b.dir, "push", "-q", "origin", ":refs/bops/claims/x-1")
+				bdB.beads["x-1"].Labels = []string{"run:C"}
+				if viaRef { // run C claims on its own clock, three hours behind B's: stale to B
+					bdC := newBD()
+					bdC.add("x-1")
+					mustClaim(t, client(t, strings.TrimSpace(git(t, b.dir, "remote", "get-url", "origin")), "C", bdC), "x-1")
+				}
+			}
+			out, err := intent.Reap(bg, b.env, intent.ReapOpts{Only: only})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(out.Released) != 0 || len(out.Failed) != 1 || out.Failed[0].Outcome != intent.OutcomeRefused ||
+				!strings.Contains(out.Failed[0].Detail, "held now by run C, not run A") || !out.Negative() {
+				t.Fatalf("ref %v, --only %q: %+v", viaRef, only, out)
+			}
+			if n := bdB.beads["x-1"]; n.Assignee != "tester" || n.Status != "in_progress" || bdB.wrote("x-1") {
+				t.Errorf("ref %v, --only %q: ledger = %+v", viaRef, only, n)
+			}
+			if viaRef {
+				if ref, err := b.env.Lock.Read(bg, "x-1"); err != nil || ref == nil || ref.Run != "C" {
+					t.Errorf("--only %q: ref after reap = %+v, %v; want run C's", only, ref, err)
+				}
+			}
+		}
 	}
 }
 

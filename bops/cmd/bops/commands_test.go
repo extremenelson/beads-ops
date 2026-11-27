@@ -717,13 +717,14 @@ func TestReapDetailsPrintsFollowUpsWithoutControlBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	reapDetails(f, &intent.ReapOut{
-		Released: []intent.ReapDone{{ID: "x-1", Detail: "(pending: run bops sync from this checkout)"}, {ID: "x-quiet"}},
-		Kept:     []intent.ReapKept{{ID: "x-2", Actor: "a", Evidence: []string{"mr https://h/p/-/merge_requests/1\x1b[31m"}}},
-		Failed:   []intent.ReapDone{{ID: "x-3", Outcome: "held", Detail: "this run now holds x-3", SavedTo: "/tmp/n.txt"}},
+		Released:     []intent.ReapDone{{ID: "x-1", Detail: "(pending: run bops sync from this checkout)"}, {ID: "x-quiet"}},
+		Kept:         []intent.ReapKept{{ID: "x-2", Actor: "a", Evidence: []string{"mr https://h/p/-/merge_requests/1\x1b[31m"}}},
+		Failed:       []intent.ReapDone{{ID: "x-3", Outcome: "held", Detail: "this run now holds x-3", SavedTo: "/tmp/n.txt"}},
+		WouldRelease: []intent.ReapDone{{ID: "x-4", Run: "R4", Actor: "a"}, {ID: "x-5", Actor: "b"}, {ID: "x-6", Run: "R,x-9", Actor: "c"}},
 	})
 	b, _ := os.ReadFile(f.Name())
 	got := string(b)
-	for _, want := range []string{"released x-1: (pending: run bops sync", "kept x-2", "failed x-3: held this run now holds x-3 (note text saved to /tmp/n.txt)"} {
+	for _, want := range []string{"would release x-4@R4 (", "would release x-5 (", "would release x-6 (", "released x-1: (pending: run bops sync", "kept x-2", "failed x-3: held this run now holds x-3 (note text saved to /tmp/n.txt)"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in:\n%s", want, got)
 		}
