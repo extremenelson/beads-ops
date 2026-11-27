@@ -32,6 +32,7 @@ What should I work on?
 
 | Arg | Type | Default | Doc |
 |---|---|---|---|
+| `--avoid-conflicts` | bool | `false` | Also exclude candidates whose touches:<path> labels overlap a live claim's (advisory; a bead with none never conflicts). |
 | `--caps` | string[]? |  | Capabilities this run offers; beads with unmet needs:<cap> are excluded. |
 | `--include-unworkable` | bool | `false` | Also return excluded candidates with why_not, and the beads open gates alone keep out of bd ready (W05, blocked_by_gates; not in excluded_count). |
 | `--n` | int | `3` |  |
@@ -53,7 +54,8 @@ Output:
       "why": "string[]",
       "why_not": "string[]",
       "blocked_by_gates": "string[]",
-      "parent": "string?"
+      "parent": "string?",
+      "touches": "string[]?"
     }
   ],
   "excluded_count": "int",
@@ -335,7 +337,8 @@ Output:
       "branch": "string?",
       "mr": "string?",
       "same_machine": "bool",
-      "source": "ref|ledger|ref+ledger"
+      "source": "ref|ledger|ref+ledger",
+      "touches": "string[]?"
     }
   ],
   "warnings": "string[]"

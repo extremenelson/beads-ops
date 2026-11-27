@@ -7,6 +7,11 @@
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "avoid-conflicts": {
+            "default": false,
+            "description": "Also exclude candidates whose touches:<path> labels overlap a live claim's (advisory; a bead with none never conflicts).",
+            "type": "boolean"
+          },
           "caps": {
             "description": "Capabilities this run offers; beads with unmet needs:<cap> are excluded.",
             "items": {

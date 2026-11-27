@@ -227,6 +227,8 @@ type Candidate struct {
 	WhyNot         []string `json:"why_not"`
 	BlockedByGates []string `json:"blocked_by_gates"`
 	Parent         string   `json:"parent,omitempty"`
+	// Touches is the paths the bead declares with touches: labels.
+	Touches []string `json:"touches,omitempty"`
 }
 
 // NextOut is the `next` output.
@@ -244,6 +246,9 @@ type NextOpts struct {
 	// Local skips refreshing the claim refs from the lock remote, for a caller
 	// that has just fetched them (session-start, after its sync).
 	Local bool
+	// AvoidConflicts excludes a candidate whose touches: paths overlap a
+	// live claim's (advisory; a bead that declares none never conflicts).
+	AvoidConflicts bool
 }
 
 // Next implements SPEC.md §5: filter `bd ready` through Lint and the claim
@@ -261,11 +266,20 @@ func Next(ctx context.Context, env *Env, o NextOpts) (*NextOut, error) {
 		return nil, err
 	}
 	// Parents with an in-progress sibling come first in the ordering.
-	activeParents, listErr := parentsInProgress(ctx, env)
+	inProgress, listErr := listInProgress(ctx, env)
+	activeParents := map[string]bool{}
+	for _, i := range inProgress {
+		if i.Parent != "" {
+			activeParents[i.Parent] = true
+		}
+	}
 	lenv := LintEnv{Pool: env.Run.Pool, Caps: env.caps(), Now: env.now(), StaleAfter: env.staleAfter(), HoldFor: env.HoldFor, BlockingLabels: env.BlockingLabels}
 	out := &NextOut{Candidates: []Candidate{}}
-	if listErr != nil { // it only affects the order, so a read still answers
+	if listErr != nil { // next still answers: without the list it loses the ordering step and most of the conflict screen
 		out.Warnings = append(out.Warnings, "ordering ignores work in progress: "+listErr.Error())
+		if o.AvoidConflicts {
+			out.Warnings = append(out.Warnings, "conflict screening sees only claimed beads bd ready still lists: "+listErr.Error())
+		}
 	}
 	// bd ready never returns a bead behind an open gate, so W05 can only
 	// explain one that next looks up itself: with --include-unworkable, the
@@ -303,6 +317,15 @@ func Next(ctx context.Context, env *Env, o NextOpts) (*NextOut, error) {
 			claims[r.ID] = r
 		}
 	}
+	var live map[string][]string
+	var liveOrder []string
+	if o.AvoidConflicts {
+		live = liveTouches(inProgress, ready, claims)
+		for id := range live {
+			liveOrder = append(liveOrder, id)
+		}
+		sort.Strings(liveOrder)
+	}
 	type scored struct {
 		c Candidate
 		i ledger.Issue
@@ -317,7 +340,7 @@ func Next(ctx context.Context, env *Env, o NextOpts) (*NextOut, error) {
 		}
 		lr := Lint(&i, lenv)
 		c := Candidate{ID: i.ID, Title: i.Title, Priority: i.Priority, Type: i.IssueType, Workable: lr.Workable,
-			Why: lr.Passes, WhyNot: []string{}, BlockedByGates: []string{}, Parent: i.Parent}
+			Why: lr.Passes, WhyNot: []string{}, BlockedByGates: []string{}, Parent: i.Parent, Touches: touches(&i)}
 		if i.IssueType == "epic" {
 			c.Workable = false
 			c.WhyNot = append(c.WhyNot, "epic: agents work leaves, not epics")
@@ -334,6 +357,12 @@ func Next(ctx context.Context, env *Env, o NextOpts) (*NextOut, error) {
 		if r, ok := claims[i.ID]; ok && r.Run != env.Run.ID {
 			c.Workable = false
 			c.WhyNot = append(c.WhyNot, fmt.Sprintf("W14: claimed by %s", r.Actor))
+		}
+		if o.AvoidConflicts && len(c.Touches) > 0 {
+			if why := conflict(i.ID, c.Touches, live, liveOrder); why != "" {
+				c.Workable = false
+				c.WhyNot = append(c.WhyNot, why)
+			}
 		}
 		if !c.Workable {
 			if i.IssueType != "epic" && !gated[i.ID] {
@@ -371,23 +400,14 @@ func Next(ctx context.Context, env *Env, o NextOpts) (*NextOut, error) {
 	return out, nil
 }
 
-// parentsInProgress finds the parents that already have work in flight.
-func parentsInProgress(ctx context.Context, env *Env) (map[string]bool, error) {
-	parents := map[string]bool{}
+// listInProgress is every in-progress bead: their parents order next, and
+// their touches: paths screen conflicts.
+func listInProgress(ctx context.Context, env *Env) ([]ledger.Issue, error) {
 	raw, err := env.BD.Run(ctx, "list", "--status", "in_progress", "--limit", "0", "--json")
 	if err != nil {
-		return parents, err
+		return nil, err
 	}
-	issues, err := ledger.DecodeIssues(raw)
-	if err != nil {
-		return parents, err
-	}
-	for _, i := range issues {
-		if i.Parent != "" {
-			parents[i.Parent] = true
-		}
-	}
-	return parents, nil
+	return ledger.DecodeIssues(raw)
 }
 
 // ---------------------------------------------------------------- note

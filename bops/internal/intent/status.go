@@ -51,6 +51,9 @@ type StatusClaim struct {
 	// Source is where the claim was seen: "ref", "ledger" (no ref) or
 	// "ref+ledger".
 	Source string `json:"source"`
+	// Touches is the paths the bead declares with touches: labels; empty for
+	// a ref's bead outside the in-progress list.
+	Touches []string `json:"touches,omitempty"`
 }
 
 // StatusOut is the `status` output.
@@ -144,7 +147,7 @@ func Status(ctx context.Context, env *Env, o StatusOpts) (*StatusOut, error) {
 		hasRef := refPresent && (r.State == lock.StateHeld || r.State == lock.StateLanding)
 		c := StatusClaim{ID: id, Source: "ledger"}
 		if i != nil {
-			c.Title, c.Actor = i.Title, i.Assignee
+			c.Title, c.Actor, c.Touches = i.Title, i.Assignee, touches(i)
 			if runs := i.LabelsWithPrefix("run:"); len(runs) > 0 {
 				c.Run = runs[0]
 			}
