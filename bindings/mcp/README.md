@@ -6,7 +6,7 @@ beads' own guidance is the CLI and hooks first, because tool schemas cost tokens
 
 | | |
 |---|---|
-| Tools | Read-only by default: `next`, `stale`, `lint`, `doctor`, `gates`, `deps`, `version`. `--enable-writes` adds `claim`, `note`, `release`, `land` and `sweep` (`bops gen mcp --enable-writes` prints that list). `sync` and `session-start` are not tools. |
+| Tools | Read-only by default: `next`, `stale`, `status`, `lint`, `doctor`, `gates`, `deps`, `version`. `--enable-writes` adds `claim`, `note`, `renew`, `release`, `land`, `sweep`, `reap` and `gc` (`bops gen mcp --enable-writes` prints that list). `sync` and `session-start` are not tools. |
 | A call | Runs `bops <command> ... --json` with the same binary, in the server's working directory, and returns its JSON document, compacted. Exit 3 (a negative verdict, `ok:false`) is a result; exit 1 or 2 is a tool error. Text (`note`, `release`) goes on stdin. |
 | Pagination | A result over 20 kB comes back 20 kB at a time, with a cursor; call the same tool with `{"cursor": "..."}` for the next page. The server keeps the last 32 paginated results. |
 | Protocol | JSON-RPC 2.0, one message per line; MCP revisions 2025-06-18, 2025-03-26 and 2024-11-05; the tools capability only. Standard library, no SDK. |
