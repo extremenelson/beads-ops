@@ -416,19 +416,21 @@ func Note(ctx context.Context, env *Env, id, text string) (*NoteOut, error) {
 	out := &NoteOut{ID: id, Warnings: []string{}}
 	// While another process works on the bead, this run cannot tell whether
 	// it still holds it, so the note waits; its text is kept at saved_to.
-	unlock, err := env.holdBead(ctx, "note", id, &out.Warnings)
+	unlock, held, err := env.lockHeld(ctx, "note", id, &out.Warnings)
 	if err != nil {
 		return out.refuse(OutcomeError, err.Error(), nil, text), err
 	}
-	defer unlock()
-	if _, err := env.finishRelease(ctx, id); err != nil {
-		return out.refuse(OutcomeError, err.Error(), nil, text), err
-	}
-	if _, held := env.Run.Held[id]; !held {
+	if !held {
 		return out.refuse(OutcomeRefused, id+" is not held by this run", nil, text), nil
 	}
-	if done := env.refreshClaim(ctx, id, text, out); done {
+	defer unlock()
+	// A network failure is only a warning, because a note must work offline.
+	switch r := env.refreshRef(ctx, "note", id, OutcomeNoted, &out.Warnings); r.outcome {
+	case refreshLost:
+		out.refuse(OutcomeLost, id+" is no longer held by this run", r.holder, text)
 		return out, nil
+	case refreshFailed:
+		out.Warnings = append(out.Warnings, "claim not refreshed: "+r.err.Error())
 	}
 	path, cleanup, err := writeTemp(fmt.Sprintf("bops:note run=%s\n%s", env.Run.ID, text))
 	if err != nil {
@@ -478,47 +480,83 @@ func saveText(what, text string, warnings *[]string) string {
 	return f.Name()
 }
 
-// refreshClaim replaces this run's ref so its age shows activity (D27). A
-// network failure is only a warning, because a note must work offline. It
-// reports true if the note must stop, having lost the claim.
-func (e *Env) refreshClaim(ctx context.Context, id, text string, out *NoteOut) bool {
-	if e.LockOff {
-		return false // no ref to refresh; the comment and heartbeat show activity
+// lockHeld takes id's bead lock for the rest of a command (see holdBead),
+// finishes a release whose ref delete never completed, and reports whether
+// this run holds the bead. Unless it returns held and no error, it has let
+// the lock go already; otherwise the caller runs unlock when done.
+func (e *Env) lockHeld(ctx context.Context, cmd, id string, warnings *[]string) (unlock func(), held bool, err error) {
+	unlock, err = e.holdBead(ctx, cmd, id, warnings)
+	if err != nil {
+		return nil, false, err
+	}
+	if _, err := e.finishRelease(ctx, id); err != nil {
+		unlock()
+		return nil, false, err
+	}
+	if _, held := e.Run.Held[id]; !held {
+		unlock()
+		return nil, false, nil
+	}
+	return unlock, true, nil
+}
+
+// What refreshRef did to a claim's ref.
+const (
+	refreshDone   = "refreshed" // replaced; its at is now
+	refreshLost   = "lost"      // the ref is another run's now; the hold is dropped
+	refreshFailed = "failed"    // not replaced (err says why); the hold is kept
+	refreshNoRef  = "no_ref"    // lock.mode none: there is no ref
+	refreshLegacy = "legacy"    // a hold taken before the lock, with no ref
+)
+
+// refreshResult is what refreshRef found.
+type refreshResult struct {
+	outcome string
+	holder  *Holder // who holds the bead now, when lost
+	err     error   // why the ref was not replaced, when failed
+}
+
+// refreshRef replaces this run's claim ref with a new commit, leasing on the
+// sha it holds, so the ref's at (the claim's age for stale, reap and claim
+// --force) shows activity (D27). It writes nothing to the ledger. A ref that
+// is another run's now drops the hold. The caller holds the bead's lock and
+// has checked that this run holds the bead (lockHeld). note and renew share
+// it; done is the outcome the event log records for a refresh.
+func (e *Env) refreshRef(ctx context.Context, cmd, id, done string, warnings *[]string) refreshResult {
+	if e.LockOff || e.Lock == nil {
+		return refreshResult{outcome: refreshNoRef}
 	}
 	entry, owned, err := e.checkHold(ctx, id)
 	if err != nil {
-		out.Warnings = append(out.Warnings, "claim not refreshed: "+err.Error())
-		return false
+		return refreshResult{outcome: refreshFailed, err: err}
 	}
-	lost := func(holder *Holder) bool {
-		out.refuse(OutcomeLost, id+" is no longer held by this run", holder, text)
-		e.event("note", id, "ref_refresh", OutcomeLost, "", nil)
-		return true
+	lost := func(holder *Holder) refreshResult {
+		e.event(cmd, id, "ref_refresh", OutcomeLost, "", nil)
+		return refreshResult{outcome: refreshLost, holder: holder}
 	}
 	if !owned {
 		holder, err := e.dropLost(ctx, id)
 		if err != nil {
-			out.Warnings = append(out.Warnings, err.Error())
+			*warnings = append(*warnings, err.Error())
 		}
 		return lost(holder)
 	}
 	if entry.Legacy() {
-		return false
+		return refreshResult{outcome: refreshLegacy}
 	}
 	res, err := e.Lock.Replace(ctx, id, entry.SHA, lock.StateHeld)
 	if err != nil {
-		out.Warnings = append(out.Warnings, "claim not refreshed: "+err.Error())
-		e.event("note", id, "ref_refresh", "pending", entry.SHA, err)
-		return false
+		e.event(cmd, id, "ref_refresh", "pending", entry.SHA, err)
+		return refreshResult{outcome: refreshFailed, err: err}
 	}
 	if res.Outcome == lock.Lost {
 		if err := e.Lock.Journal.Drop(id); err != nil {
-			out.Warnings = append(out.Warnings, err.Error())
+			*warnings = append(*warnings, err.Error())
 		}
 		return lost(e.holder(res.Holder))
 	}
-	e.event("note", id, "ref_refresh", OutcomeNoted, res.SHA, nil)
-	return false
+	e.event(cmd, id, "ref_refresh", done, res.SHA, nil)
+	return refreshResult{outcome: refreshDone}
 }
 
 // writeTemp puts text for bd in a private file, so it stays off the command line.

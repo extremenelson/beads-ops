@@ -102,6 +102,8 @@ func run(args []string, stdout, stderr *os.File) int {
 		return cmdSweep(ctx, m, rest, wantJSON, stdout, stderr)
 	case "note":
 		return cmdNote(ctx, m, rest, wantJSON, stdout, stderr)
+	case "renew":
+		return cmdRenew(ctx, m, rest, wantJSON, stdout, stderr)
 	case "release":
 		return cmdRelease(ctx, m, rest, wantJSON, stdout, stderr)
 	case "sync":
@@ -141,7 +143,7 @@ func budget(name string) time.Duration {
 		return 5 * time.Minute
 	case "reap": // a takeover and a release per stale claim
 		return 5 * time.Minute
-	case "sync", "gc": // gc: one ref delete per closed or orphan ref
+	case "sync", "gc", "renew": // gc: one ref delete per closed or orphan ref; renew: a ref push per bead
 		return 2 * time.Minute
 	case "claim", "release", "note", "land", "session-start", "doctor":
 		return time.Minute

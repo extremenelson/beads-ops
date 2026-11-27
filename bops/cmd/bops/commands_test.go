@@ -773,3 +773,64 @@ func TestGCDetailsPrintsEachRefWithoutControlBytes(t *testing.T) {
 		t.Errorf("control byte printed:\n%s", got)
 	}
 }
+
+func TestRenewNeedsAnID(t *testing.T) {
+	m, err := manifest.Parse(bops.ManifestJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr, _ := os.CreateTemp(t.TempDir(), "err")
+	if code := cmdRenew(context.Background(), m, nil, true, stderr, stderr); code != exitUsage {
+		t.Errorf("no ids: exit %d, want %d", code, exitUsage)
+	}
+}
+
+func TestRenewDetailsPrintsEachBeadWithoutControlBytes(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	renewDetails(f, &intent.RenewOut{Beads: []intent.RenewBead{
+		{ID: "x-1", Outcome: intent.OutcomeRenewed},
+		{ID: "x-2", Outcome: intent.OutcomeRefused, Reason: "x-2 is not held by this run\x1b[31m"},
+	}})
+	b, _ := os.ReadFile(f.Name())
+	got := string(b)
+	for _, want := range []string{"x-1 renewed\n", "x-2 refused: x-2 is not held by this run"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "\x1b") {
+		t.Errorf("control byte printed:\n%s", got)
+	}
+}
+
+// A renew whose beads were refused or lost exits 3; one with a bead it could
+// not refresh exits 1 for a retry, and still prints every bead's outcome, so a
+// caller reads beads[].outcome on any non-zero exit.
+func TestRenewExitCodes(t *testing.T) {
+	lost := intent.RenewBead{ID: "x-1", Outcome: intent.OutcomeLost}
+	ok := intent.RenewBead{ID: "x-2", Outcome: intent.OutcomeRenewed}
+	down := intent.RenewBead{ID: "x-3", Outcome: intent.OutcomeUnreachable, Code: lock.CodeUnreachable}
+	for _, tc := range []struct {
+		name  string
+		beads []intent.RenewBead
+		err   error
+		code  int
+	}{
+		{"renewed", []intent.RenewBead{ok}, nil, exitVerdict},
+		{"lost", []intent.RenewBead{lost, ok}, nil, exitNegative},
+		{"lost and unreachable", []intent.RenewBead{lost, down}, &lock.Error{Code: lock.CodeUnreachable, Err: errors.New("x-3: down")}, exitCantRun},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, got := emitted(t, &intent.RenewOut{Beads: tc.beads, Warnings: []string{}}, tc.err)
+			if code != tc.code {
+				t.Errorf("exit %d, want %d", code, tc.code)
+			}
+			if beads, _ := got["beads"].([]any); len(beads) != len(tc.beads) {
+				t.Errorf("beads = %v", got["beads"])
+			}
+		})
+	}
+}
