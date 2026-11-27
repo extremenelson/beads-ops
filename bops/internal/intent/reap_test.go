@@ -133,8 +133,10 @@ func TestReapKeepsAClaimRefreshedSinceStaleReadIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out.Released) != 0 || len(out.Failed) != 1 || out.Failed[0].Outcome != intent.OutcomeRefused {
-		t.Fatalf("want the takeover refused and reported: %+v", out)
+	// The holder came back: nothing failed, so the run is not negative.
+	if len(out.Released) != 0 || len(out.Failed) != 0 || len(out.Skipped) != 1 || out.Skipped[0].Outcome != intent.OutcomeRefused ||
+		!strings.Contains(out.Skipped[0].Detail, "changed since this run judged it stale") || out.Negative() {
+		t.Fatalf("want the takeover refused and listed under skipped: %+v", out)
 	}
 	if bdB.beads["x-1"].Assignee != "tester" || bdB.beads["x-1"].Status != "in_progress" {
 		t.Errorf("ledger = %+v", bdB.beads["x-1"])
@@ -180,6 +182,19 @@ func TestBranchNamesBead(t *testing.T) {
 		{"work/bops-n71", "bops-n71.2", true},   // a child's work on its parent's branch
 		{"x-det", "x-det", true},                // a worktree directory
 		{"wt-sibling", "x-hold", false},
+		// A short numeric suffix between dots is a version, not the bead.
+		{"dependabot/npm_and_yarn/foo-1.12.0", "bops-12", false},
+		{"foo-12.0", "bops-12", true}, // a dot on one side only still counts
+		{"fix/12.wip", "bops-12", true},
+		{"release-12.1", "bops-12", true},
+		{"feat/1.2.wip", "bops-1.2", true}, // a child's dotted part still counts
+		{"work/bops-12", "bops-12", true},
+		{"fix/12", "bops-12", true}, // bounded otherwise it still counts
+		{"12-login", "bops-12", true},
+		{"release-12", "bops-12", true}, // indistinguishable from fix-12: kept
+		{"work/bops-12.3", "bops-12.3", true},
+		{"lib-1.123.0", "bops-123", true}, // three digits count even between dots
+		{"v1.a1.0", "bops-a1", true},      // so does a letter
 	} {
 		if got := intent.BranchNamesBead(tc.branch, tc.id); got != tc.want {
 			t.Errorf("BranchNamesBead(%q, %q) = %v, want %v", tc.branch, tc.id, got, tc.want)
@@ -260,43 +275,74 @@ func TestReapKeepsWorkThatArrivesWithTheTakeoversPull(t *testing.T) {
 }
 
 func TestReapEvidenceSources(t *testing.T) {
-	_, b, bdB := reapWorld(t, "x-gh", "x-landed", "x-notes")
+	_, b, bdB := reapWorld(t, "x-gh", "x-landed", "x-notes", "x-desc", "x-ac", "x-bare", "x-pr", "x-bang",
+		"x-mr", "x-paren", "x-port", "x-repo", "x-none")
 	bdB.beads["x-gh"].Comments = []string{"PR at https://github.com/o/r/pull/7 for review"}
 	bdB.beads["x-notes"].Notes = "see https://bitbucket.example.com/p/r/pull-requests/3"
 	bdB.beads["x-landed"].Metadata = json.RawMessage(`{"bops":{"landed":[{"ref":"https://github.com/o/r/pull/8","sha":"abc","run":"A","at":"t"}]}}`)
+	bdB.beads["x-desc"].Description = "Opened https://gitlab.example.com/g/p/-/merge_requests/9."
+	bdB.beads["x-ac"].Acceptance = "Merged as https://github.com/o/r/pull/10"
+	// References without a scheme.
+	bdB.beads["x-bare"].Notes = "pushed: github.com/o/r/pull/12"
+	bdB.beads["x-pr"].Comments = []string{"opened PR #128 upstream"}
+	bdB.beads["x-bang"].Comments = []string{"see !45 for the fix"}
+	bdB.beads["x-mr"].Comments = []string{"merged as MR !46"}
+	bdB.beads["x-paren"].Notes = "landed (!47)"
+	bdB.beads["x-port"].Notes = "gitlab.example.com:8443/g/p/-/merge_requests/3"
+	bdB.beads["x-repo"].Notes = "opened `g/p!48`"
+	bdB.beads["x-none"].Description = "wow!45 is no reference, nor issue #7 or o/r#8, xpr #5, PR\n#6 or v1.2"
 	out, err := intent.Reap(bg, b.env, intent.ReapOpts{DryRun: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ev := keptEvidence(out)
-	if ev["x-gh"] != "mr https://github.com/o/r/pull/7" || ev["x-landed"] != "mr https://github.com/o/r/pull/8" ||
-		ev["x-notes"] != "mr https://bitbucket.example.com/p/r/pull-requests/3" || len(out.WouldRelease) != 0 {
-		t.Fatalf("evidence = %v (%+v)", ev, out)
+	for id, want := range map[string]string{
+		"x-gh":     "mr https://github.com/o/r/pull/7",
+		"x-landed": "mr https://github.com/o/r/pull/8",
+		"x-notes":  "mr https://bitbucket.example.com/p/r/pull-requests/3",
+		"x-desc":   "mr https://gitlab.example.com/g/p/-/merge_requests/9",
+		"x-ac":     "mr https://github.com/o/r/pull/10",
+		"x-bare":   "mr github.com/o/r/pull/12",
+		"x-pr":     "mr PR #128",
+		"x-bang":   "mr !45",
+		"x-mr":     "mr MR !46",
+		"x-paren":  "mr !47",
+		"x-port":   "mr gitlab.example.com:8443/g/p/-/merge_requests/3",
+		"x-repo":   "mr g/p!48",
+	} {
+		if ev[id] != want {
+			t.Errorf("%s evidence = %q, want %q", id, ev[id], want)
+		}
+	}
+	if reapIDs(out.WouldRelease) != "x-none" {
+		t.Fatalf("would_release = %q, want x-none: %+v", reapIDs(out.WouldRelease), out)
 	}
 }
 
 func TestReapLeavesOrphansAndItsOwnHold(t *testing.T) {
-	a, b, bdB := reapWorld(t, "x-orphan")
-	// B's ledger shows no claim on x-orphan though A's ref holds it.
-	n := bdB.beads["x-orphan"]
-	n.Status, n.Assignee, n.Labels = "open", "", nil
-	bdB.add("x-own")
-	later(b, 0)
-	mustClaim(t, b, "x-own")
-	later(b, 3*time.Hour)
+	for _, dry := range []bool{true, false} {
+		a, b, bdB := reapWorld(t, "x-orphan")
+		// B's ledger shows no claim on x-orphan though A's ref holds it.
+		n := bdB.beads["x-orphan"]
+		n.Status, n.Assignee, n.Labels = "open", "", nil
+		bdB.add("x-own")
+		later(b, 0)
+		mustClaim(t, b, "x-own")
+		later(b, 3*time.Hour)
 
-	out, err := intent.Reap(bg, b.env, intent.ReapOpts{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(out.Released) != 0 || len(out.Failed) != 0 || len(out.WouldRelease) != 0 {
-		t.Fatalf("%+v", out)
-	}
-	if ev := keptEvidence(out); !strings.Contains(ev["x-own"], "hold of run B") {
-		t.Errorf("own hold evidence = %q", ev["x-own"])
-	}
-	if sha := liveSHA(t, a, "x-orphan"); sha == "" {
-		t.Error("reap removed an orphan ref")
+		out, err := intent.Reap(bg, b.env, intent.ReapOpts{DryRun: dry})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(out.Released) != 0 || len(out.Failed) != 0 || len(out.WouldRelease) != 0 || len(out.Skipped) != 0 {
+			t.Fatalf("dry=%v: %+v", dry, out)
+		}
+		if ev := keptEvidence(out); !strings.Contains(ev["x-own"], "hold of run B") {
+			t.Errorf("dry=%v: own hold evidence = %q", dry, ev["x-own"])
+		}
+		if sha := liveSHA(t, a, "x-orphan"); sha == "" {
+			t.Errorf("dry=%v: reap removed an orphan ref", dry)
+		}
 	}
 }
 
@@ -407,6 +453,7 @@ func TestReapOnlyRejectsBadPins(t *testing.T) {
 // The takeover itself re-checks the run, on the read its lease is taken on:
 // a claim another run took between stale's read and the takeover is refused,
 // pinned or not, whether the new holder has a ref or only the ledger shows it.
+// It is listed under skipped, and makes the run negative only when named.
 func TestReapTakeoverRefusesAClaimAnotherRunTook(t *testing.T) {
 	for _, viaRef := range []bool{false, true} {
 		for _, only := range [][]string{nil, {"x-1"}, {"x-1@A"}} {
@@ -424,8 +471,8 @@ func TestReapTakeoverRefusesAClaimAnotherRunTook(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(out.Released) != 0 || len(out.Failed) != 1 || out.Failed[0].Outcome != intent.OutcomeRefused ||
-				!strings.Contains(out.Failed[0].Detail, "held now by run C, not run A") || !out.Negative() {
+			if len(out.Released) != 0 || len(out.Failed) != 0 || len(out.Skipped) != 1 || out.Skipped[0].Outcome != intent.OutcomeRefused ||
+				!strings.Contains(out.Skipped[0].Detail, "held now by run C, not run A") || out.Negative() != (only != nil) {
 				t.Fatalf("ref %v, --only %q: %+v", viaRef, only, out)
 			}
 			if n := bdB.beads["x-1"]; n.Assignee != "tester" || n.Status != "in_progress" || bdB.wrote("x-1") {
@@ -467,6 +514,132 @@ func TestReapReleasesNothingWhenThePullFails(t *testing.T) {
 	out, err := intent.Reap(bg, b.env, intent.ReapOpts{})
 	if err == nil || !strings.Contains(err.Error(), "ledger pull failed") || len(out.Released) != 0 || bdB.wrote("x-1") {
 		t.Fatalf("err = %v, out = %+v", err, out)
+	}
+}
+
+// A preview reads the comments stale did not, such as a claim of this clone's
+// own run; one it cannot read keeps the claim too.
+func TestReapPreviewKeepsABeadWhoseEvidenceCannotBeRead(t *testing.T) {
+	_, b, bdB := reapWorld(t)
+	bdB.add("x-own")
+	later(b, 0)
+	mustClaim(t, b, "x-own")
+	later(b, 3*time.Hour)
+	bdB.fail = func(a []string) error {
+		if a[0] == "comments" && a[1] == "x-own" {
+			return errors.New("dolt: database is locked")
+		}
+		return nil
+	}
+	out, err := intent.Reap(bg, b.env, intent.ReapOpts{DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev := keptEvidence(out)["x-own"]; !strings.HasPrefix(ev, "unread: ") || len(out.WouldRelease) != 0 || len(out.Skipped) != 0 {
+		t.Fatalf("evidence %q: %+v", ev, out)
+	}
+}
+
+// A read the command's deadline cuts short is not evidence: the claim and
+// the rest are listed under skipped, to run again, not kept as unread.
+func TestReapSkipsWhatTheDeadlineCutShort(t *testing.T) {
+	_, b, bdB := reapWorld(t, "x-1", "x-2")
+	ctx, cancel := context.WithTimeout(bg, time.Hour)
+	defer cancel()
+	listed := false
+	bdB.fail = func(a []string) error {
+		if a[0] == "list" {
+			listed = true
+		} else if listed && a[0] == "show" && a[1] == "x-1" { // the read just before the takeover
+			cancel()
+			return context.DeadlineExceeded
+		}
+		return nil
+	}
+	out, err := intent.Reap(ctx, b.env, intent.ReapOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Kept) != 0 || reapIDs(out.Skipped) != "x-1,x-2" || !out.Negative() ||
+		!strings.Contains(out.Skipped[0].Detail, "run reap again") || bdB.wrote("x-1") {
+		t.Fatalf("%+v", out)
+	}
+}
+
+// So is a preview's forge search cut short by the command's deadline; the
+// forge is not called unanswered for it.
+func TestReapPreviewSkipsASearchTheDeadlineCutShort(t *testing.T) {
+	_, b, _ := reapWorld(t, "x-1", "x-2")
+	ctx, cancel := context.WithTimeout(bg, time.Hour)
+	defer cancel()
+	f := &searchForge{block: true, onSearch: cancel} // the deadline falls during the first search
+	out, err := intent.Reap(ctx, b.env, intent.ReapOpts{DryRun: true, Forge: f})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Kept) != 0 || reapIDs(out.Skipped) != "x-1,x-2" || slices.Contains(out.Warnings, intent.ReapForgeUnanswered) ||
+		out.Skipped[0].Detail != "not reached: too little of the command's time left; run reap again" || len(f.asked) != 1 {
+		t.Fatalf("%+v (asked %v)", out, f.asked)
+	}
+}
+
+// Two reapers racing: the loser's takeover finds the claim already released
+// (or taken). Nothing was left undone, so it is listed under skipped and the
+// run is not negative, unless --only named the claim.
+func TestReapLosingARaceToAnotherReaperIsNotAFailure(t *testing.T) {
+	for _, only := range [][]string{nil, {"x-1"}} {
+		_, b, bdB := reapWorld(t, "x-1")
+		pulls := 0
+		bdB.onPull = func() { // the other reaper's release lands with the takeover's pull
+			if pulls++; pulls == 2 {
+				git(t, b.dir, "push", "-q", "origin", ":refs/bops/claims/x-1")
+				n := bdB.beads["x-1"]
+				n.Status, n.Assignee, n.Labels = "open", "", []string{"bops:hold"}
+			}
+		}
+		out, err := intent.Reap(bg, b.env, intent.ReapOpts{Only: only})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(out.Failed) != 0 || len(out.Released) != 0 || len(out.Skipped) != 1 ||
+			!strings.Contains(out.Skipped[0].Detail, "nothing to take over") || out.Negative() != (only != nil) {
+			t.Fatalf("--only %q: %+v", only, out)
+		}
+	}
+}
+
+// A ledger claim (no ref) touched between stale's read and the takeover is
+// no longer stale: skipped, not a failure. One whose time is unreadable or in
+// the future is refused as before, and is a failure.
+func TestReapLedgerClaimRefreshedBeforeTheTakeover(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		updated func(now time.Time) time.Time
+		moved   bool
+	}{
+		{"refreshed", func(now time.Time) time.Time { return now.Add(-time.Minute) }, true},
+		{"future", func(now time.Time) time.Time { return now.Add(time.Hour) }, false},
+	} {
+		_, b, bdB := reapWorld(t)
+		n := bdB.add("x-raw")
+		n.Status, n.Assignee, n.Labels = "in_progress", "someone", []string{"run:RAW"}
+		pulls := 0
+		bdB.onPull = func() { // the takeover's pull brings the touch
+			if pulls++; pulls == 2 {
+				n.Updated = tc.updated(b.env.Now())
+			}
+		}
+		out, err := intent.Reap(bg, b.env, intent.ReapOpts{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tc.moved && (len(out.Skipped) != 1 || len(out.Failed) != 0 || out.Negative()) ||
+			!tc.moved && (len(out.Failed) != 1 || len(out.Skipped) != 0 || !out.Negative()) {
+			t.Fatalf("%s: %+v", tc.name, out)
+		}
+		if n.Status != "in_progress" || n.Assignee != "someone" {
+			t.Errorf("%s: ledger = %+v", tc.name, n)
+		}
 	}
 }
 
@@ -632,6 +805,14 @@ func TestReapKeepsAClaimMadeOutsideBopsUnlessNamed(t *testing.T) {
 	}
 	if !strings.Contains(keptEvidence(out)["x-plain"], "claimed outside bops") || len(out.WouldRelease) != 0 {
 		t.Fatalf("%+v", out)
+	}
+	out, err = intent.Reap(bg, b.env, intent.ReapOpts{}) // a real run, not named
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(keptEvidence(out)["x-plain"], "claimed outside bops") || len(out.Released)+len(out.Failed) != 0 ||
+		out.Negative() || bdB.wrote("x-plain") {
+		t.Fatalf("real run, not named: %+v", out)
 	}
 	out, err = intent.Reap(bg, b.env, intent.ReapOpts{Only: []string{"x-plain", "x-plain"}})
 	if err != nil {
