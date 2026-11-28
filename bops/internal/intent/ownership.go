@@ -593,13 +593,16 @@ func (o *ClaimOut) fail(err error) (*ClaimOut, error) {
 //
 //	bead lock --> already held? --> bd show --> create ref --> pull --> local ledger writes
 //	    |             |               |            |            |            |
-//	ref_contention   held         refused      lost, no     refused,     claimed,
-//	                                           ledger       ref deleted  ledger_pending
-//	                                           write
+//	ref_contention   held         refused      lost, no     refused or   claimed,
+//	                                           ledger       ledger_      ledger_pending
+//	                                           write        conflict,
+//	                                                        ref deleted
 //
 // Under lock.mode ref nothing is pushed: the display rides on this
 // machine's next ledger push (publishClaim). A failed pull is a warning,
-// an event and a record status and doctor report (claimPull).
+// an event and a record status and doctor report (claimPull); a pull that
+// stops on ledger_conflict gives the ref back and fails with that code
+// (giveBackStuck).
 //
 // Every path, --force included, starts by taking the bead's lock (bops-yph).
 // A lost or refused claim names the bead `next` would offer instead.
@@ -684,7 +687,9 @@ func claimLocked(ctx context.Context, env *Env, id string, force bool, from *str
 	}
 	env.event("claim", id, "ref_create", OutcomeClaimed, res.SHA, nil)
 
-	if pullErr := env.claimPull(ctx, "claim", id, true); pullErr != nil {
+	if pullErr := env.claimPull(ctx, "claim", id, true); isLedgerConflict(pullErr) {
+		return env.giveBackStuck(ctx, id, res.SHA, pullErr, out)
+	} else if pullErr != nil {
 		out.Warnings = append(out.Warnings, "ledger not pulled: "+pullErr.Error())
 	} else if fresh, showErr := env.showWithComments(ctx, id); showErr != nil {
 		out.Warnings = append(out.Warnings, "ledger not re-read after the pull: "+showErr.Error())
@@ -876,6 +881,29 @@ func (e *Env) giveBack(ctx context.Context, id, sha, why string, out *ClaimOut) 
 	}
 	e.event("claim", id, "pull_check", OutcomeRefused, sha, nil)
 	return out, nil
+}
+
+// giveBackClock bounds giveBackStuck's ref delete, one git push.
+const giveBackClock = 15 * time.Second
+
+// giveBackStuck deletes a new claim ref whose pull stopped on
+// ledger_conflict and fails with that code, as claim --force does. The
+// ledger cannot be re-read, and a display written now (perhaps to the very
+// bead deleted elsewhere) would add local changes for the person resolving
+// it to sort out, so nothing is written to the ledger. The delete gets its
+// own clock: recording the conflict can use up the command's, and bops
+// sync, which pulls first, cannot finish a delete left behind until the
+// conflict is resolved.
+func (e *Env) giveBackStuck(ctx context.Context, id, sha string, pullErr error, out *ClaimOut) (*ClaimOut, error) {
+	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), giveBackClock)
+	defer cancel()
+	if _, err := e.Lock.Delete(dctx, id, sha); err != nil {
+		out.RefPending = true
+		e.event("claim", id, "ref_delete", "pending", sha, err)
+		out.Warnings = append(out.Warnings, "claim ref not removed: it holds the bead until the next claim or release of it from this checkout, or bops sync once a person resolves the ledger conflict, deletes it: "+err.Error())
+	}
+	e.event("claim", id, "pull_check", OutcomeError, sha, pullErr)
+	return out.fail(pullErr)
 }
 
 // publishClaim writes the claim's display (one update, whose output is the
