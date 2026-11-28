@@ -79,11 +79,12 @@ func MCPTools(m *manifest.Manifest, enableWrites bool) []MCPTool {
 }
 
 // OnlyHint is what a person passes to a preview-only command's --only, built
-// from the preview: reap's <id>@<run> pins the holder each would_release
-// entry showed, so a claim taken over since is skipped, not released.
+// from the preview: reap's would_release entries each carry it as only,
+// <id>@<run> to pin the holder the entry showed (so a claim taken over since
+// is skipped, not released), or the bare id when the run cannot be pinned.
 func OnlyHint(c *manifest.Command) string {
 	if c.Name == "reap" {
-		return "<id>@<run>,... (each would_release entry's id and run)"
+		return "<only>,... (each would_release entry's only: <id>@<run>, or the bare id when its run cannot be pinned; skip an entry without one)"
 	}
 	return "<id>,... (from the preview)"
 }

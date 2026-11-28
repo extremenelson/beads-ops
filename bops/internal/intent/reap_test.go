@@ -437,9 +437,51 @@ func TestReapOnlyPinsTheRunThePreviewShowed(t *testing.T) {
 	}
 }
 
+// A run label is ledger text anyone with write access can set, so the
+// preview offers id@run (as only) for a shell-safe run alone: a run with
+// shell metacharacters, and a claim with no run at all, get the bare id.
+func TestReapPreviewPinsOnlyShellSafeRuns(t *testing.T) {
+	_, b, bdB := reapWorld(t, "x-safe", "x-meta", "x-none")
+	for id, labels := range map[string][]string{"x-meta": {"run:A;rm${IFS}-rf`id`|$(x)"}, "x-none": nil} {
+		git(t, b.dir, "push", "-q", "origin", ":refs/bops/claims/"+id)
+		bdB.beads[id].Labels = labels
+	}
+	out, err := intent.Reap(bg, b.env, intent.ReapOpts{DryRun: true, Only: []string{"x-safe", "x-meta", "x-none"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"x-safe": "x-safe@A", "x-meta": "x-meta", "x-none": "x-none"}
+	if len(out.WouldRelease) != len(want) {
+		t.Fatalf("would_release = %+v", out.WouldRelease)
+	}
+	for _, d := range out.WouldRelease {
+		if d.ID == "x-meta" && !strings.HasPrefix(d.Run, "A;") {
+			t.Errorf("x-meta run = %q: the unsafe-run path was not exercised", d.Run)
+		}
+		if d.Only != want[d.ID] {
+			t.Errorf("%s (run %q): only = %q, want %q", d.ID, d.Run, d.Only, want[d.ID])
+		}
+	}
+	for _, run := range []string{"01M8G1K10KYXH1EB0J8MTVJ295", "a.b_c:d-e"} {
+		if got := intent.OnlyEntry("x-1", run); got != "x-1@"+run {
+			t.Errorf("OnlyEntry(%q) = %q", run, got)
+		}
+	}
+	for _, id := range []string{"x;id", "$(id)", "x 1"} {
+		if got := intent.OnlyEntry(id, "A"); got != "" {
+			t.Errorf("OnlyEntry(%q, A) = %q, want nothing to paste", id, got)
+		}
+	}
+	for _, run := range []string{"", "-", "A;id", "$(id)", "A|B", "`id`", "${IFS}", "A'B", "A B", "A,B", "A@B", "A/B", "A\u00e9", strings.Repeat("a", 129)} {
+		if got := intent.OnlyEntry("x-1", run); got != "x-1" {
+			t.Errorf("OnlyEntry(%q) = %q, want the bare id", run, got)
+		}
+	}
+}
+
 func TestReapOnlyRejectsBadPins(t *testing.T) {
 	_, b, _ := reapWorld(t, "x-1")
-	for _, only := range [][]string{{"x-1@"}, {"x-1@A B"}, {"x-1@A@B"}, {"x-1@-"}, {"x-1@A\u200b"}, {"@A"}, {"x-1@A", "x-1@B"}, {"x-1", "x-1@A"}} {
+	for _, only := range [][]string{{"x-1@"}, {"x-1@A B"}, {"x-1@A@B"}, {"x-1@-"}, {"x-1@A\u200b"}, {"x-1@A;id"}, {"x-1@$(id)"}, {"x-1@A|B"}, {"x-1@`id`"}, {"x-1@${IFS}"}, {"x-1@A'B"}, {"@A"}, {"x-1@A", "x-1@B"}, {"x-1", "x-1@A"}} {
 		if _, err := intent.Reap(bg, b.env, intent.ReapOpts{DryRun: true, Only: only}); err == nil {
 			t.Errorf("--only %q was accepted", only)
 		}

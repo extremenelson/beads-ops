@@ -722,16 +722,16 @@ func TestReapDetailsPrintsFollowUpsWithoutControlBytes(t *testing.T) {
 		Released:     []intent.ReapDone{{ID: "x-1", Detail: "(pending: run bops sync from this checkout)"}, {ID: "x-quiet"}},
 		Kept:         []intent.ReapKept{{ID: "x-2", Actor: "a", Evidence: []string{"mr https://h/p/-/merge_requests/1\x1b[31m"}}},
 		Failed:       []intent.ReapDone{{ID: "x-3", Outcome: "held", Detail: "this run now holds x-3", SavedTo: "/tmp/n.txt"}},
-		WouldRelease: []intent.ReapDone{{ID: "x-4", Run: "R4", Actor: "a"}, {ID: "x-5", Actor: "b"}, {ID: "x-6", Run: "R,x-9", Actor: "c"}},
+		WouldRelease: []intent.ReapDone{{ID: "x-4", Run: "R4", Actor: "a"}, {ID: "x-5", Actor: "b"}, {ID: "x-6", Run: "R,x-9", Actor: "c"}, {ID: "x-7", Run: "R;rm -rf ~", Actor: "d"}, {ID: "x-8", Run: "$(id)", Actor: "e"}, {ID: "x-9", Run: "-", Actor: "f"}, {ID: "x;id", Run: "A", Actor: "g"}, {ID: "x'y", Actor: "h"}},
 	})
 	b, _ := os.ReadFile(f.Name())
 	got := string(b)
-	for _, want := range []string{"would release x-4@R4 (", "would release x-5 (", "would release x-6 (", "released x-1: (pending: run bops sync", "kept x-2", "failed x-3: held this run now holds x-3 (note text saved to /tmp/n.txt)"} {
+	for _, want := range []string{"would release x-4@R4 (", "would release x-5 (", "would release x-6 (", "would release x-7 (another machine, d, idle 0m; run not pinnable, check its holder first)", "would release x-8 (another machine, e, idle 0m; run not pinnable", "would release x-9 (another machine, f, idle 0m)\n", "would release 'x'\\''y' (another machine, h", "would release 'x;id' (another machine, g, idle 0m; not a valid bead id, so --only cannot name it)", "released x-1: (pending: run bops sync", "kept x-2", "failed x-3: held this run now holds x-3 (note text saved to /tmp/n.txt)"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "\x1b") || strings.Contains(got, "x-quiet") {
+	if strings.Contains(got, "\x1b") || strings.Contains(got, "x-quiet") || strings.Contains(got, "@R,") || strings.Contains(got, "rm -rf") || strings.Contains(got, "$(id)") || strings.Contains(got, "x-9@") {
 		t.Errorf("control byte or a no-news release printed:\n%s", got)
 	}
 }

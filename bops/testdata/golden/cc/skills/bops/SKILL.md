@@ -70,7 +70,7 @@ Do not close beads yourself. `bops sweep` previews which landed beads have merge
 - **Moving machines:** after `bops note` and a branch push, the person runs `bops claim --resume <id>` from the new machine's worktree. Never in an autonomous loop.
 - **A reviewer asks for changes after `release --reason done`:** run `bops claim --resume <id>` from a worktree, then continue from step 4. Only the actor who landed it can.
 - **`bops sync` lists `stranded_holds`:** held by a removed worktree; if abandoned, run `bops release <id> --reason abandoned` from any worktree of this clone.
-- **A bead looks abandoned:** `bops stale` lists idle claims, orphan refs; `bops reap` previews workless claims, `bops gc` refs to delete. Only a person acts (`--dry-run=false --only`, reap `<id>@<run>`, gc `<id>`) or `claim --force`: tell them. See PROCESS §12.
+- **A bead looks abandoned:** `bops stale` lists idle claims, orphan refs; `bops reap` previews workless claims, `bops gc` refs to delete. Only a person acts (`--dry-run=false --only`, reap each `only`, gc `<id>`) or `claim --force`: tell them. See PROCESS §12.
 
 ## Command reference (contract 1)
 

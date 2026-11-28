@@ -358,7 +358,7 @@ Release stale claims that hold no work
 | `--dry-run` | bool | `true` |  |
 | `--forge` | enum: auto \| github \| gitlab \| none | `auto` | Forge searched for open or merged merge requests naming each claim with no other evidence; none searches nothing, with a warning. |
 | `--older-than` | duration | `stale_minutes` | Idle longer than this is stale, as for stale; shorter than stale_minutes is refused. |
-| `--only` | string? |  | Comma-separated bead ids, normally the ones a preview listed under would_release: act on these only. <id>@<run> also pins the holder the preview showed: a claim held now by another run is listed under skipped, not released. One that is no longer a stale claim is listed under skipped; an empty list is a usage error. A claim made outside bops (no run label, no ref) is released only when named here. |
+| `--only` | string? |  | Comma-separated bead ids, normally the ones a preview listed under would_release: act on these only. <id>@<run> also pins the holder the preview showed: a claim held now by another run is listed under skipped, not released. Each would_release entry's only is the entry to pass: <id>@<run>, or the bare id when its run is empty, - or outside A-Z a-z 0-9 . _ : -, which cannot be pinned; none when the id is not a valid bead id. One that is no longer a stale claim is listed under skipped; an empty list is a usage error. A claim made outside bops (no run label, no ref) is released only when named here. |
 
 Agents: preview only. The MCP tool refuses `dry-run: false`, and the generated skills tell the agent to leave the real run to a person (instructions only: an agent with a shell can still type it). `--dry-run=false` is a person's, at the CLI.
 
@@ -394,7 +394,8 @@ Output:
       "same_machine": "bool",
       "outcome": "string?",
       "detail": "string?",
-      "saved_to": "string?"
+      "saved_to": "string?",
+      "only": "string?"
     }
   ],
   "failed": [
