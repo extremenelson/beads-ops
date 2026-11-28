@@ -92,7 +92,9 @@ Every ref write follows one protocol, inside `internal/lock`:
         holds another sha  → lost
         unchanged          → unreachable, nothing written
   4. record the result in the journal
-  5. then, best effort: bd assignee, run: label, bops:claimed comment, bd dolt push
+  5. then, best effort: bd assignee, run: label, bops:claimed comment (local ledger;
+        a claim does not push: the machine's next land, release, sync, or a reap
+        or sweep that acts, publishes it)
         failure here → ledger_pending: true; the next `bops sync` repairs it
 ```
 
@@ -112,7 +114,7 @@ Landing and closing are separate on purpose. `release --reason done` rewrites th
 - **The lock only covers `bops`.** A raw `bd update --claim`, `bd reclaim`, or an older `bops` that predates the lock bypasses it. Every machine on a ledger has to run a lock-aware `bops`. `/bead-loop` claims through `bops claim` when the repo's protocol file sets `**Claim tool:** bops`; with no such line it claims through raw `bd` and is outside the guarantee, so set that line on every `bops` ledger.
 - **The actor isn't authenticated.** Anyone with push access can write a claim ref under any name. The actor check on `claim --resume` is a safety rail, not access control. Access control is whoever can push to the remote.
 - **The forge must accept custom refs.** A host that rejects pushes under `refs/bops/` gives `lock_unsupported`, and there's no fallback in v0.1.0.
-- **Two writes per claim.** A ref push, then the ledger display. The display can lag (`ledger_pending`), so raw `bd show` may briefly name the wrong assignee.
+- **Two writes per claim.** A ref push, then the ledger display, written to the local ledger only (the machine's next ledger push publishes it). On other machines raw `bd show` and `bd ready` can show a held bead unassigned and ready until then; `bops status` and `doctor` report an unpublished ledger.
 - **Shelling out to `bd` costs startup time on every call.** Accepted for v0 so the contract is verifiable against any `bd`; `bdx.Runner` leaves room for an in-process ledger later.
 - **The lock is temporary by design.** It's deleted the day `bd` offers a cross-replica compare-and-set.
 

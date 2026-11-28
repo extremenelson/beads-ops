@@ -575,12 +575,15 @@ func cmdDoctor(ctx context.Context, m *manifest.Manifest, args []string, asJSON 
 		return emit(m, "doctor", asJSON, nil, err, stdout, stderr)
 	}
 	var out *lock.Diagnosis
+	lockURL := "" // set when the Dolt remote beside the lock answered doctor's checks
 	if cfg.LockOff() {
 		out = lock.DoctorOff() // nothing to check, and no remote is touched
 	} else {
 		l := &lock.Lock{Git: lock.Exec{Dir: root}, Run: "doctor", Actor: "bops-doctor", Remote: cfg.LockRemote}
 		out = l.Doctor(ctx)
-		out.Add(intent.DoltRemoteCheck(ctx, doctorBD, l)) // the ledger must sit beside the lock
+		if out.Add(intent.DoltRemoteCheck(ctx, doctorBD, l)) && len(out.Failed) == 0 { // the ledger must sit beside the lock
+			lockURL, _ = l.RemoteURL(ctx)
+		}
 	}
 	if c, w := minBopsCheck(cfg.MinBops, runningVersion()); c != nil {
 		out.Add(*c)
@@ -594,6 +597,20 @@ func cmdDoctor(ctx context.Context, m *manifest.Manifest, args []string, asJSON 
 		out.Add(c) // recorded by the command whose pull met it; doctor only reads it
 	} else if w != "" {
 		out.Warnings = append(out.Warnings, w)
+	}
+	if w := intent.PullFailureWarning(root); w != "" {
+		out.Warnings = append(out.Warnings, w) // a claim's failed pull; the claim holds, so not a failed check
+	}
+	switch {
+	case cfg.LockOff(): // a claim still pushes, and doctor touches no remote
+	case lockURL == "": // the remote checks failed: its fetch would only wait out the budget
+		out.Warnings = append(out.Warnings, "ledger publication not read: the checks above did not confirm a reachable lock remote with its Dolt remote beside it")
+	default:
+		if p, err := intent.ReadLedgerPublish(ctx, doctorBD, lockURL); err != nil {
+			out.Warnings = append(out.Warnings, "ledger publication not read: "+lock.Scrub(err.Error()))
+		} else {
+			out.Warnings = append(out.Warnings, p.Warnings()...) // unpublished is normal between pushes: a warning
+		}
 	}
 	if u, err := intent.UnmatchedBlockingLabels(ctx, doctorBD, cfg.BlockingLabels); err != nil {
 		out.Warnings = append(out.Warnings, "blocking_labels not checked: bd could not list the beads: "+lock.Scrub(err.Error()))

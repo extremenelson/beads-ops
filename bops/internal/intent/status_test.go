@@ -84,7 +84,7 @@ func TestStatusListsEveryClaim(t *testing.T) {
 		t.Errorf("warnings: %v", out.Warnings)
 	}
 	for _, c := range bd.calls {
-		if c[0] != "list" && !(c[0] == "comments" && c[1] != "add") {
+		if c[0] != "list" && !(c[0] == "comments" && c[1] != "add") && strings.Join(c, " ") != "federation status --json" {
 			t.Errorf("status must only read the ledger, ran bd %v", c)
 		}
 	}
@@ -142,8 +142,8 @@ func TestStatusFailures(t *testing.T) {
 	if c := statusByID(out)["x-raw"]; c.AgeMinutes != nil || c.Machine != "" {
 		t.Errorf("x-raw without comments: %+v", c)
 	}
-	if len(out.Warnings) != 4 {
-		t.Errorf("warnings = %q, want the fetch, branches, first comments and the rest", out.Warnings)
+	if len(out.Warnings) != 5 {
+		t.Errorf("warnings = %q, want the fetch, the publication not read, branches, first comments and the rest", out.Warnings)
 	}
 }
 

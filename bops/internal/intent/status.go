@@ -63,7 +63,14 @@ type StatusOut struct {
 	// merge conflict needing a person, while no later pull has succeeded;
 	// every pull and push from the clone fails until it is resolved.
 	LedgerConflict *LedgerConflictReport `json:"ledger_conflict,omitempty"`
-	Warnings       []string              `json:"warnings"`
+	// LedgerPullFailed is this clone's last claim-path ledger pull that
+	// failed (other than on a conflict), while no later pull has succeeded.
+	LedgerPullFailed *PullFailureReport `json:"ledger_pull_failed,omitempty"`
+	// LedgerPublish is, under lock.mode ref, how far the local ledger is
+	// from its Dolt remotes: a claim's display is published by the
+	// machine's next push, so ahead counts claims other machines cannot see.
+	LedgerPublish *LedgerPublish `json:"ledger_publish,omitempty"`
+	Warnings      []string       `json:"warnings"`
 }
 
 // Status lists every claim, from the claim refs and the ledger joined, with
@@ -93,10 +100,12 @@ func Status(ctx context.Context, env *Env, o StatusOpts) (*StatusOut, error) {
 	}
 	out := &StatusOut{Claims: []StatusClaim{}, Warnings: []string{}}
 	out.LedgerConflict = env.ledgerConflictReport(&out.Warnings) // read from the record: status pulls nothing
+	out.LedgerPullFailed = env.pullFailureReport(&out.Warnings)
 	refs, issues, fetched, err := env.claimSnapshot(ctx, &out.Warnings)
 	if err != nil {
 		return nil, err
 	}
+	out.LedgerPublish = env.ledgerPublish(ctx, fetched, &out.Warnings) // fetches the Dolt remote; merges nothing
 	now := env.now()
 	cutoff := now.Add(-o.OlderThan)
 	mine := env.clonesRuns()

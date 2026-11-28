@@ -40,21 +40,30 @@ type LedgerConflict struct {
 // such a record is wrong only until the next pull, which records or clears it
 // again.
 func (s *Store) SetLedgerConflict(c *LedgerConflict) error {
-	path := filepath.Join(s.dir, conflictFile)
 	if c == nil {
+		return s.writeRecord(conflictFile, nil)
+	}
+	return s.writeRecord(conflictFile, c)
+}
+
+// writeRecord replaces the record file name beside state.json with v as
+// indented JSON, atomically and without a lock, or with nil removes it.
+func (s *Store) writeRecord(name string, v any) error {
+	path := filepath.Join(s.dir, name)
+	if v == nil {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		return nil
 	}
-	b, err := json.MarshalIndent(c, "", "  ")
+	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(s.dir, conflictFile+".*.tmp")
+	tmp, err := os.CreateTemp(s.dir, name+".*.tmp")
 	if err != nil {
 		return err
 	}
@@ -71,6 +80,33 @@ func (s *Store) SetLedgerConflict(c *LedgerConflict) error {
 	return werr
 }
 
+// readRecord reads the record file name in dir into v. It reports false,
+// with no error, when there is none.
+func readRecord(dir, name string, v any) (bool, error) {
+	path := filepath.Join(dir, name)
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if err := json.Unmarshal(b, v); err != nil {
+		return false, fmt.Errorf("%s: %w", path, err)
+	}
+	return true, nil
+}
+
+// clonesStateDir is the state directory of the clone holding start, found
+// without opening its state.
+func clonesStateDir(start string) (string, error) {
+	commonDir, _, err := locate(start)
+	if err != nil {
+		return "", err
+	}
+	return stateDir(commonDir)
+}
+
 // LedgerConflict reads the record, or nil when there is none.
 func (s *Store) LedgerConflict() (*LedgerConflict, error) {
 	return readConflict(s.dir)
@@ -79,11 +115,7 @@ func (s *Store) LedgerConflict() (*LedgerConflict, error) {
 // ReadLedgerConflict reads the record of the clone holding start without
 // opening its state, so it writes nothing and creates no run (doctor).
 func ReadLedgerConflict(start string) (*LedgerConflict, error) {
-	commonDir, _, err := locate(start)
-	if err != nil {
-		return nil, err
-	}
-	dir, err := stateDir(commonDir)
+	dir, err := clonesStateDir(start)
 	if err != nil {
 		return nil, err
 	}
@@ -91,17 +123,9 @@ func ReadLedgerConflict(start string) (*LedgerConflict, error) {
 }
 
 func readConflict(dir string) (*LedgerConflict, error) {
-	path := filepath.Join(dir, conflictFile)
-	b, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
 	c := &LedgerConflict{}
-	if err := json.Unmarshal(b, c); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+	if ok, err := readRecord(dir, conflictFile, c); !ok || err != nil {
+		return nil, err
 	}
 	return c, nil
 }

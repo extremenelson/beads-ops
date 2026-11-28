@@ -316,7 +316,9 @@ func runDoctorWith(t *testing.T, prepare func(clone string), remotes func(origin
 	git(t, root, "clone", "-q", "remote.git", "clone")
 	clone := filepath.Join(root, "clone")
 	origin, _ := exec.Command("git", "-C", clone, "remote", "get-url", "origin").Output()
-	fake := &bdx.Fake{Responses: map[string][]byte{}}
+	fake := &bdx.Fake{Responses: map[string][]byte{
+		"federation status --json": []byte(`{"peers":[{"URL":"git+file://` + strings.TrimSpace(string(origin)) + `","Reachable":true,"ReachError":"","Status":{"LocalAhead":0,"LocalBehind":0,"Peer":"origin"}}],"pendingChanges":0,"schema_version":1}`),
+	}}
 	if list := remotes(strings.TrimSpace(string(origin))); list != "" {
 		fake.Responses["dolt remote list --json"] = []byte(list)
 	}
