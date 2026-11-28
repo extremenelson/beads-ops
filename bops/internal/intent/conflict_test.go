@@ -1,6 +1,7 @@
 package intent_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -187,6 +188,143 @@ func TestClaimForceReportsALedgerConflict(t *testing.T) {
 	out, err := intent.Claim(bg, a.env, "x-1", true)
 	if lock.CodeOf(err) != lock.CodeLedgerConflict || out.Outcome != intent.OutcomeError {
 		t.Fatalf("out %+v, err %v", out, err)
+	}
+}
+
+// A plain claim whose pull stops gives its new ref back and fails with
+// ledger_conflict, as claim --force does: the ledger cannot be re-read, so
+// nothing is written to it, not even to a bead deleted elsewhere.
+func TestClaimOnAStuckLedgerGivesTheRefBack(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	stuckAfter(t, bd, 0)
+	out, err := intent.Claim(bg, a.env, "x-1", false)
+	if lock.CodeOf(err) != lock.CodeLedgerConflict || out == nil || out.Outcome != intent.OutcomeError || out.RefPending {
+		t.Fatalf("out %+v, err %v", out, err)
+	}
+	if !strings.Contains(err.Error(), "MULTI-DEV-PLAN.md §6") {
+		t.Errorf("err = %v", err)
+	}
+	if liveSHA(t, a, "x-1") != "" || bd.wrote("x-1") {
+		t.Errorf("the ref must be given back with no ledger write: %v", bd.calls)
+	}
+	if _, held := a.env.Lock.Journal.Entry("x-1"); held {
+		t.Error("the given-back claim is still journalled")
+	}
+	if rec, _ := a.store.LedgerConflict(); rec == nil {
+		t.Error("the conflict was not recorded for status and doctor")
+	}
+	bd.fail = nil // resolved: the bead is free to claim again (a later command; the stop sticks for this one)
+	mustClaim(t, client(t, remote, "B", bd), "x-1")
+}
+
+// stuckClaimWhoseDeleteFails makes a plain claim on a stuck ledger whose
+// give-back delete fails, and checks it leaves the ref, says so, and writes
+// nothing to the ledger.
+func stuckClaimWhoseDeleteFails(t *testing.T) (*fakeBD, *rig) {
+	t.Helper()
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	stuckAfter(t, bd, 0)
+	a.env.Lock.Git = &deleteFails{Git: a.git}
+	out, err := intent.Claim(bg, a.env, "x-1", false)
+	if lock.CodeOf(err) != lock.CodeLedgerConflict || out == nil || !out.RefPending {
+		t.Fatalf("out %+v, err %v", out, err)
+	}
+	if !slices.ContainsFunc(out.Warnings, func(w string) bool { return strings.Contains(w, "resolves the ledger conflict") }) {
+		t.Errorf("warnings = %v", out.Warnings)
+	}
+	if liveSHA(t, a, "x-1") == "" || bd.wrote("x-1") {
+		t.Fatalf("the ref should stay with no ledger write: %v", bd.calls)
+	}
+	return bd, a
+}
+
+// bops sync deletes the ref left behind once the ledger pulls again.
+func TestAStuckClaimsLeftRefGoesAtSyncOnceResolved(t *testing.T) {
+	bd, a := stuckClaimWhoseDeleteFails(t)
+	bd.fail = nil
+	b := rigAt(t, a.dir, "A", bd) // a later command in the same clone
+	syncOut, err := intent.Sync(bg, b.env, false)
+	if err != nil || len(syncOut.LostClaims) != 0 {
+		t.Fatalf("%+v, %v", syncOut, err)
+	}
+	if liveSHA(t, b, "x-1") != "" {
+		t.Error("sync did not finish the delete")
+	}
+	if _, held := b.env.Lock.Journal.Entry("x-1"); held {
+		t.Error("the hold is still journalled")
+	}
+}
+
+// A later claim of the bead from the same clone finishes the delete first,
+// with no pull, so the ref goes while the ledger is still stuck.
+func TestAStuckClaimsLeftRefGoesAtTheNextClaimOfTheBead(t *testing.T) {
+	bd, a := stuckClaimWhoseDeleteFails(t)
+	b := rigAt(t, a.dir, "A", bd)
+	if _, err := intent.Claim(bg, b.env, "x-1", false); lock.CodeOf(err) != lock.CodeLedgerConflict {
+		t.Fatalf("err = %v", err)
+	}
+	if liveSHA(t, b, "x-1") != "" {
+		t.Error("the left ref is still there")
+	}
+}
+
+// A release of the bead from the same clone finishes the delete too, with
+// the ledger still stuck.
+func TestAStuckClaimsLeftRefGoesAtARelease(t *testing.T) {
+	bd, a := stuckClaimWhoseDeleteFails(t)
+	b := rigAt(t, a.dir, "A", bd)
+	_, _ = intent.Release(bg, b.env, "x-1", "abandoned")
+	if liveSHA(t, b, "x-1") != "" {
+		t.Error("the left ref is still there")
+	}
+}
+
+// The give-back delete has its own clock: a command whose context is gone
+// by the time the pull stops still gives the ref back.
+func TestClaimOnAStuckLedgerGivesTheRefBackPastTheCommandClock(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	stuckAfter(t, bd, 0)
+	ctx, cancel := context.WithCancel(bg)
+	defer cancel()
+	stuck := bd.fail
+	bd.fail = func(args []string) error {
+		if strings.Join(args, " ") == "dolt pull" {
+			cancel()
+		}
+		return stuck(args)
+	}
+	out, err := intent.Claim(ctx, a.env, "x-1", false)
+	if lock.CodeOf(err) != lock.CodeLedgerConflict || out == nil || out.RefPending {
+		t.Fatalf("out %+v, err %v", out, err)
+	}
+	if liveSHA(t, a, "x-1") != "" {
+		t.Error("the give-back delete did not outlive the command's clock")
+	}
+}
+
+// claim --next stops at the first candidate: every claim would meet the
+// same stuck ledger.
+func TestClaimNextOnAStuckLedgerStops(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	bd.add("x-2")
+	a := client(t, remote, "A", bd)
+	stuckAfter(t, bd, 0)
+	out, err := intent.ClaimNext(bg, a.env)
+	if lock.CodeOf(err) != lock.CodeLedgerConflict || out == nil || out.ID != "x-1" || len(out.Skipped) != 0 {
+		t.Fatalf("the walk did not stop at the first candidate: out %+v, err %v", out, err)
+	}
+	if bd.count("show x-2") != 0 {
+		t.Errorf("x-2 was tried: %v", bd.calls)
+	}
+	if liveSHA(t, a, "x-1") != "" || liveSHA(t, a, "x-2") != "" || bd.wrote("x-1") || bd.wrote("x-2") {
+		t.Errorf("a ref or ledger write was left: %v", bd.calls)
 	}
 }
 
