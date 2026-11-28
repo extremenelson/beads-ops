@@ -1,6 +1,7 @@
 package intent_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/csv"
 	"encoding/json"
@@ -50,6 +51,9 @@ type fakeBD struct {
 	ready   []byte // bd ready output; nil means two fixed beads
 	prime   string
 	diff    []byte // `diff HEAD <ref> --json`; nil fails it
+	// federation is `federation status --json`; nil answers one reachable
+	// remote, origin, with nothing ahead or behind.
+	federation []byte
 }
 
 func newBD() *fakeBD {
@@ -106,6 +110,17 @@ func (b *fakeBD) Run(_ context.Context, args ...string) ([]byte, error) {
 		return nil, nil
 	case "heartbeat":
 		return nil, nil
+	case "federation":
+		var rs []struct{ URL string }
+		_ = json.Unmarshal([]byte(b.remotes), &rs)
+		url := ""
+		if len(rs) > 0 {
+			url = rs[0].URL
+		}
+		if b.federation == nil {
+			return []byte(`{"peers":[{"URL":"` + url + `","Reachable":true,"ReachError":"","Status":{"LocalAhead":0,"LocalBehind":0,"Peer":"origin"}}],"pendingChanges":0,"schema_version":1}`), nil
+		}
+		return bytes.ReplaceAll(b.federation, []byte("%URL%"), []byte(url)), nil
 	case "diff":
 		if b.diff == nil {
 			return nil, errors.New("fakeBD: no diff")
@@ -392,8 +407,10 @@ func TestClaimWritesRefThenLedger(t *testing.T) {
 	if !ok || e.SHA == "" || e.SHA != liveSHA(t, a, "x-1") || e.Phase != runstate.PhaseHeld {
 		t.Errorf("journal = %+v, %v", e, ok)
 	}
+	// Under lock.mode ref the claim pushes nothing: its display rides on
+	// this machine's next ledger push.
 	first, push := slices.IndexFunc(bd.calls, func(c []string) bool { return c[0] == "update" }), bd.count("dolt push")
-	if first < 0 || push != 1 {
+	if first < 0 || push != 0 {
 		t.Errorf("calls = %v", bd.calls)
 	}
 }
@@ -699,8 +716,10 @@ func TestLedgerFailureStillClaimsAndSyncRepairsWithoutDuplicates(t *testing.T) {
 	}
 }
 
-// The comment is written before the push, so a failed push must not add it twice.
-func TestRetryAfterAFailedPushAddsNoSecondComment(t *testing.T) {
+// Under lock.mode ref a claim pushes nothing, so a push that always fails
+// neither makes it ledger_pending nor fails it, and the sync that later
+// publishes it adds no second comment.
+func TestAFailingPushDoesNotMakeAClaimPending(t *testing.T) {
 	remote, bd := bareRemote(t), newBD()
 	bd.add("x-1")
 	a := client(t, remote, "A", bd)
@@ -711,33 +730,74 @@ func TestRetryAfterAFailedPushAddsNoSecondComment(t *testing.T) {
 		}
 		return nil
 	}
-	if out := mustClaim(t, a, "x-1"); !out.LedgerPending {
-		t.Fatalf("%+v", out)
+	out, err := intent.Claim(bg, a.env, "x-1", false)
+	if err != nil || out.Outcome != intent.OutcomeClaimed || out.LedgerPending || !out.ReadbackOK || out.Negative() {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if bd.count("dolt push") != 0 || bd.count("dolt commit") != 0 {
+		t.Errorf("claim pushed: %v", bd.calls)
+	}
+	if e, _ := a.store.Entry("x-1"); e.LedgerPending {
+		t.Errorf("journal = %+v, want no ledger_pending", e)
+	}
+	if evs := claimLedgerOutcomes(t, a); !slices.Equal(evs, []string{"written"}) {
+		t.Errorf("claim ledger events = %v, want [written]", evs)
+	}
+	if out, err := intent.Sync(bg, a.env, false); err == nil || out.Pushed {
+		t.Errorf("sync with a failing push: %+v, %v", out, err)
 	}
 	broken = false
-	if _, err := intent.Sync(bg, a.env, false); err != nil {
-		t.Fatal(err)
+	if out, err := intent.Sync(bg, a.env, false); err != nil || !out.Pushed {
+		t.Fatalf("sync: %+v, %v", out, err)
 	}
 	if n := len(bd.beads["x-1"].Comments); n != 1 {
 		t.Errorf("comments = %v", bd.beads["x-1"].Comments)
 	}
 }
 
-func TestPushIsRetriedAfterAPull(t *testing.T) {
+// A claim whose local display does not complete is still ledger_pending.
+func TestAClaimWhoseLocalWriteFailsIsPending(t *testing.T) {
 	remote, bd := bareRemote(t), newBD()
 	bd.add("x-1")
 	a := client(t, remote, "A", bd)
-	rejected := 3
 	bd.fail = func(args []string) error {
-		if strings.Join(args, " ") == "dolt push" && rejected > 0 {
-			rejected--
-			return errors.New("non-fast-forward")
+		if args[0] == "comments" && args[1] == "add" {
+			return errors.New("database is locked")
 		}
 		return nil
 	}
 	out := mustClaim(t, a, "x-1")
-	if out.LedgerPending || bd.count("dolt push") != 4 {
-		t.Errorf("%+v, pushes=%d", out, bd.count("dolt push"))
+	if out.Outcome != intent.OutcomeClaimed || !out.LedgerPending {
+		t.Fatalf("%+v", out)
+	}
+	if evs := claimLedgerOutcomes(t, a); !slices.Equal(evs, []string{"pending"}) {
+		t.Errorf("claim ledger events = %v, want [pending]", evs)
+	}
+}
+
+// claimLedgerOutcomes is the outcome of every claim ledger line in a's
+// events.jsonl.
+func claimLedgerOutcomes(t *testing.T, _ *rig) []string {
+	t.Helper()
+	var out []string
+	for _, ev := range allEvents(t) {
+		if ev.Command == "claim" && ev.Step == "ledger" {
+			out = append(out, ev.Outcome)
+		}
+	}
+	return out
+}
+
+func TestPushIsRetriedAfterAPull(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	rejectPushes(bd, 3)
+	bd.calls = nil
+	out, err := intent.Release(bg, a.env, "x-1", "scope")
+	if err != nil || out.LedgerPending || bd.count("dolt push") != 4 || bd.count("dolt pull") < 3 {
+		t.Errorf("%+v, %v, pushes=%d", out, err, bd.count("dolt push"))
 	}
 }
 
@@ -745,15 +805,12 @@ func TestPushGivesUpAfterFiveTries(t *testing.T) {
 	remote, bd := bareRemote(t), newBD()
 	bd.add("x-1")
 	a := client(t, remote, "A", bd)
-	bd.fail = func(args []string) error {
-		if strings.Join(args, " ") == "dolt push" {
-			return errors.New("non-fast-forward")
-		}
-		return nil
-	}
-	out := mustClaim(t, a, "x-1")
-	if !out.LedgerPending || bd.count("dolt push") != 5 {
-		t.Errorf("%+v, pushes=%d", out, bd.count("dolt push"))
+	mustClaim(t, a, "x-1")
+	rejectPushes(bd, 100)
+	bd.calls = nil
+	out, err := intent.Release(bg, a.env, "x-1", "scope")
+	if err != nil || !out.LedgerPending || bd.count("dolt push") != 5 {
+		t.Errorf("%+v, %v, pushes=%d", out, err, bd.count("dolt push"))
 	}
 }
 
@@ -783,18 +840,16 @@ func TestEveryPushTryCommitsFirst(t *testing.T) {
 	remote, bd := bareRemote(t), newBD()
 	bd.add("x-1")
 	a := client(t, remote, "A", bd)
-	rejectPushes(bd, 3)
 	if out := mustClaim(t, a, "x-1"); out.LedgerPending {
 		t.Fatalf("%+v", out)
 	}
-	if bd.count("dolt push") != 4 || bd.count("dolt commit") != 4 {
-		t.Errorf("pushes=%d commits=%d, want 4 each", bd.count("dolt push"), bd.count("dolt commit"))
-	}
-	committedBeforeEachPush(t, bd)
-
+	rejectPushes(bd, 3)
 	bd.calls = nil
 	if out, err := intent.Sync(bg, a.env, false); err != nil || !out.Pushed {
 		t.Fatalf("sync: %+v, %v", out, err)
+	}
+	if bd.count("dolt push") != 4 || bd.count("dolt commit") != 4 {
+		t.Errorf("pushes=%d commits=%d, want 4 each", bd.count("dolt push"), bd.count("dolt commit"))
 	}
 	committedBeforeEachPush(t, bd)
 

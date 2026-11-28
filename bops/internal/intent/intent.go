@@ -79,6 +79,10 @@ type HoldStore interface {
 	// ledger pull that stopped for a person.
 	LedgerConflict() (*runstate.LedgerConflict, error)
 	SetLedgerConflict(c *runstate.LedgerConflict) error
+	// LedgerPullFailure and SetLedgerPullFailure read and write the record
+	// of a claim-path pull that failed (status and doctor report it).
+	LedgerPullFailure() (*runstate.LedgerPullFailure, error)
+	SetLedgerPullFailure(f *runstate.LedgerPullFailure) error
 }
 
 // holdBead takes this clone's lock on id for the rest of a command and

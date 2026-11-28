@@ -918,8 +918,8 @@ func TestReapKeepsTheRefUntilTheReleasePushLands(t *testing.T) {
 		out.Released[0].SavedTo != "" { // the note is in the local ledger; the push carries it
 		t.Fatalf("%+v", out)
 	}
-	if bdB.count("dolt push") < 2 { // the takeover's and the release's
-		t.Fatalf("pushes = %d, want the takeover's and the release's tried", bdB.count("dolt push"))
+	if bdB.count("dolt push") != 5 { // the release's five tries; the takeover pushes nothing
+		t.Fatalf("pushes = %d, want the release's five tries", bdB.count("dolt push"))
 	}
 	sha := liveSHA(t, a, "x-1")
 	if sha == "" {
@@ -1065,8 +1065,10 @@ func TestReapPushesTheReleaseBeforeDeletingTheRef(t *testing.T) {
 	if err != nil || reapIDs(out.Released) != "x-1" || strings.Contains(out.Released[0].Detail, "pending") || out.Negative() {
 		t.Fatalf("%+v, %v", out, err)
 	}
-	if len(refAtPush) < 2 || slices.Contains(refAtPush, "") {
-		t.Fatalf("ref at each push = %q, want live at the takeover's and the release's", refAtPush)
+	// The takeover writes its display locally and pushes nothing; the
+	// release's push carries both.
+	if len(refAtPush) != 1 || slices.Contains(refAtPush, "") {
+		t.Fatalf("ref at each push = %q, want one push, the release's, with the ref live", refAtPush)
 	}
 	if liveSHA(t, a, "x-1") != "" {
 		t.Error("ref left after a release whose push landed")

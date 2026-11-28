@@ -275,12 +275,25 @@ func (e *Env) ledgerHolder(cur *ledger.Issue) *Holder {
 // A pull that stops on a merge conflict needing a person ends the retries at
 // once, and a later pushLedger in the same command returns that error
 // without calling bd: no retry can succeed until a person resolves it.
+//
+// Every call logs one ledger_push line to events.jsonl with its outcome
+// (pushed or failed) and the number of tries it made. Since a claim no
+// longer pushes, these lines from land, release and sweep are what measure
+// push contention (MULTI-DEV-PLAN §1's switch condition).
 func (e *Env) pushLedger(ctx context.Context) error {
+	tries := 0
+	err := e.pushLedgerTries(ctx, &tries)
+	e.pushEvent(tries, err)
+	return err
+}
+
+func (e *Env) pushLedgerTries(ctx context.Context, tries *int) error {
 	if e.ledgerConflict != nil {
 		return e.ledgerConflict
 	}
 	var err, commitFailed error
 	for try := 0; try < maxPushTries; try++ {
+		*tries = try + 1
 		if try > 0 {
 			e.sleepFor(time.Duration(try) * 500 * time.Millisecond)
 			if _, pullErr := e.doltPull(ctx); pullErr != nil {
@@ -578,11 +591,15 @@ func (o *ClaimOut) fail(err error) (*ClaimOut, error) {
 // Claim takes a bead for this run. Creating the ref decides who owns it, and
 // the ledger only catches up afterward:
 //
-//	bead lock --> already held? --> bd show --> create ref --> pull --> ledger writes --> push
+//	bead lock --> already held? --> bd show --> create ref --> pull --> local ledger writes
 //	    |             |               |            |            |            |
 //	ref_contention   held         refused      lost, no     refused,     claimed,
 //	                                           ledger       ref deleted  ledger_pending
 //	                                           write
+//
+// Under lock.mode ref nothing is pushed: the display rides on this
+// machine's next ledger push (publishClaim). A failed pull is a warning,
+// an event and a record status and doctor report (claimPull).
 //
 // Every path, --force included, starts by taking the bead's lock (bops-yph).
 // A lost or refused claim names the bead `next` would offer instead.
@@ -667,7 +684,7 @@ func claimLocked(ctx context.Context, env *Env, id string, force bool, from *str
 	}
 	env.event("claim", id, "ref_create", OutcomeClaimed, res.SHA, nil)
 
-	if _, pullErr := env.doltPull(ctx); pullErr != nil {
+	if pullErr := env.claimPull(ctx, "claim", id, true); pullErr != nil {
 		out.Warnings = append(out.Warnings, "ledger not pulled: "+pullErr.Error())
 	} else if fresh, showErr := env.showWithComments(ctx, id); showErr != nil {
 		out.Warnings = append(out.Warnings, "ledger not re-read after the pull: "+showErr.Error())
@@ -705,7 +722,7 @@ func claimLedger(ctx context.Context, env *Env, id string, out *ClaimOut) (*Clai
 	if done, err := env.alreadyHeld(ctx, id, out); done || err != nil {
 		return out, err
 	}
-	publish := env.pullUnlessUnpublished(ctx, out)
+	publish := env.pullUnlessUnpublished(ctx, "claim", out)
 	cur, err := env.showWithComments(ctx, id)
 	if err != nil {
 		return nil, err
@@ -737,12 +754,12 @@ func claimLedger(ctx context.Context, env *Env, id string, out *ClaimOut) (*Clai
 // pullUnlessUnpublished is a lock-off claim's best-effort pull. It reports
 // whether the ledger has a Dolt remote to publish to; when it has none, the
 // pull is skipped and the claim says the ledger was not published.
-func (e *Env) pullUnlessUnpublished(ctx context.Context, out *ClaimOut) bool {
+func (e *Env) pullUnlessUnpublished(ctx context.Context, cmd string, out *ClaimOut) bool {
 	if e.unpublished(ctx) {
 		out.Warnings = append(out.Warnings, noDoltRemoteWarning)
 		return false
 	}
-	if _, err := e.doltPull(ctx); err != nil {
+	if err := e.claimPull(ctx, cmd, out.ID, true); err != nil {
 		out.Warnings = append(out.Warnings, "ledger not pulled: "+err.Error())
 	}
 	return true
@@ -862,7 +879,12 @@ func (e *Env) giveBack(ctx context.Context, id, sha, why string, out *ClaimOut) 
 }
 
 // publishClaim writes the claim's display (one update, whose output is the
-// readback) and its comment, then pushes.
+// readback) and its comment to the local ledger. It does not push: under
+// lock.mode ref the claim ref decides, and the display rides on this
+// machine's next ledger push (a land, release, sync without --no-push, or a
+// reap or sweep that acts), so claims from different machines no longer reject each
+// other's pushes (docs/designs/ledger-push-contention.md). An error means the
+// local write did not complete.
 func (e *Env) publishClaim(ctx context.Context, cur *ledger.Issue, extra string, out *ClaimOut) error {
 	after, err := e.display(ctx, cur, e.Run.Actor, e.Run.ID, false, false)
 	if err != nil {
@@ -877,7 +899,7 @@ func (e *Env) publishClaim(ctx context.Context, cur *ledger.Issue, extra string,
 	if !out.ReadbackOK {
 		return errors.New("readback did not show the assignee and run label")
 	}
-	return e.pushLedger(ctx)
+	return nil
 }
 
 // checkHold settles any unfinished ref write and reports whether this run
@@ -945,8 +967,8 @@ func claimForce(ctx context.Context, env *Env, id string, from *string) (*ClaimO
 	var ref *lock.Ref // with the lock off there is never a ref: the ledger branch below decides
 	publish := true
 	if env.LockOff {
-		publish = env.pullUnlessUnpublished(ctx, out)
-	} else if _, err := env.doltPull(ctx); err != nil {
+		publish = env.pullUnlessUnpublished(ctx, "claim --force", out)
+	} else if err := env.claimPull(ctx, "claim --force", id, false); err != nil {
 		if isLedgerConflict(err) {
 			return out.fail(err) // its own code and runbook, not unreachable
 		}
@@ -1097,7 +1119,7 @@ func ClaimResume(ctx context.Context, env *Env, id string) (*ClaimOut, error) {
 	}
 	env.event("claim", id, "ref_replace", OutcomeClaimed, res.SHA, nil)
 	out.Outcome, out.ClaimedAt, out.Generation = OutcomeClaimed, env.now(), res.Gen
-	if _, err := env.doltPull(ctx); err != nil {
+	if err := env.claimPull(ctx, "claim --resume", id, true); err != nil {
 		out.Warnings = append(out.Warnings, "ledger not pulled: "+err.Error())
 	}
 	cur, err := env.show(ctx, id)

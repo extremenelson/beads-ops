@@ -379,3 +379,39 @@ func TestLiveHoldWindowAndReclaim(t *testing.T) {
 		t.Errorf("claim should clear bops:hold: %v", got.Labels)
 	}
 }
+
+// A claim under lock.mode ref pushes nothing, and bd federation status, the
+// surface status and doctor read, counts its local commits until a sync
+// publishes them.
+func TestLiveClaimIsUnpublishedUntilSync(t *testing.T) {
+	env, create := liveLedger(t)
+	ctx := context.Background()
+	bare, err := exec.Command("git", "remote", "get-url", "origin").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("bd", "dolt", "remote", "add", "origin", "git+file://"+string(bare[:len(bare)-1])).CombinedOutput(); err != nil {
+		t.Fatalf("bd dolt remote add: %v\n%s", err, out)
+	}
+	id := create("unpublished claim")
+	if out, err := exec.Command("bd", "dolt", "push").CombinedOutput(); err != nil {
+		t.Fatalf("bd dolt push: %v\n%s", err, out)
+	}
+	p, err := intent.ReadLedgerPublish(ctx, env.BD, "")
+	if err != nil || len(p.Remotes) != 1 || p.Remotes[0].Ahead != 0 || !p.Remotes[0].Fetched {
+		t.Fatalf("after the push: %+v, %v", p, err)
+	}
+	if out, err := intent.Claim(ctx, env, id, false); err != nil || out.Outcome != intent.OutcomeClaimed || out.LedgerPending {
+		t.Fatalf("claim: %+v, %v", out, err)
+	}
+	p, err = intent.ReadLedgerPublish(ctx, env.BD, "")
+	if err != nil || len(p.Remotes) != 1 || p.Remotes[0].Ahead == 0 || len(p.Warnings()) == 0 {
+		t.Fatalf("after the claim: %+v, %v (want commits the remote lacks)", p, err)
+	}
+	if out, err := intent.Sync(ctx, env, false); err != nil || !out.Pushed {
+		t.Fatalf("sync: %+v, %v", out, err)
+	}
+	if p, err = intent.ReadLedgerPublish(ctx, env.BD, ""); err != nil || p.Remotes[0].Ahead != 0 || p.Uncommitted != 0 {
+		t.Fatalf("after the sync: %+v, %v", p, err)
+	}
+}

@@ -715,6 +715,9 @@ type Event struct {
 	// They are set only on those lines, where 0 is a real value.
 	WaitedMS *int64 `json:"waited_ms,omitempty"`
 	HeldMS   *int64 `json:"held_ms,omitempty"`
+	// Tries is how many push tries a ledger_push line's push made (each
+	// after the first pulls first); 0, and omitted, when it made none.
+	Tries int `json:"tries,omitempty"`
 }
 
 // eventsMax is the size at which events.jsonl is rotated to one old copy.

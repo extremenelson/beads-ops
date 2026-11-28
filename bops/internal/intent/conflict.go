@@ -66,6 +66,7 @@ func (e *Env) doltPull(ctx context.Context) ([]byte, error) {
 	switch {
 	case err == nil:
 		e.clearLedgerConflict(start)
+		e.clearPullFailure(ctx, start)
 	case isLedgerConflict(err):
 		e.ledgerConflict = e.recordLedgerConflict(ctx, start, err)
 		err = e.ledgerConflict

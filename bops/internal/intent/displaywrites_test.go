@@ -62,9 +62,10 @@ func TestClaimWritesItsDisplayInOneUpdateAndOneComment(t *testing.T) {
 	}
 	// The update's own output is the readback, and the post-pull show
 	// carries the comments the duplicate check needs: no further show or
-	// comments read. Remote list, show, pull, show, update, comment, commit,
-	// push: 8, against 11 before (and 10 before every push committed first).
-	want := []string{"dolt", "show", "dolt", "show", "update", "comments", "dolt", "dolt"}
+	// comments read. Remote list, show, pull, show, update, comment: 6, and
+	// no commit or push, since under lock.mode ref the display rides on the
+	// machine's next ledger push (8 before that, 11 before one update).
+	want := []string{"dolt", "show", "dolt", "show", "update", "comments"}
 	if got := callNames(bd.calls); !slices.Equal(got, want) {
 		t.Errorf("calls = %v, want %v", bd.calls, want)
 	}
