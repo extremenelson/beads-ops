@@ -75,6 +75,8 @@ Take this bead for this run
 | `--next` | bool | `false` | No id: claim the first workable bead in next's order, trying the next on lost, refused, ref_contention or a bead bd cannot show (at most 5 tries, while 30s of budget is left; skipped lists them). Refused, naming them, when the run already holds a bead. |
 | `--resume` | bool | `false` | Take back a landing bead for PR rework, or your own held bead from another machine. Only the ref's actor can. |
 
+Agents: `--force` is a person's, at the CLI. The MCP tool does not take it and refuses `force: true`, and the generated skills do not list it (instructions only: an agent with a shell can still type it).
+
 Preconditions: an id, or --next and no id (--next takes neither --force nor --resume, and is refused while the run holds any bead); assignee is empty OR --force; status in (open, ready); no run: label; no label listed in blocking_labels (config; --force skips it, and a bead this run already holds answers held); the lock remote (lock.remote, default origin) matches the Dolt remote (lock.mode ref); no other bops process on this machine is working on the bead (waits up to 10 seconds, then ref_contention); --resume: the claim ref's actor is this run's, and its state is landing, or held with a machine= that is not this machine (a held ref with no machine= is refused).
 
 Wraps: `with --next: next's reads, then the steps below per candidate (bead wait 2 seconds)`, `git push refs/bops/claims/<id> (create-only)`, `bd dolt pull`, `bd show <id> --json --include-comments after the pull (the bops:claimed duplicate check; bd comments <id> --json instead when the pull failed or bd left comments out)`, `bd update <id> --claim --add-label run:<ulid> --remove-label <other run:*, bops:hold, bops:landing> --json (one write; its output is the readback)`, `bd comments add <id>`, `no ledger push under lock.mode ref (claim, --force and --resume): the display rides on this machine's next push (land, release, sync, or a reap or sweep that acts); ledger_pending means the local write did not complete; a failed pull is a ledger_pull event and a record status and doctor report; one that stops on ledger_conflict deletes the new ref and fails with that code, writing nothing`, `lock.mode none only: bd dolt commit, then bd dolt push (up to 5 tries, each after the first preceded by bd dolt pull)`.
@@ -248,6 +250,8 @@ Close landed beads whose refs are merged
 | `--dry-run` | bool | `true` |  |
 | `--forge` | enum: auto \| github \| gitlab \| none | `auto` |  |
 
+Agents: preview only. The MCP tool is served read-only, without `--enable-writes`, and refuses `dry-run: false`; the generated skills tell the agent to leave the real run to a person (instructions only: an agent with a shell can still type it). `--dry-run=false` runs at the CLI, decided by a person (or a job a person scheduled).
+
 Never: skip a bops:landing bead with no landed record (it is listed under unknown), wait for a bead another bops process on this machine is working on (it is listed under unknown), close a bead that changed since sweep read it: re-held, resumed or given back (it is listed under pending).
 
 Wraps: `bd dolt pull`, `bd list --status in_progress --limit 0 --json`, `forge.is_merged(ref)`, `git fetch --prune refs/bops/claims/*`, `bd show <id> --json (under the bead lock)`, `git push (lease): delete the ref`, `bd close <id> --reason 'merged via <ref> (<sha>)'`, `bd label remove <id> bops:landing (after the close; a failure is a warning)`, `bd dolt commit, then bd dolt push (up to 5 tries, each after the first preceded by bd dolt pull)`.
@@ -360,7 +364,7 @@ Release stale claims that hold no work
 | `--older-than` | duration | `stale_minutes` | Idle longer than this is stale, as for stale; shorter than stale_minutes is refused. |
 | `--only` | string? |  | Comma-separated bead ids, normally the ones a preview listed under would_release: act on these only. <id>@<run> also pins the holder the preview showed: a claim held now by another run is listed under skipped, not released. Each would_release entry's only is the entry to pass: <id>@<run>, or the bare id when its run is empty, - or outside A-Z a-z 0-9 . _ : -, which cannot be pinned; none when the id is not a valid bead id. One that is no longer a stale claim is listed under skipped; an empty list is a usage error. A claim made outside bops (no run label, no ref) is released only when named here. |
 
-Agents: preview only. The MCP tool refuses `dry-run: false`, and the generated skills tell the agent to leave the real run to a person (instructions only: an agent with a shell can still type it). `--dry-run=false` is a person's, at the CLI.
+Agents: preview only. The MCP tool is served read-only, without `--enable-writes`, and refuses `dry-run: false`; the generated skills tell the agent to leave the real run to a person (instructions only: an agent with a shell can still type it). `--dry-run=false` runs at the CLI, decided by a person (or a job a person scheduled).
 
 Preconditions: the claim lock is on (lock.mode is not none); a Dolt remote on the lock remote's repository (not with --dry-run); --older-than, when given, is at least stale_minutes.
 
@@ -446,7 +450,7 @@ Delete claim refs nothing needs
 | `--forge` | enum: auto \| github \| gitlab \| none | `auto` | Forge searched, as reap searches it, for open or merged merge requests naming the bead of an orphan, or of a closed bead whose ref is newer than its last ledger change, that shows no other work; none searches nothing, with a warning. |
 | `--only` | string? |  | Comma-separated bead ids, normally the ones a preview listed under would_delete: act on these only. One whose ref is no longer one gc deletes is listed under skipped; one with no ref at all is a warning; an empty list is a usage error. |
 
-Agents: preview only. The MCP tool refuses `dry-run: false`, and the generated skills tell the agent to leave the real run to a person (instructions only: an agent with a shell can still type it). `--dry-run=false` is a person's, at the CLI.
+Agents: preview only. The MCP tool is served read-only, without `--enable-writes`, and refuses `dry-run: false`; the generated skills tell the agent to leave the real run to a person (instructions only: an agent with a shell can still type it). `--dry-run=false` runs at the CLI, decided by a person (or a job a person scheduled).
 
 Preconditions: the claim lock is on (lock.mode is not none); a Dolt remote on the lock remote's repository (not with --dry-run).
 

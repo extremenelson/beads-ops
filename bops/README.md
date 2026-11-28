@@ -47,7 +47,7 @@ New to `bops`? Start with the [tutorial](../docs/tutorial-first-loop.md). Every 
 | `version` | Report bops, contract, and detected bd | read |
 | `manifest` | Print the embedded `commands.json` | read |
 | `gen <target>` | Render a binding from the manifest: `docs`, `cc`, `codex`, `clj`, `mcp` (`mcp` takes `--enable-writes`) | read |
-| `serve-mcp` | Serve the MCP tools on stdio, read-only unless `--enable-writes` ([`bindings/mcp`](../bindings/mcp/)) | read |
+| `serve-mcp` | Serve the MCP tools on stdio, read-only (with the `sweep`, `reap` and `gc` previews) unless `--enable-writes` ([`bindings/mcp`](../bindings/mcp/)) | read |
 
 `bops deps --engine graph` is in the manifest but not implemented. It exits 1 with `did NOT run`, so a binding never mistakes "unimplemented" for "nothing to do". `--engine cte` needs bd in server mode (`bd init --server`); on an embedded ledger it exits 1 saying so.
 

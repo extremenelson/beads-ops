@@ -46,8 +46,12 @@ func TestMCPArgv(t *testing.T) {
 		{"reap", nil, []string{"reap", "--dry-run=true", "--json"}, ""},
 		{"gc", map[string]any{"dry-run": true}, []string{"gc", "--dry-run=true", "--json"}, ""},
 		{"reap", map[string]any{"dry-run": nil}, []string{"reap", "--dry-run=true", "--json"}, ""},
-		// Other write commands with a dry run are not limited.
-		{"sweep", map[string]any{"dry-run": false}, []string{"sweep", "--dry-run=false", "--json"}, ""},
+		// sweep previews only over MCP too.
+		{"sweep", map[string]any{"forge": "none"}, []string{"sweep", "--dry-run=true", "--forge=none", "--json"}, ""},
+		{"sweep", map[string]any{"dry-run": true}, []string{"sweep", "--dry-run=true", "--json"}, ""},
+		// claim's force is not on the tool: its default or null is dropped.
+		{"claim", map[string]any{"id": "x-1", "force": false}, []string{"claim", "x-1", "--json"}, ""},
+		{"claim", map[string]any{"id": "x-1", "force": nil}, []string{"claim", "x-1", "--json"}, ""},
 	} {
 		argv, in, err := mcpArgv(cmd(c.cmd), c.args)
 		got := ""
@@ -77,10 +81,19 @@ func TestMCPArgv(t *testing.T) {
 		{"reap", map[string]any{"dry-run": false}, "a real run is a person's decision"},
 		{"reap", map[string]any{"dry-run": "false"}, "dry-run must be true"},
 		{"gc", map[string]any{"dry-run": false, "only": "x-1"}, "bops gc --dry-run=false --only"},
+		// A real sweep closes beads: a person's or a scheduled job's, at the CLI.
+		{"sweep", map[string]any{"dry-run": false}, "Hand them the command: bops sweep --dry-run=false"},
+		// A takeover is a person's, at the CLI (PROCESS §12).
+		{"claim", map[string]any{"id": "x-1", "force": true}, "force is a person's decision"},
+		{"claim", map[string]any{"id": "x-1", "force": "true"}, "force is a person's decision"},
 	} {
 		if _, _, err := mcpArgv(cmd(c.cmd), c.args); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s %v: err %v, want %q", c.cmd, c.args, err, c.want)
 		}
+	}
+	// sweep takes no --only, so the command handed to a person has none.
+	if _, _, err := mcpArgv(cmd("sweep"), map[string]any{"dry-run": false}); err == nil || strings.Contains(err.Error(), "--only") {
+		t.Errorf("sweep dry-run false: err %v, want one naming no --only", err)
 	}
 }
 
@@ -92,7 +105,7 @@ func TestGenMCPEnableWrites(t *testing.T) {
 		code  int
 		tools int
 	}{
-		{[]string{"gen", "mcp"}, exitVerdict, 8},
+		{[]string{"gen", "mcp"}, exitVerdict, 11},
 		{[]string{"gen", "mcp", "--enable-writes"}, exitVerdict, 16},
 		{[]string{"gen", "docs", "--enable-writes"}, exitUsage, -1},
 	} {
@@ -152,51 +165,67 @@ func TestServeMCP(t *testing.T) {
 			t.Fatalf("writes=%v: %d responses: %s", writes, len(resps), out)
 		}
 		tools := resps[1]["result"].(map[string]any)["tools"].([]any)
-		if want := map[bool]int{false: 8, true: 16}[writes]; len(tools) != want {
+		if want := map[bool]int{false: 11, true: 16}[writes]; len(tools) != want {
 			t.Errorf("writes=%v: %d tools, want %d", writes, len(tools), want)
 		}
 		res := resps[2]["result"].(map[string]any)
 		if res["isError"] != true || !strings.Contains(res["content"].([]any)[0].(map[string]any)["text"].(string), "needs id") {
 			t.Errorf("deps without id = %v", res)
 		}
+		// Over MCP a takeover is a person's: with the write tools claim
+		// refuses force before bops runs; without them claim is no tool.
 		if writes {
-			// The call reached bops: with no git repo it cannot run, and says so.
-			if r := resps[3]["result"].(map[string]any); r["isError"] != true {
-				t.Errorf("claim = %v", r)
+			r := resps[3]["result"].(map[string]any)
+			if text := r["content"].([]any)[0].(map[string]any)["text"].(string); r["isError"] != true || !strings.Contains(text, "force is a person's decision") {
+				t.Errorf("claim force = %v", r)
 			}
 		} else if e, _ := resps[3]["error"].(map[string]any); e == nil || !strings.Contains(e["message"].(string), "unknown tool claim") {
 			t.Errorf("claim without --enable-writes = %v", resps[3])
 		}
-		if writes {
-			// Even with the write tools, reap only previews: a real run is a
-			// person's, at the CLI, and is refused before bops runs.
-			r := resps[4]["result"].(map[string]any)
-			if text := r["content"].([]any)[0].(map[string]any)["text"].(string); r["isError"] != true || !strings.Contains(text, "a real run is a person's decision") {
-				t.Errorf("reap dry-run false = %v", r)
+		// With or without the write tools, reap only previews: a real run is
+		// a person's, at the CLI, and is refused before bops runs.
+		r := resps[4]["result"].(map[string]any)
+		if text := r["content"].([]any)[0].(map[string]any)["text"].(string); r["isError"] != true || !strings.Contains(text, "a real run is a person's decision") {
+			t.Errorf("writes=%v: reap dry-run false = %v", writes, r)
+		}
+		previews := 0
+		for _, tl := range tools {
+			tool := tl.(map[string]any)
+			props := tool["inputSchema"].(map[string]any)["properties"].(map[string]any)
+			if tool["name"] == "claim" && props["force"] != nil {
+				t.Errorf("claim tool takes force: %v", tool)
 			}
-			for _, tl := range tools {
-				tool := tl.(map[string]any)
-				if tool["name"] != "reap" && tool["name"] != "gc" {
-					continue
-				}
-				dry, _ := tool["inputSchema"].(map[string]any)["properties"].(map[string]any)["dry-run"].(map[string]any)
-				if dry == nil || !strings.Contains(dry["description"].(string), "Only true") || !strings.Contains(tool["description"].(string), "Preview only here") || strings.Contains(tool["description"].(string), "Writes:") {
-					t.Errorf("%s tool does not say it previews only: %v", tool["name"], tool)
-				}
+			if tool["name"] != "reap" && tool["name"] != "gc" && tool["name"] != "sweep" {
+				continue
 			}
-		} else if e, _ := resps[4]["error"].(map[string]any); e == nil || !strings.Contains(e["message"].(string), "unknown tool reap") {
-			t.Errorf("reap without --enable-writes = %v", resps[4])
+			previews++
+			dry, _ := props["dry-run"].(map[string]any)
+			if dry == nil || !strings.Contains(dry["description"].(string), "Only true") || !strings.Contains(tool["description"].(string), "Preview only here") || strings.Contains(tool["description"].(string), "Writes:") {
+				t.Errorf("%s tool does not say it previews only: %v", tool["name"], tool)
+			}
+			if tool["annotations"].(map[string]any)["readOnlyHint"] != true {
+				t.Errorf("writes=%v: %s tool is not readOnlyHint: %v", writes, tool["name"], tool)
+			}
+		}
+		if previews != 3 {
+			t.Errorf("writes=%v: %d of reap, gc and sweep served, want 3", writes, previews)
 		}
 	}
 	// The CLI still takes a real run: it gets past its flags to the repo
 	// check (exit 1 here, with no git repo), not a refusal or a usage error.
-	for _, c := range []string{"reap", "gc"} {
-		cmd := exec.Command(bin, c, "--dry-run=false", "--only", "x-1", "--json")
+	for _, c := range [][]string{{"reap", "--only", "x-1"}, {"gc", "--only", "x-1"}, {"sweep"}} {
+		cmd := exec.Command(bin, append(append([]string{c[0], "--dry-run=false"}, c[1:]...), "--json")...)
 		out, err := cmd.Output()
 		var ee *exec.ExitError
 		if !errors.As(err, &ee) || ee.ExitCode() != exitCantRun || strings.Contains(string(out), "person's decision") {
-			t.Errorf("bops %s --dry-run=false: err %v, out %s; want exit %d past the flags", c, err, out, exitCantRun)
+			t.Errorf("bops %s --dry-run=false: err %v, out %s; want exit %d past the flags", c[0], err, out, exitCantRun)
 		}
+	}
+	// The CLI still takes claim --force: past its flags to the repo check.
+	out, err := exec.Command(bin, "claim", "x-1", "--force", "--json").Output()
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) || ee.ExitCode() != exitCantRun || strings.Contains(string(out), "person's decision") {
+		t.Errorf("bops claim --force: err %v, out %s; want exit %d past the flags", err, out, exitCantRun)
 	}
 }
 

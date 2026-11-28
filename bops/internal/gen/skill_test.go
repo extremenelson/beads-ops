@@ -54,7 +54,7 @@ func TestCCSkillReferencesTheSkillCommands(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"| `bops claim [<id>] [--force] [--next] [--resume]` | write |",
+		"| `bops claim [<id>] [--next] [--resume]` | write |",
 		"| `bops note <id> [--op-id] [--file <path>]` | write |",
 		"| `bops release <id> [--op-id] --reason <reason> [--file <path>\\|-]` | write |",
 		"| `bops land <id> [--forge] [--op-id] --ref <ref> --sha <sha> [--verify]` | write |",
@@ -67,8 +67,8 @@ func TestCCSkillReferencesTheSkillCommands(t *testing.T) {
 }
 
 // A preview-only command is listed with the kind preview and no --dry-run,
-// and the preamble says a real run is a person's.
-func TestSkillListsReapAndGCAsPreviewOnly(t *testing.T) {
+// and the preamble says a real run is a person's; claim lists no --force.
+func TestSkillListsReapGCAndSweepAsPreviewOnly(t *testing.T) {
 	for name, files := range map[string]func(*manifest.Manifest) ([]gen.File, error){"cc": gen.CC, "codex": gen.Codex} {
 		fs, err := files(embedded(t))
 		if err != nil {
@@ -82,7 +82,9 @@ func TestSkillListsReapAndGCAsPreviewOnly(t *testing.T) {
 			for _, want := range []string{
 				"| `bops reap [--forge] [--older-than] [--only]` | preview |",
 				"| `bops gc [--forge] [--only]` | preview |",
-				"| `bops sweep [--dry-run] [--forge]` | write |",
+				"| `bops sweep [--forge]` | preview |",
+				"| `bops claim [<id>] [--next] [--resume]` | write |",
+				"Never `--force` a claim: a takeover",
 				"Only a person acts (`--dry-run=false --only`, reap each `only`, gc `<id>`)",
 			} {
 				if !strings.Contains(s, want) {

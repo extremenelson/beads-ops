@@ -45,6 +45,40 @@
       }
     },
     {
+      "name": "sweep",
+      "title": "bops sweep",
+      "description": "Close landed beads whose refs are merged. Runs `bops sweep --json` and returns its JSON document; exit 3 (a negative verdict, ok:false) is a result, not an error. Preview only here: it changes neither the ledger nor the claim refs, and dry-run false is refused; hand a person the `bops sweep --dry-run=false` command to run.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "Only to continue a paginated result: the cursor the previous page gave. Other arguments are then ignored.",
+            "type": "string"
+          },
+          "dry-run": {
+            "default": true,
+            "description": "Only true (or absent) here: false is refused. A real run is a person's, at the CLI.",
+            "type": "boolean"
+          },
+          "forge": {
+            "default": "auto",
+            "enum": [
+              "auto",
+              "github",
+              "gitlab",
+              "none"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true
+      }
+    },
+    {
       "name": "stale",
       "title": "bops stale",
       "description": "Claims nobody is working. Runs `bops stale --json` and returns its JSON document; exit 3 (a negative verdict, ok:false) is a result, not an error.",
@@ -98,6 +132,89 @@
             "default": false,
             "description": "Only stale, orphan and unknown claims (unknown: staleness could not be judged, so it may be stale). A held ref that is stale and does not match its ledger claim is one orphan row, where stale lists it under both.",
             "type": "boolean"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "reap",
+      "title": "bops reap",
+      "description": "Release stale claims that hold no work. Runs `bops reap --json` and returns its JSON document; exit 3 (a negative verdict, ok:false) is a result, not an error. Preview only here: it changes neither the ledger nor the claim refs, and dry-run false is refused; hand a person the `bops reap --dry-run=false --only <only>,... (each would_release entry's only: <id>@<run>, or the bare id when its run cannot be pinned; skip an entry without one)` command to run.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "Only to continue a paginated result: the cursor the previous page gave. Other arguments are then ignored.",
+            "type": "string"
+          },
+          "dry-run": {
+            "default": true,
+            "description": "Only true (or absent) here: false is refused. A real run is a person's, at the CLI.",
+            "type": "boolean"
+          },
+          "forge": {
+            "default": "auto",
+            "description": "Forge searched for open or merged merge requests naming each claim with no other evidence; none searches nothing, with a warning.",
+            "enum": [
+              "auto",
+              "github",
+              "gitlab",
+              "none"
+            ],
+            "type": "string"
+          },
+          "older-than": {
+            "default": "stale_minutes",
+            "description": "Idle longer than this is stale, as for stale; shorter than stale_minutes is refused.",
+            "type": "string"
+          },
+          "only": {
+            "description": "Comma-separated bead ids, normally the ones a preview listed under would_release: act on these only. <id>@<run> also pins the holder the preview showed: a claim held now by another run is listed under skipped, not released. Each would_release entry's only is the entry to pass: <id>@<run>, or the bare id when its run is empty, - or outside A-Z a-z 0-9 . _ : -, which cannot be pinned; none when the id is not a valid bead id. One that is no longer a stale claim is listed under skipped; an empty list is a usage error. A claim made outside bops (no run label, no ref) is released only when named here.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true
+      }
+    },
+    {
+      "name": "gc",
+      "title": "bops gc",
+      "description": "Delete claim refs nothing needs. Runs `bops gc --json` and returns its JSON document; exit 3 (a negative verdict, ok:false) is a result, not an error. Preview only here: it changes neither the ledger nor the claim refs, and dry-run false is refused; hand a person the `bops gc --dry-run=false --only <id>,... (from the preview)` command to run.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "description": "Only to continue a paginated result: the cursor the previous page gave. Other arguments are then ignored.",
+            "type": "string"
+          },
+          "dry-run": {
+            "default": true,
+            "description": "Only true (or absent) here: false is refused. A real run is a person's, at the CLI.",
+            "type": "boolean"
+          },
+          "forge": {
+            "default": "auto",
+            "description": "Forge searched, as reap searches it, for open or merged merge requests naming the bead of an orphan, or of a closed bead whose ref is newer than its last ledger change, that shows no other work; none searches nothing, with a warning.",
+            "enum": [
+              "auto",
+              "github",
+              "gitlab",
+              "none"
+            ],
+            "type": "string"
+          },
+          "only": {
+            "description": "Comma-separated bead ids, normally the ones a preview listed under would_delete: act on these only. One whose ref is no longer one gc deletes is listed under skipped; one with no ref at all is a warning; an empty list is a usage error.",
+            "type": "string"
           }
         },
         "required": [],

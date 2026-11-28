@@ -244,7 +244,7 @@ func surfaces(c manifest.Command, key string) []string {
 // by the rule in manifest.Arg.Flag: the id positional and first, text through
 // --file (stdin when absent, or --file - when the text is optional), every
 // other argument a flag of its own name, except a preview-only command's
-// dry-run, which agents never pass. A flag is shown optional ([...])
+// dry-run and a person-only argument, which agents never pass. A flag is shown optional ([...])
 // when its type ends in ?, it has a default, or it is a bool. Pipes are
 // escaped because the signature sits in a table cell.
 func signature(c manifest.Command) string {
@@ -264,6 +264,8 @@ func signature(c manifest.Command) string {
 			continue // the id, already placed
 		case an == "dry-run" && c.PreviewOnly():
 			continue // agents run only the dry run, the default
+		case a.PersonOnly():
+			continue // a person's, at the CLI (claim --force)
 		case strings.HasPrefix(a.Type, "stdin|file"):
 			if strings.HasSuffix(a.Type, "?") {
 				parts = append(parts, "[--file <path>\\|-]")

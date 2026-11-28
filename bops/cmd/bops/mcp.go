@@ -25,7 +25,8 @@ import (
 const mcpCallLimit = 6 * time.Minute
 
 // cmdServeMCP serves the manifest's MCP tools on stdin and stdout until
-// stdin closes: read-only tools unless --enable-writes (SPEC §8). Each call
+// stdin closes: read-only tools, the preview-only commands' dry runs among
+// them, unless --enable-writes (SPEC §8). Each call
 // runs `bops <command> ... --json` with this same binary, in this directory,
 // so a tool behaves exactly as the command does.
 func cmdServeMCP(m *manifest.Manifest, rest []string, stdin io.Reader, stdout, stderr *os.File) int {
@@ -75,6 +76,7 @@ func cmdServeMCP(m *manifest.Manifest, rest []string, stdin io.Reader, stdout, s
 // positional, every other argument as --name=value in name order, text on stdin (with
 // --file - when the text is optional), then --json. An argument the command
 // does not take, or a missing id, text or required value, is an error, as is
+// a person-only argument (claim's force) other than its default or null, and
 // dry-run other than true on a preview-only command, which always passes
 // --dry-run=true.
 func mcpArgv(c *manifest.Command, args map[string]any) ([]string, *string, error) {
@@ -83,11 +85,25 @@ func mcpArgv(c *manifest.Command, args map[string]any) ([]string, *string, error
 			return nil, nil, fmt.Errorf("bops %s takes no argument %q", c.Name, k)
 		}
 	}
+	for _, an := range c.ArgNames() {
+		v, present := args[an]
+		if !present || !c.Args[an].PersonOnly() {
+			continue
+		}
+		// A person-only argument (manifest agents "none") is not on the tool;
+		// its default, or null, changes nothing and is dropped, as a client
+		// built before it left the tool may still send it.
+		if v != nil && v != c.Args[an].Default {
+			return nil, nil, fmt.Errorf("bops %s: %s is a person's decision, made at the CLI (PROCESS §12), so this tool does not take it. Tell a person; they run: bops %s <id> --%s", c.Name, an, c.Name, an)
+		}
+		args = maps.Clone(args)
+		delete(args, an)
+	}
 	if c.PreviewOnly() {
 		// Agents preview only (manifest agents "preview"): a real run is a
 		// person's decision, at the CLI (PROCESS §12).
 		if v := args["dry-run"]; v != nil && v != true { // null is absent: a preview
-			return nil, nil, fmt.Errorf("bops %s: dry-run must be true here: over MCP %s only previews, and a real run is a person's decision (PROCESS §12). Hand them the command: bops %s --dry-run=false --only %s", c.Name, c.Name, c.Name, gen.OnlyHint(c))
+			return nil, nil, fmt.Errorf("bops %s: dry-run must be true here: over MCP %s only previews, and a real run is a person's decision (PROCESS §12). Hand them the command: %s", c.Name, c.Name, gen.RealRun(c))
 		}
 		args = maps.Clone(args)
 		if args == nil {
