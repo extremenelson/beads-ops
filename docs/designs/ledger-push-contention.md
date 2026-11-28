@@ -1,7 +1,7 @@
 # Design: take the ledger push off the claim path
 
 Written 2026-11-27 from the [ledger contention measurements](../research/2026-11-ledger-contention.md) and one extra measurement below.
-Status: PROPOSED. Implementation is filed as separate work. Step 1's go/no-go measurement is done: **go**, with `bd dolt commit` before every `bd dolt push` (step 1a, now built; [results](../research/2026-11-ledger-contention.md#same-row-pulls-on-an-unpushed-claim-display-2026-11-27)). Step 2, one `bd update` per display, is built. Step 4, the claim that does not push, is built.
+Status: DONE: every step is built and step 5's re-measurement is in ([results](../research/2026-11-ledger-contention.md#re-measured-with-claims-that-do-not-push-2026-11-27)): claims got fast and almost never pending, the land and release pushes left still race as before, and the supported limits are unchanged in size. Implementation was filed as separate work. Step 1's go/no-go measurement is done: **go**, with `bd dolt commit` before every `bd dolt push` (step 1a, now built; [results](../research/2026-11-ledger-contention.md#same-row-pulls-on-an-unpushed-claim-display-2026-11-27)). Step 2, one `bd update` per display, is built. Step 4, the claim that does not push, is built.
 Measured on: bd 1.3.4 (embedded Dolt), bops `648d9a2`, and the Dolt CLI 2.7.7 for the branch measurement.
 
 ## Problem
@@ -106,7 +106,7 @@ Under (a):
 
 - **A machine that never pushes again** keeps its claims' display local. Its refs still decide; other machines recover the beads with `claim --force` once the refs are stale, or with `gc` once they are orphans and show no work evidence.
 - **Pull conflicts** may stop a machine's publishing (above). Measured on bd 1.3.4: only deleting a held bead stops. (a) makes that stop more likely but it is not a likely case, so (a) goes ahead; the stop blocks every push from that machine, so `status` and `doctor` must report it. A team that deletes held beads routinely should treat it as the no-go and move to server mode. A newer bd that settles differently could change that; re-run the harness's `pulls` before relying on another bd version.
-- **The estimate is not a measurement.** Removing one of three pushes per bead, the claim's, should cut rejections and budget failures, but by how much is for the re-measurement to say. If 2 x 4 on a 400 ms link still leaves claims slow, the next step is server mode, not (b).
+- **The estimate is not a measurement.** Removing one of three pushes per bead, the claim's, should cut rejections and budget failures, but by how much is for the re-measurement to say. If 2 x 4 on a 400 ms link still leaves claims slow, the next step is server mode, not (b). Measured: it does not (claim p50 9 s, 1 claim in 40 pending); what is left is the land and release pushes.
 
 ## Implementation order
 
@@ -115,9 +115,9 @@ Filed as separate work:
 1. Measure `bd dolt pull` on each same-row edit an unpushed claim display can meet (go/no-go for step 4). Done: go, with step 1a.
    - **1a.** Run `bd dolt commit` before every `bd dolt push` bops makes, so an auto-merged pull publishes the labels and comments it merged (independent; it fixes today's push retries too; step 4 needs it). Done: every push try in `pushLedger`, the one path all of bops's ledger pushes take, commits first; "Nothing to commit." (exit 0) passes, and a failed commit fails that try, pushes nothing, and stays in the error reported if no later try succeeds.
 2. Write each command's display in one `bd update` (independent). Done: `claim` (both lock modes), `release` (every reason) and `sync`'s repair and clearing each make one update for the assignee, status and labels, plus one comment. The claim's show includes the comments (the duplicate check) and its readback is the update's `--json` output: an uncontended claim makes 8 bd calls at 1 x 1, against 11 with step 1a's commit (10 before it), and a release 7, against 9.
-3. `gc` applies `reap`'s work-evidence checks before deleting an orphan ref or a closed bead's ref (independent; it also protects today's `ledger_pending` claims).
+3. Done. `gc` applies `reap`'s work-evidence checks before deleting an orphan ref or a closed bead's ref (independent; it also protects today's `ledger_pending` claims).
 4. Done. Stop pushing from `claim`: a failed claim-path pull becomes a reported event; `land`, `release` and `sweep` log each ledger push's outcome and tries to `events.jsonl`, since the claim's `pending` count no longer sees push contention and the switch condition in MULTI-DEV-PLAN §1 must be restated over these; `status` and `doctor` report an unpublished or diverged local ledger, and tests show a late-arriving display is reaped or cleaned as described above (needs 1, 1a and 3).
-5. Re-measure with the contention harness and revise the limits in MULTI-DEV-PLAN §1 and PROCESS §8 (needs 2 and 4).
+5. Done. Re-measure with the contention harness and revise the limits in MULTI-DEV-PLAN §1 and PROCESS §8 (needs 2 and 4). Measured on bops `391afd1` ([results](../research/2026-11-ledger-contention.md#re-measured-with-claims-that-do-not-push-2026-11-27)): at 2 x 4 claim p50 fell from 18 s to 5 s and no claim came back `ledger_pending`; with 400 ms per git call claim p50 is 9 s and 1 claim in 40 pending, so the test in Risks passes. But 47% of the remaining pushes were still rejected at 2 x 4, more than 1 land or release push in 10 failed after its tries at 12 writers on a fast remote, and at 8 writers with 400 ms the failures were at or over the switch condition on a small sample (10 of 78 pushes, 13%; 12 of 80, 15%, counting releases that failed before pushing), so the limits stay at 8 writers on a fast remote and one loop machine on a hosted one.
 
 ## Method for the branch measurement
 

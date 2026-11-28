@@ -6,6 +6,11 @@
 > clone with its own Dolt store and bops state **on that one Mac**. No real
 > second machine and no real network were in the loop. Re-measure on a newer
 > bd or after a change to how bops pushes the ledger.
+>
+> **Re-measured 2026-11-27** after claims stopped pushing the ledger:
+> [Re-measured with claims that do not push](#re-measured-with-claims-that-do-not-push-2026-11-27)
+> has the same tables side by side. The limits in this first section are
+> superseded by that one.
 
 ## Question
 
@@ -502,3 +507,260 @@ comment count and newest `bops:` comment, and bd's output) goes to
   with a merged row is read from their code, not measured.
 - The per-run `pulls.tsv` files are not committed; `pulls` reproduces them
   in about five minutes with `MEASURE_COMMIT=1`.
+
+## Re-measured with claims that do not push (2026-11-27)
+
+> **Measured 2026-11-27** on the same Mac (Darwin 27.2, Apple silicon, 18
+> cores), bd 1.3.4, bops built from `391afd1` (main), with the same harness
+> and the same shapes as above (its report sections extended; see Method). That build has every step of the
+> [push-contention design](../designs/ledger-push-contention.md): one
+> `bd update` per display, `bd dolt commit` before every push, `gc`'s
+> evidence checks, and, under `lock.mode ref`, a claim that writes its
+> display locally and does not push it. Same caveats as above: every
+> "machine" is a clone on one Mac, the remote is a local bare repository, and
+> no real second machine or real network was in the loop.
+
+### Question
+
+The design expected fewer rejected pushes, no claim hitting the budget on a
+push, and less queueing on the store, since a claim no longer pushes and
+each display is one `bd update`. That was an estimate. How far did it move
+the numbers, and what limits do they now support?
+
+### Answer
+
+- **Claims got fast and stopped going pending.** Claim p50 at 2 x 4 fell
+  from 18.2 s to 5.1 s and p95 from the 60 s budget to 25 s; no claim came
+  back `ledger_pending` (was 4 of 64). At 4 x 4 claim p50 fell from 35 s to
+  8 s and pending claims from 27 of 80 to 1. An uncontended claim makes 6 bd
+  calls and 3 git network round trips, against 10 and 11.
+- **Per bead, 2 pushes instead of 3, but the ones left race as hard as
+  before.** At 2 x 4, 47% of `bd dolt push` attempts were still rejected
+  non-fast-forward (was 44%); at 3 x 4, 60%; at 4 x 4, 65%. Lands and
+  releases now take all of it, and above 8 writers more of them fail:
+  lands not published at once went from 12 to 18 of 80 at 4 x 4.
+- **On a fast remote, 8 writers stay well inside the switch condition; 12
+  are past it.** At 2 x 4, 2 of 128 land and release pushes failed after
+  their tries (`events.jsonl`); at 3 x 4, 17 of 144 (12%); at 4 x 4, 28 of
+  158 (18%). The switch condition is more than 1 in 10. One run per shape,
+  on one Mac against a local bare repository, so "fast remote" here is the
+  fastest one possible.
+- **On a slow link, claims pass but pushes do not.** At 2 x 4 with 400 ms
+  per git call, claim p50 is 8.8 s (was 35 s) and 1 claim in 40 came back
+  `ledger_pending` (was 10 in 40): inside the design's test (p50 under
+  30 s, at most 1 claim in 10 pending). But 10 of 78 land and release pushes
+  failed after their tries (13%), and 6 of 40 releases came back
+  `ledger_pending`. Counting the 2 releases that failed on the store before
+  they pushed, as the switch condition says to, it is 12 of 80 (15%); one
+  of the 10 was a push the budget stopped after it may have reached the
+  remote. Either way it is at or over the switch condition, on a small
+  sample.
+- **A claim's display reaches the remote within seconds in this loop:**
+  p50 9 s and p95 21 s at 2 x 4, p95 53 s at 4 x 4, by the first push
+  from the machine that committed after the claim. That is because each
+  agent lands seconds after it claims, and it is a timing match, not a read
+  of the remote. A real agent
+  works minutes between claim and land, and its display waits for the next
+  push from any agent on its machine.
+- **Ownership still never broke.** One lost display is the known bug: a
+  `release --reason done` whose display write hit a lock error at 2 x 4
+  with 400 ms was never repaired (1 of 40; filed from the first run, still
+  open). Two lands (one at 1 x 4 with latency, one at 4 x 4) wrote their
+  landed record but lost their `bops:landed` comment to a lock error;
+  `verify` reads the record, not that comment, so it does not count them.
+
+**Supported limits (from these numbers):** unchanged in size, better in
+quality. Up to **4 agents per machine** and **8 concurrent writers on a fast
+remote**, now with claims of a few seconds (p95 under 30 s) and almost no
+pending writes. On a hosted remote with real latency still **one machine of
+4 agents** plus occasional single sessions elsewhere (claim p95 39 s at
+1 x 4 with 400 ms): two loop machines with 400 ms per call meet the claim
+test but are at or over the switch condition on a small sample (13% of
+pushes, 15% counting the releases that failed before pushing). A run on two real machines decides that; it was **not
+measured**. Above 8 writers the land and release pushes fail more than 1 in
+10, so server mode stays the switch.
+
+### Results
+
+Old numbers are from the first run above (bops `648d9a2`, every claim
+pushing); new are bops `391afd1`. Same loop: claim, note, land
+`--forge none`, release `--reason done`, then `bops sync`.
+
+| Run (machines x agents x loops, delay) | Writers | Claim p50 old / new | p95 old / new | max old / new | Claims failed | Claims `ledger_pending` old / new | Lands not published at once old / new | Releases `ledger_pending` old / new |
+|---|---|---|---|---|---|---|---|---|
+| 1 x 1 x 8, 0 ms | 1 | 3.8 / 1.9 s | 3.9 / 2.1 s | 3.9 / 2.1 s | 0/8 / 0/8 | 0/8 / 0/8 | 0/8 / 0/8 | 0/8 / 0/8 |
+| 1 x 4 x 8, 0 ms | 4 | 12.0 / 4.7 s | 44.9 / 29.0 s | 45.4 / 34.7 s | 0/32 / 0/32 | 0/32 / 0/32 | 0/32 / 0/32 | 0/32 / 0/32 |
+| 1 x 4 x 5, 400 ms | 4 | 24.0 / 5.2 s | 61.4 / 39.0 s | 65.0 / 60.1 s | 1/20 / 0/20 | 2/20 / 1/20 | 1/19 / 2/20 | 1/19 / 0/20 |
+| **2 x 4 x 8, 0 ms** | **8** | **18.2 / 5.1 s** | **60.0 / 25.0 s** | **67.0 / 51.7 s** | **0/64 / 0/64** | **4/64 / 0/64** | **3/64 / 2/64** | **1/64 / 0/64** |
+| 2 x 4 x 5, 400 ms | 8 | 35.1 / 8.8 s | 65.0 / 40.8 s | 68.5 / 65.0 s | 1/40 / 0/40 | 10/40 / 1/40 | 7/39 / 5/40 | 11/39 / 6/40 |
+| 3 x 4 x 6, 0 ms | 12 | 27.3 / 6.7 s | 65.0 / 35.0 s | 69.6 / 54.2 s | 0/72 / 0/72 | 14/72 / 0/72 | 5/72 / 8/72 | 9/72 / 9/72 |
+| 4 x 4 x 5, 0 ms | 16 | 35.2 / 8.1 s | 65.1 / 33.0 s | 69.6 / 60.1 s | 0/80 / 0/80 | 27/80 / 1/80 | 12/80 / 18/80 | 20/80 / 11/80 |
+
+The three new pending claims (one each at 1 x 4 with latency, 2 x 4 with
+latency and 4 x 4) are local write failures, which is all `ledger_pending`
+on a claim now means: a display write (the `bops:claimed` comment, in the
+one checked) waited for the store until the budget stopped it. The claim
+held; `bops sync` wrote it. "Lands not
+published at once" are `bops land` exits of 1: all but two "landed
+locally; push failed" (five rejections or the budget; a later push carried
+the record). Two, one at 1 x 4 with latency and one at 4 x 4, wrote their
+record and then hit `database is locked` on the `bops:landed` comment. Releases that failed
+outright (one each at 2 x 4 with latency and 4 x 4, `error` on a
+`bd show` lock error) left the bead held, as they should: the claim ref and
+the display both still show the holder, and the agent must run the release
+again (the harness does not, so `verify` counts them as still assigned).
+
+### Ledger pushes
+
+`bd dolt push` calls by land and release (a claim makes none now; the old
+counts include claims). "Commands retried" and "five tries" are from the
+wrapper's calls; "failed after tries" is from bops's own `ledger_push` lines
+in each machine's `events.jsonl` (land and release, every one with `tries`
+above 0), the count the switch condition reads. The two sources differ
+by a few per run at higher load: a push the budget stopped is a failed
+`ledger_push` line even when the wrapper saw `bd dolt push` exit 0 a moment
+later (the [limit](#limits) on a stopped bd); a `bd dolt commit` the budget
+stopped before any push is a failed `ledger_push` line with no push call
+(1 land and 1 release at 3 x 4, 1 land and 2 releases at 4 x 4); and a land or release
+that failed before its push (a lock error on a comment, update or show: 1 at
+1 x 4 with latency, 2 at 2 x 4 with latency, 2 at 4 x 4) logs no
+`ledger_push` line at all, so it is in neither count.
+
+| Run | Pushes old / new | Rejected non-fast-forward old / new | Commands retried old / new | Five tries old / new | Failed after tries (new) |
+|---|---|---|---|---|---|
+| 1 x 4 x 8, 0 ms | 96 / 64 | 0 / 0 | 0/96 / 0/64 | 0 / 0 | 0/64 |
+| 1 x 4 x 5, 400 ms | 55 / 39 | 0 / 0 | 0/55 / 0/39 | 0 / 0 | 1/39 |
+| 2 x 4 x 8, 0 ms | 335 / 239 | 148 (44%) / 113 (47%) | 103/189 / 73/128 | 4 / 3 | 2/128 (2%) |
+| 2 x 4 x 5, 400 ms | 179 / 138 | 85 (47%) / 66 (48%) | 46/105 / 43/78 | 3 / 1 | 10/78 (13%) |
+| 3 x 4 x 6, 0 ms | 496 / 329 | 300 (60%) / 199 (60%) | 152/213 / 108/142 | 20 / 8 | 17/144 (12%) |
+| 4 x 4 x 5, 0 ms | 600 / 383 | 410 (68%) / 249 (65%) | 182/230 / 118/155 | 33 / 24 | 28/158 (18%) |
+
+Per land or release, the tries in `events.jsonl` at 4 x 4: 40 took one try,
+91 took two to four and 27 took all five. Most failed pushes ran into the
+60 s budget, in the pull before a retry, the push, or the `bd dolt commit`
+before it; a rejected push ended 1 at 2 x 4, 1 at 2 x 4 with latency, 4 at
+3 x 4 and 16 of the 28 at 4 x 4. No claim-path pull failed, except one at 2 x 4 with
+latency (`ledger_pull` `failed`, a lock error), which the next pull cleared
+(`recovered`). `bops sync` at each agent's end pushed cleanly every time.
+
+### Database-lock errors on one store
+
+| Run | bd calls old / new | Lock errors old / new |
+|---|---|---|
+| 1 x 1 and 1 x 4, 0 ms | 1,055 / 900 | 0 / 0 |
+| 1 x 4 x 5, 400 ms | 503 / 453 | 4 / 1 |
+| 2 x 4 x 8, 0 ms | 1,978 / 1,786 | 6 / 1 |
+| 3 x 4 x 6, 0 ms | 2,482 / 2,209 | 13 / 7 |
+| 2 x 4 x 5, 400 ms | 1,154 / 1,094 | 22 / 11 |
+| 4 x 4 x 5, 0 ms | 2,834 / 2,510 | 22 / 9 |
+
+bd calls fell by 5 to 15%, although a `bd dolt commit` now comes before every
+push (the final `bops status` per machine is left out), and lock errors fell
+by about half or more.
+bops's own bead lock (`bead_lock` `waited_ms`) never waited more than 5 ms:
+the queueing is in the store, not in bops.
+
+### Where a claim's time goes
+
+Mean seconds per claim, old / new.
+
+| Run | Claim | in `bd dolt pull` | in `bd dolt push` | other bd |
+|---|---|---|---|---|
+| 1 x 1, 0 ms | 3.8 / 1.9 | 0.5 / 0.4 | 1.1 / 0 | 2.0 / 1.3 |
+| 1 x 4, 0 ms | 14.8 / 8.1 | 1.4 / 3.1 | 3.6 / 0 | 9.5 / 4.8 |
+| 1 x 4, 400 ms | 28.4 / 11.4 | 3.5 / 4.3 | 7.6 / 0 | 16.4 / 6.4 |
+| 2 x 4, 0 ms | 22.1 / 8.0 | 3.8 / 1.9 | 3.8 / 0 | 13.5 / 5.8 |
+| 3 x 4, 0 ms | 30.9 / 11.2 | 7.8 / 2.8 | 5.4 / 0 | 15.4 / 8.1 |
+| 4 x 4, 0 ms | 39.5 / 12.8 | 10.6 / 4.0 | 8.0 / 0 | 17.7 / 8.5 |
+| 2 x 4, 400 ms | 38.2 / 12.9 | 7.4 / 4.6 | 6.7 / 0 | 21.4 / 7.6 |
+
+A claim's time is now its one pull and the store queue. Land and release
+took the cost instead: at 4 x 4 a land averaged 31 s (6.5 s pulling, 9.4 s
+pushing) and a release 25 s. Uncontended, land makes 6 bd calls and 9 git
+round trips, release 7 and 11.
+
+### How long a claim's display takes to reach the remote
+
+From the claim's end to the end of the first successful `bd dolt push` from
+the same machine whose `bd dolt commit` (bops commits before every push try)
+started after the claim ended (any agent, any command). A push that started
+earlier may have carried it too, so this is an upper bound. It is a timing
+match, not a read of the remote: `verify` does not read the claim display.
+The three claims that came back `ledger_pending` are not timed; their
+display was written later by `bops sync`.
+
+| Run | Claims timed | p50 | p95 | max | No later push |
+|---|---|---|---|---|---|
+| 1 x 1, 0 ms | 8 | 3.1 s | 3.2 s | 3.2 s | 0 |
+| 1 x 4, 0 ms | 32 | 5.2 s | 9.6 s | 9.7 s | 0 |
+| 1 x 4, 400 ms | 19 | 8.3 s | 18.4 s | 18.4 s | 0 |
+| 2 x 4, 0 ms | 64 | 9.2 s | 20.8 s | 25.2 s | 0 |
+| 2 x 4, 400 ms | 39 | 15.5 s | 37.8 s | 41.0 s | 0 |
+| 3 x 4, 0 ms | 72 | 11.5 s | 27.7 s | 70.3 s | 0 |
+| 4 x 4, 0 ms | 79 | 13.5 s | 52.6 s | 87.2 s | 0 |
+
+In this loop the next push is almost always the claiming agent's own land,
+a note's length after the claim. With real agents the delay is the time to
+the next land, release or `bops sync` from any agent on that machine:
+minutes when a loop is busy, and indefinitely when the machine is the only
+one working and nothing else lands. "No later push" is 0 by construction
+here, since every agent ends with `bops sync`. What shows that nothing was
+stranded is each machine's final `bops status` (after every agent's `sync`):
+`ledger_publish` with 0 uncommitted rows and 0 commits ahead of the remote,
+and no `ledger_pull_failed`, on every machine of every run.
+
+### Verdict for the design
+
+The design's estimate held for the claim and not for the ledger as a
+whole. Taking the claim's push away removed the claim from the race: claims
+are fast, almost never pending, and never at the budget on a push. But the
+land and release pushes left race exactly as hard as every push did before,
+so the writer count at which more than 1 push in 10 fails did not move: it
+is between 8 and 12 on a fast remote, and about 8 on a 400 ms link. The
+design's own test (2 x 4 with 400 ms: claim p50 under 30 s, at most 1 claim
+in 10 pending) passes, so server mode is not needed for claims; it stays the
+switch for writer counts past 8, and for two loop machines on a slow remote
+if a real two-machine run shows more than 1 push in 10 failing.
+
+### Method
+
+As [above](#method), with the harness's new report sections: the claim
+display delay, a summary of each machine's `events.jsonl` (`ledger_push`
+outcomes and tries by command, `ledger_pull` and the claim's `ledger` step,
+`bead_lock` waits), and each machine's `bops status --json` after every
+agent's `sync`. The status calls are left out of the bd call counts. The
+runs above were made before the harness also recorded the status call's
+exit (`status.exit`) and printed status warnings and conflicts; their
+reports were re-made with the final harness from the same workdirs, and
+every `status.json` had no warnings and no conflict. Each run in its own new scratch directory, one after
+another, on the installed bops (`bops version` revision `391afd1`, not
+modified):
+
+```sh
+bash docs/research/2026-11-ledger-contention.sh local <dir>/lc-1x1 1 1 8
+bash docs/research/2026-11-ledger-contention.sh local <dir>/lc-1x4 1 4 8
+MEASURE_DELAY_MS=400 bash docs/research/2026-11-ledger-contention.sh local <dir>/lc-1x4-d400 1 4 5
+bash docs/research/2026-11-ledger-contention.sh local <dir>/lc-2x4 2 4 8
+MEASURE_DELAY_MS=400 bash docs/research/2026-11-ledger-contention.sh local <dir>/lc-2x4-d400 2 4 5
+bash docs/research/2026-11-ledger-contention.sh local <dir>/lc-3x4 3 4 6
+bash docs/research/2026-11-ledger-contention.sh local <dir>/lc-4x4 4 4 5
+```
+
+Wall times: 65 s, 230 s, 296 s, 408 s, 496 s, 447 s and 462 s.
+
+### Limits
+
+All the [limits above](#limits) apply, and:
+
+- **One run per shape, again.** 40 to 80 loops per run; the 13% at 2 x 4
+  with 400 ms is 10 of 78, uncertain by several points either way.
+- **The display delay is a property of the loop.** This loop lands seconds
+  after it claims; real agents do not, so their displays wait longer. What
+  the numbers show is that no display from a completed local write was
+  stranded, not how long other machines see a held bead as free in
+  practice.
+- **The switch metric misses pre-push failures.** A land or release that
+  fails on the store before its push logs no `ledger_push` line; those grow
+  with load, so at high load the push ratio undercounts what went
+  unpublished.
+- bd 1.3.4 and bops `391afd1` only.
