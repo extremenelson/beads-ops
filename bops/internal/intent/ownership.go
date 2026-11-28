@@ -1296,7 +1296,13 @@ func newRelease(env *Env, id, reason, text, op string) (*ReleaseOut, error) {
 // Without it the ref is deleted either way and sync pushes the ledger later.
 func releaseLocked(ctx context.Context, env *Env, out *ReleaseOut, text string, keepRef bool) (*ReleaseOut, error) {
 	id, reason, op := out.ID, out.Reason, out.OpID
-	finished, lost, err := env.settleRelease(ctx, id)
+	settle := env.settleRelease
+	if reason == "done" {
+		settle = func(ctx context.Context, id string) (bool, *Holder, error) {
+			return env.settleReleaseAs(ctx, id, op, text)
+		}
+	}
+	finished, lost, err := settle(ctx, id)
 	if err != nil {
 		return out.fail(err)
 	}
@@ -1309,9 +1315,12 @@ func releaseLocked(ctx context.Context, env *Env, out *ReleaseOut, text string, 
 		if env.replayRelease(ctx, id, op, out) {
 			return out, nil
 		}
+		if env.replayFinishedDone(ctx, id, text, op, out) {
+			return out, nil
+		}
 	}
 	if finished {
-		out.Outcome, out.Detail = OutcomeRefused, "an earlier release of "+id+" had not finished deleting its claim; that is done now, and this run no longer holds it"
+		out.Outcome, out.Detail = OutcomeRefused, "an earlier release of "+id+" had not finished; that is done now, and this run no longer holds it"
 		return out, nil
 	}
 	if !ok {
@@ -1390,6 +1399,10 @@ func releaseLocked(ctx context.Context, env *Env, out *ReleaseOut, text string, 
 			env.event("release", id, "ledger", "pending", sha, err)
 			return out, nil
 		}
+	} else if reason == "done" && publish && !env.LockOff && !entry.Legacy() && env.Store != nil {
+		if pending := env.releaseDone(ctx, out, sha, text); pending != nil {
+			return pending, nil
+		}
 	} else if err := env.releaseDisplay(ctx, id, reason, text, op, publish); err != nil {
 		out.LedgerPending = true
 		out.Warnings = append(out.Warnings, "ledger display pending: "+err.Error())
@@ -1417,6 +1430,51 @@ func releaseLocked(ctx context.Context, env *Env, out *ReleaseOut, text string, 
 	return out, nil
 }
 
+// releaseDone writes a done release's ledger display and pushes it, with the
+// hold marked release pending first (display owed until the local writes
+// land). A write or push that fails keeps the hold, so bops sync, or the
+// next bops command on the bead from this clone, finishes it (finishDone)
+// rather than leave the ledger showing a claim. It returns out when the
+// release ends there, still pending; nil when the ledger is written and
+// pushed, or when the hold could not be marked and the release took the
+// unrecorded path (write and push, a warning if that fails); the caller then
+// drops the hold.
+func (e *Env) releaseDone(ctx context.Context, out *ReleaseOut, sha, text string) *ReleaseOut {
+	id := out.ID
+	if err := e.Store.SetReleaseOwed(id); err != nil {
+		// Nothing would finish it: write it as before, and say so if it fails.
+		if err := e.releaseDisplay(ctx, id, out.Reason, text, out.OpID, true); err != nil {
+			out.LedgerPending = true
+			out.Warnings = append(out.Warnings, "ledger display pending, and not recorded for bops sync to finish: "+lock.Scrub(err.Error()))
+			e.event("release", id, "ledger", "pending", sha, err)
+		}
+		return nil
+	}
+	out.Outcome = OutcomeReleased
+	if err := e.releaseDisplay(ctx, id, out.Reason, text, out.OpID, false); err != nil {
+		out.LedgerPending = true
+		out.Warnings = append(out.Warnings, "ledger display pending: bops sync from this checkout writes and pushes it (without the release text): "+lock.Scrub(err.Error()))
+		e.event("release", id, "ledger", "pending", sha, err)
+		return out
+	}
+	out.committed = true // the text is in the local ledger; the push carries it
+	if err := e.Store.SetLedgerPending(id, false); err != nil {
+		// sync writes the display again: a second bops:released comment.
+		out.Warnings = append(out.Warnings, "state not updated: "+err.Error())
+	}
+	if err := e.pushLedger(ctx); err != nil {
+		out.LedgerPending = true
+		w := "ledger push pending: bops sync from this checkout pushes it: "
+		if isLedgerConflict(err) {
+			w = "ledger push pending: the ledger is stuck until a person resolves it; after that bops sync from this checkout pushes it: "
+		}
+		out.Warnings = append(out.Warnings, w+lock.Scrub(err.Error()))
+		e.event("release", id, "ledger", "pending", sha, err)
+		return out
+	}
+	return nil
+}
+
 // replayRelease reports whether id carries the bops:released comment of op,
 // and if so fills out as that release's answer. A failed read is a warning;
 // the caller then answers as it would have without op ids.
@@ -1438,6 +1496,29 @@ func (e *Env) replayRelease(ctx context.Context, id, op string, out *ReleaseOut)
 	e.event("release", id, "op", "replayed", "", nil)
 	// The first run's ledger push may have failed: publish again.
 	e.republish(ctx, &out.Warnings)
+	return true
+}
+
+// replayFinishedDone is replayRelease for a done release with text or an op
+// id of its own that sync, sweep or another command finished: that wrote the
+// display under the op of this run's done release without text. Its text
+// went to saved_to when the first run stopped.
+func (e *Env) replayFinishedDone(ctx context.Context, id, text, op string, out *ReleaseOut) bool {
+	if out.Reason != "done" {
+		return false
+	}
+	plain, err := opID("", "release", id, e.Run.ID, "done", "")
+	if err != nil || plain == op {
+		return false
+	}
+	saved := out.Warnings
+	if !e.replayRelease(ctx, id, plain, out) {
+		out.Warnings = saved
+		return false
+	}
+	if text != "" {
+		out.Warnings = append(out.Warnings, "finished earlier without its text, which the first run saved to a file (saved_to)")
+	}
 	return true
 }
 
@@ -1524,6 +1605,11 @@ func (e *Env) verifyHold(ctx context.Context, id, reason string, out *ReleaseOut
 // bd ready understands. A non-empty text follows the event line in the same
 // comment. It pushes only when publish is set.
 func (e *Env) releaseDisplay(ctx context.Context, id, reason, text, op string, publish bool) error {
+	return e.releaseDisplayAs(ctx, id, e.Run.ID, reason, text, op, publish)
+}
+
+// releaseDisplayAs is releaseDisplay for a release by run.
+func (e *Env) releaseDisplayAs(ctx context.Context, id, run, reason, text, op string, publish bool) error {
 	cur, err := e.show(ctx, id)
 	if err != nil {
 		return err
@@ -1549,7 +1635,7 @@ func (e *Env) releaseDisplay(ctx context.Context, id, reason, text, op string, p
 	// Always written, even when an earlier comment carries op: that may be
 	// an earlier hold's release by this run, whose record must not stand in
 	// for this one. A release that stopped part way may so write it twice.
-	ev := fmt.Sprintf("%s run=%s reason=%s op=%s", evReleased, e.Run.ID, reason, op)
+	ev := fmt.Sprintf("%s run=%s reason=%s op=%s", evReleased, run, reason, op)
 	if err := e.addReleasedComment(ctx, id, ev, text); err != nil {
 		return err
 	}
@@ -1846,9 +1932,11 @@ func (e *Env) syncHold(ctx context.Context, h cloneHold, refs map[string]lock.Re
 		if state == lock.Discarded {
 			return false
 		}
-		if state == lock.Adopted && ref.State == lock.StateLanding {
+		if state == lock.Adopted && ref.State == lock.StateLanding && e.Store == nil {
 			// A release --reason done that pushed its landing and died before
-			// dropping the hold: the bead is a landing now, which sweep closes.
+			// dropping the hold, with no store to record its owed display:
+			// drop the hold, and sweep closes the landing. With a store, the
+			// block below marks the display owed and finishes it instead.
 			if err := e.Lock.Journal.Drop(h.id); err != nil {
 				out.Warnings = append(out.Warnings, h.id+": "+err.Error())
 			}
@@ -1857,13 +1945,28 @@ func (e *Env) syncHold(ctx context.Context, h cloneHold, refs map[string]lock.Re
 		}
 		h.entry, _ = e.Lock.Journal.Entry(h.id)
 	}
+	if found && live == h.entry.SHA && ref.State == lock.StateLanding && !h.entry.Given() && !h.entry.Legacy() && e.Store != nil {
+		// A release --reason done that stopped after its ref went landing and
+		// before it marked the hold: its display is owed, as for one that
+		// marked it. Re-displaying the claim would undo the landing.
+		if err := e.Store.SetReleaseOwed(h.id); err != nil {
+			out.Warnings = append(out.Warnings, h.id+": "+err.Error())
+			return false
+		}
+		h.entry, _ = e.Lock.Journal.Entry(h.id)
+		e.event("sync", h.id, "ref_check", "landing", live, nil)
+	}
 	if h.entry.ReleasePending && !h.entry.DeletePending {
 		if !push || out.pushFailed {
 			why := "run bops sync without --no-push to push it" // a ref lock always has a Dolt remote to push to
 			if out.pushFailed {
 				why = "the ledger push failed earlier in this sync; retry once the remote is reachable"
 			}
-			out.Warnings = append(out.Warnings, h.id+": released on this machine's ledger only, so its claim ref stays; "+why)
+			if found && ref.State == lock.StateLanding {
+				out.Warnings = append(out.Warnings, h.id+": its release --reason done is not on the remote ledger yet; "+why)
+			} else {
+				out.Warnings = append(out.Warnings, h.id+": released on this machine's ledger only, so its claim ref stays; "+why)
+			}
 			return false
 		}
 		_, lost, err := e.settleRelease(ctx, h.id)

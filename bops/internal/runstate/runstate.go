@@ -51,7 +51,10 @@ type Entry struct {
 	DeletePending bool   `json:"delete_pending,omitempty"`
 	// ReleasePending is a release written to the local ledger whose push has
 	// not landed: the ref stays until it has, so no other machine sees the
-	// ref gone while the remote ledger still shows a claim.
+	// ref gone while the remote ledger still shows a claim. On a hold whose
+	// ref is landing it is a release --reason done whose ledger push has not
+	// landed, with ledger_pending set while its display is not written yet;
+	// that ref stays for sweep, and finishing it drops only the hold.
 	ReleasePending bool `json:"release_pending,omitempty"`
 }
 
@@ -583,6 +586,26 @@ func (s *Store) SetReleasePending(id string, pending bool) error {
 		}
 	})
 	if err == nil && !found && pending {
+		err = fmt.Errorf("no hold of %s to mark release pending", id)
+	}
+	return err
+}
+
+// SetReleaseOwed marks a release of id as pending, with its ledger display
+// still to write, in one write: a release --reason done records this before
+// its ledger writes (and sync for one that stopped before it could), so a
+// process killed or a write that fails part way leaves a hold sync finishes.
+func (s *Store) SetReleaseOwed(id string) error {
+	found := false
+	err := s.update(func() {
+		r := s.holder(id)
+		if e, ok := r.Held[id]; ok {
+			found = true
+			e.ReleasePending, e.LedgerPending = true, true
+			r.Held[id] = e
+		}
+	})
+	if err == nil && !found {
 		err = fmt.Errorf("no hold of %s to mark release pending", id)
 	}
 	return err

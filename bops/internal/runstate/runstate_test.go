@@ -589,6 +589,28 @@ func TestReleasePendingPersistsAndConfirmClearsIt(t *testing.T) {
 	}
 }
 
+// A done release marks its hold release pending and its display owed in one
+// write, so no crash leaves one flag without the other.
+func TestSetReleaseOwedSetsBothFlagsAtOnce(t *testing.T) {
+	root, _ := repo(t)
+	s := open(t, root, Read)
+	if err := s.Confirm("x-1", "aaa"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetReleaseOwed("x-1"); err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := open(t, root, Read).Entry("x-1"); !e.ReleasePending || !e.LedgerPending || !e.Given() || e.SHA != "aaa" {
+		t.Fatalf("reopened entry = %+v", e)
+	}
+	if err := s.SetReleaseOwed("x-none"); err == nil {
+		t.Error("marked a bead no run holds, which nothing would finish")
+	}
+	if _, ok := s.Entry("x-none"); ok {
+		t.Error("SetReleaseOwed made an entry for a bead not held")
+	}
+}
+
 // Every id the claim contract accepts names a lock file, the longest too.
 func TestLockBeadTakesTheLongestValidID(t *testing.T) {
 	root, _ := repo(t)

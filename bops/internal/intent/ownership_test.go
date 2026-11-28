@@ -2965,6 +2965,14 @@ func TestSyncDropsAHoldWhoseWriteInFlightWasALanding(t *testing.T) {
 	if err != nil || len(out.LostClaims) != 0 {
 		t.Fatalf("%+v, %v", out, err)
 	}
+	// The release's display may be owed: the hold stays, release pending,
+	// until a sync that pushes finishes it.
+	if e, ok := openStore(t, a.dir, "A").Entry("x-1"); !ok || !e.Given() {
+		t.Fatalf("entry = %+v, %v; want a release pending, not a claim", e, ok)
+	}
+	if out, err := intent.Sync(bg, rigAt(t, a.dir, "A", bd).env, false); err != nil || len(out.LostClaims) != 0 {
+		t.Fatalf("%+v, %v", out, err)
+	}
 	if _, ok := openStore(t, a.dir, "A").Entry("x-1"); ok {
 		t.Fatal("a landing is not a hold")
 	}
@@ -3421,5 +3429,361 @@ func TestResumeWritesTheNextGeneration(t *testing.T) {
 	rel, err := intent.Release(bg, a.env, "x-1", "scope")
 	if err != nil || rel.Outcome != intent.OutcomeLost || rel.Holder == nil || rel.Holder.Generation != 2 {
 		t.Fatalf("displaced release: %+v, %v", rel, err)
+	}
+}
+
+// doneReleased checks the ledger shows a done release by run: no assignee,
+// no run label, the landing label, and one bops:released comment.
+func doneReleased(t *testing.T, b *bead, run string) {
+	t.Helper()
+	n := 0
+	for _, c := range b.Comments {
+		if strings.HasPrefix(c, "bops:released run="+run+" reason=done ") {
+			n++
+		}
+	}
+	if b.Assignee != "" || slices.Contains(b.Labels, "run:"+run) || !slices.Contains(b.Labels, "bops:landing") || n != 1 {
+		t.Errorf("ledger = %+v, %d released comments; want the done release shown once", b, n)
+	}
+}
+
+// A done release whose ledger display write fails keeps the hold, release
+// pending with its display owed, and sync writes and pushes the display.
+func TestReleaseDoneWhoseDisplayFailsIsFinishedBySync(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	markLanded(bd.beads["x-1"])
+	failing := true
+	bd.fail = func(args []string) error {
+		if failing && args[0] == "update" && slices.Contains(args, "bops:landing") {
+			return errors.New("signal: terminated")
+		}
+		return nil
+	}
+	out, err := intent.ReleaseWithText(bg, a.env, "x-1", "done", "shipped")
+	if err != nil || out.Outcome != intent.OutcomeReleased || !out.LedgerPending || out.SavedTo == "" ||
+		!strings.Contains(strings.Join(out.Warnings, "\n"), "bops sync from this checkout writes and pushes it") {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if e, ok := a.store.Entry("x-1"); !ok || !e.ReleasePending || !e.LedgerPending {
+		t.Fatalf("journal = %+v, %v; want release pending with its display owed", e, ok)
+	}
+	if ref, err := a.env.Lock.Read(bg, "x-1"); err != nil || ref == nil || ref.State != lock.StateLanding {
+		t.Fatalf("ref = %+v, %v", ref, err)
+	}
+	beats := bd.count("heartbeat")
+	// sync --no-push leaves the display owed and says why.
+	if s, err := intent.Sync(bg, a.env, true); err != nil || !strings.Contains(strings.Join(s.Warnings, "\n"), "release --reason done is not on the remote ledger yet") {
+		t.Fatalf("sync --no-push: %+v, %v", s, err)
+	}
+	if e, ok := a.store.Entry("x-1"); !ok || !e.LedgerPending || strings.Contains(strings.Join(bd.beads["x-1"].Comments, "\n"), "bops:released") {
+		t.Fatalf("journal = %+v, %v; ledger %+v", e, ok, bd.beads["x-1"])
+	}
+	// A sync while the write still fails keeps the record.
+	if s, err := intent.Sync(bg, a.env, false); err != nil || len(s.LostClaims) != 0 {
+		t.Fatalf("sync: %+v, %v", s, err)
+	}
+	if e, ok := a.store.Entry("x-1"); !ok || !e.LedgerPending {
+		t.Fatalf("journal = %+v, %v; want the display still owed", e, ok)
+	}
+
+	failing = false
+	pushes := bd.count("dolt push")
+	s, err := intent.Sync(bg, a.env, false)
+	if err != nil || len(s.LostClaims) != 0 {
+		t.Fatalf("sync: %+v, %v", s, err)
+	}
+	doneReleased(t, bd.beads["x-1"], "A")
+	if _, ok := a.store.Entry("x-1"); ok {
+		t.Error("hold kept after sync finished the release")
+	}
+	if bd.count("dolt push") == pushes {
+		t.Error("sync did not push the release")
+	}
+	if bd.count("heartbeat") != beats {
+		t.Error("sync heartbeat a released bead")
+	}
+	if ref, err := a.env.Lock.Read(bg, "x-1"); err != nil || ref == nil || ref.State != lock.StateLanding {
+		t.Errorf("ref = %+v, %v; the landing ref stays for sweep", ref, err)
+	}
+}
+
+// A done release whose push fails keeps the hold, release pending, and sync
+// pushes it without writing the display a second time. The same push
+// publishes the claim display a claim left local.
+func TestReleaseDonePushFailureIsPushedBySync(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	markLanded(bd.beads["x-1"])
+	down := true
+	var refAtPush []string
+	pushFails(t, bd, a, "x-1", &down, &refAtPush)
+	out, err := intent.Release(bg, a.env, "x-1", "done")
+	if err != nil || out.Outcome != intent.OutcomeReleased || !out.LedgerPending ||
+		!strings.Contains(strings.Join(out.Warnings, "\n"), "bops sync from this checkout pushes it") {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if e, ok := a.store.Entry("x-1"); !ok || !e.ReleasePending || e.LedgerPending {
+		t.Fatalf("journal = %+v, %v; want release pending, display written", e, ok)
+	}
+	if _, err := intent.Sync(bg, a.env, false); err == nil {
+		t.Fatal("sync pushed through a down remote")
+	}
+	if s, err := intent.Sync(bg, a.env, true); err != nil || !strings.Contains(strings.Join(s.Warnings, "\n"), "release --reason done is not on the remote ledger yet") {
+		t.Fatalf("sync --no-push: %+v, %v", s, err)
+	}
+	if _, ok := a.store.Entry("x-1"); !ok {
+		t.Fatal("hold dropped before its push landed")
+	}
+	down = false
+	if s, err := intent.Sync(bg, a.env, false); err != nil || len(s.LostClaims) != 0 {
+		t.Fatalf("sync: %+v, %v", s, err)
+	}
+	doneReleased(t, bd.beads["x-1"], "A")
+	if _, ok := a.store.Entry("x-1"); ok {
+		t.Error("hold kept after its push landed")
+	}
+	if len(refAtPush) == 0 || liveSHA(t, a, "x-1") == "" {
+		t.Errorf("pushes %v; landing ref %q", refAtPush, liveSHA(t, a, "x-1"))
+	}
+}
+
+// The next command on the bead finishes it as sync would: a repeat of the
+// release, which then finds its own record and answers replayed.
+func TestReleaseDonePendingIsFinishedByTheNextCommand(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	markLanded(bd.beads["x-1"])
+	failing := true
+	bd.fail = func(args []string) error {
+		if failing && args[0] == "comments" && args[1] == "add" && strings.HasPrefix(args[3], "bops:released") {
+			return errors.New("signal: terminated")
+		}
+		return nil
+	}
+	if out, err := intent.Release(bg, a.env, "x-1", "done"); err != nil || !out.LedgerPending {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	failing = false
+	out, err := intent.Release(bg, a.env, "x-1", "done")
+	if err != nil || out.Outcome != intent.OutcomeReleased || !out.Replayed {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	doneReleased(t, bd.beads["x-1"], "A")
+	if _, ok := a.store.Entry("x-1"); ok {
+		t.Error("hold kept after the release finished")
+	}
+}
+
+// doneDisplayFails claims and lands x-1, then releases it done while the
+// release's ledger update fails, leaving the display owed. It returns a
+// function that lets the update through again.
+func doneDisplayFails(t *testing.T, a *rig, bd *fakeBD, text string) func() {
+	t.Helper()
+	mustClaim(t, a, "x-1")
+	markLanded(bd.beads["x-1"])
+	failing := true
+	bd.fail = func(args []string) error {
+		if failing && args[0] == "update" && slices.Contains(args, "bops:landing") {
+			return errors.New("signal: terminated")
+		}
+		return nil
+	}
+	if out, err := intent.ReleaseWithText(bg, a.env, "x-1", "done", text); err != nil || !out.LedgerPending {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	return func() { failing = false }
+}
+
+// A repeat of a done release with text finishes the owed display with that
+// text and its op id, so it answers replayed, not refused.
+func TestReleaseDoneRepeatWithTextIsReplayed(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	doneDisplayFails(t, a, bd, "shipped")()
+	out, err := intent.ReleaseWithText(bg, a.env, "x-1", "done", "shipped")
+	if err != nil || out.Outcome != intent.OutcomeReleased || !out.Replayed || out.SavedTo != "" {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	doneReleased(t, bd.beads["x-1"], "A")
+	if c := bd.beads["x-1"].Comments; !strings.HasSuffix(c[len(c)-1], "op="+out.OpID+"\nshipped") {
+		t.Errorf("comment = %q", c[len(c)-1])
+	}
+}
+
+// Another run of the clone finishing the release writes it as the holder's.
+func TestReleaseDoneFinishedByAnotherRunNamesTheHolder(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	git(t, a.dir, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "init")
+	wt := filepath.Join(t.TempDir(), "wt")
+	git(t, a.dir, "worktree", "add", "-q", wt, "-b", "wt")
+	s := rigAt(t, wt, "SIB", bd)
+	doneDisplayFails(t, s, bd, "")()
+	main := rigAt(t, a.dir, "A", bd)
+	if out, err := intent.Sync(bg, main.env, false); err != nil || len(out.LostClaims) != 0 {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	doneReleased(t, bd.beads["x-1"], "SIB")
+	if _, ok := main.store.Entry("x-1"); ok {
+		t.Error("hold kept after sync finished the release")
+	}
+}
+
+// sweep on the same clone finishes the owed display before it closes the bead.
+func TestSweepFinishesAPendingDoneReleaseFirst(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	finish := doneDisplayFails(t, a, bd, "")
+	finish()
+	// sweep closes a landing whose last landed record is this run's
+	bd.beads["x-1"].Metadata = json.RawMessage(`{"bops":{"landed":[{"ref":"https://github.com/o/r/pull/1","sha":"abc1234","run":"A","at":"t"}]}}`)
+	out, err := intent.Sweep(bg, a.env, mergedForge{}, false)
+	if err != nil || strings.Join(out.Closed, ",") != "x-1" {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	b := bd.beads["x-1"]
+	if b.Status != "closed" || b.Assignee != "" || slices.Contains(b.Labels, "run:A") ||
+		!strings.Contains(strings.Join(b.Comments, "\n"), "bops:released run=A reason=done") {
+		t.Errorf("ledger = %+v", b)
+	}
+	if _, ok := a.store.Entry("x-1"); ok {
+		t.Error("hold kept after sweep")
+	}
+}
+
+// A landing ref gone because sweep closed the bead elsewhere is no lost claim.
+func TestReleaseDonePendingWhoseBeadClosedIsNotALostClaim(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	doneDisplayFails(t, a, bd, "")()
+	git(t, a.dir, "push", "-q", "origin", "--delete", "refs/bops/claims/x-1")
+	bd.beads["x-1"].Status = "closed"
+	out, err := intent.Sync(bg, a.env, false)
+	if err != nil || len(out.LostClaims) != 0 {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if _, ok := a.store.Entry("x-1"); ok {
+		t.Error("hold kept")
+	}
+}
+
+// A done release that stopped after its ref went landing, before it marked
+// the hold, is finished by sync, not shown again as a claim.
+func TestSyncFinishesADoneReleaseThatStoppedBeforeMarkingItsHold(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	markLanded(bd.beads["x-1"])
+	if res, err := a.env.Lock.Replace(bg, "x-1", liveSHA(t, a, "x-1"), lock.StateLanding); err != nil || res.Outcome == lock.Lost {
+		t.Fatalf("%+v, %v", res, err)
+	}
+	beats := bd.count("heartbeat")
+	if out, err := intent.Sync(bg, a.env, false); err != nil || len(out.LostClaims) != 0 {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	doneReleased(t, bd.beads["x-1"], "A")
+	if _, ok := a.store.Entry("x-1"); ok {
+		t.Error("hold kept")
+	}
+	if ref, err := a.env.Lock.Read(bg, "x-1"); err != nil || ref == nil || ref.State != lock.StateLanding {
+		t.Errorf("ref = %+v, %v", ref, err)
+	}
+	if bd.count("heartbeat") != beats {
+		t.Error("sync heartbeat a landing")
+	}
+}
+
+// A repeat after the push lands pushes, writes nothing again, and replays.
+func TestReleaseDonePushPendingRepeatIsReplayed(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	mustClaim(t, a, "x-1")
+	markLanded(bd.beads["x-1"])
+	down := true
+	var refAtPush []string
+	pushFails(t, bd, a, "x-1", &down, &refAtPush)
+	if out, err := intent.ReleaseWithText(bg, a.env, "x-1", "done", "shipped"); err != nil || !out.LedgerPending {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	down = false
+	out, err := intent.ReleaseWithText(bg, a.env, "x-1", "done", "shipped")
+	if err != nil || out.Outcome != intent.OutcomeReleased || !out.Replayed {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	doneReleased(t, bd.beads["x-1"], "A")
+	if _, ok := a.store.Entry("x-1"); ok || liveSHA(t, a, "x-1") == "" {
+		t.Error("want the hold gone and the landing ref kept")
+	}
+}
+
+// A repeat with text after sync finished the release without it replays,
+// rather than answer refused for a release that landed.
+func TestReleaseDoneRepeatWithTextAfterSyncIsReplayed(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	doneDisplayFails(t, a, bd, "shipped")()
+	if _, err := intent.Sync(bg, a.env, false); err != nil {
+		t.Fatal(err)
+	}
+	out, err := intent.ReleaseWithText(bg, a.env, "x-1", "done", "shipped")
+	if err != nil || out.Outcome != intent.OutcomeReleased || !out.Replayed {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	doneReleased(t, bd.beads["x-1"], "A")
+}
+
+// sweep leaves a bead whose done release still cannot write its display.
+func TestSweepDefersWhileADoneReleaseStillOwesItsDisplay(t *testing.T) {
+	remote, bd := bareRemote(t), newBD()
+	bd.add("x-1")
+	a := client(t, remote, "A", bd)
+	finish := doneDisplayFails(t, a, bd, "")
+	bd.beads["x-1"].Metadata = json.RawMessage(`{"bops":{"landed":[{"ref":"https://github.com/o/r/pull/1","sha":"abc1234","run":"A","at":"t"}]}}`)
+	out, err := intent.Sweep(bg, a.env, mergedForge{}, false)
+	if err != nil || len(out.Closed) != 0 || !slices.Contains(out.Pending, "x-1") || bd.beads["x-1"].Status == "closed" {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	if e, ok := a.store.Entry("x-1"); !ok || !e.ReleasePending || liveSHA(t, a, "x-1") == "" {
+		t.Fatalf("entry = %+v, %v", e, ok)
+	}
+	finish()
+	if out, err := intent.Sweep(bg, a.env, mergedForge{}, false); err != nil || strings.Join(out.Closed, ",") != "x-1" {
+		t.Fatalf("%+v, %v", out, err)
+	}
+}
+
+// A reap's pending release whose ref went because the bead was closed is no
+// lost claim either.
+func TestReapPendingReleaseWhoseBeadClosedIsNotALostClaim(t *testing.T) {
+	a, b, bdB := reapWorld(t, "x-1")
+	down := true
+	var refAtPush []string
+	pushFails(t, bdB, a, "x-1", &down, &refAtPush)
+	if out, err := intent.Reap(bg, b.env, intent.ReapOpts{}); err != nil || len(out.Released) != 1 {
+		t.Fatalf("%+v, %v", out, err)
+	}
+	git(t, a.dir, "push", "-q", "origin", "--delete", "refs/bops/claims/x-1")
+	bdB.beads["x-1"].Status = "closed"
+	down = false
+	s, err := intent.Sync(bg, b.env, false)
+	if err != nil || len(s.LostClaims) != 0 {
+		t.Fatalf("%+v, %v", s, err)
+	}
+	if _, ok := b.store.Entry("x-1"); ok {
+		t.Error("hold kept")
 	}
 }
