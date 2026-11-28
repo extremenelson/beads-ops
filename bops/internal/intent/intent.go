@@ -67,6 +67,7 @@ type HoldStore interface {
 	Holds() []runstate.Hold
 	SetLedgerPending(id string, pending bool) error
 	SetReleasePending(id string, pending bool) error
+	SetReleaseOwed(id string) error
 	Log(ev runstate.Event)
 	// LockBead, Refresh and Matches serialize work on one bead among the
 	// bops processes sharing this clone (bops-yph).
@@ -171,8 +172,11 @@ var errReleasePush = errors.New("ledger push failed")
 // as sync would, before a command acts on the bead: such a hold was given
 // away, and treating it as held would take the bead back (bops-yph). A
 // release whose ledger push has not landed (reap's) is pushed first, and its
-// ref deleted only once the push has. It reports whether it removed the hold.
-// The caller holds the bead's lock.
+// ref deleted only once the push has. A release --reason done that is still
+// pending (its ref is landing) has its display written if owed, then pushed,
+// and only its hold dropped: the landing ref stays for sweep. A pending hold
+// whose ref is gone and whose bead is closed is dropped. It reports whether
+// it removed the hold. The caller holds the bead's lock.
 func (e *Env) finishRelease(ctx context.Context, id string) (bool, error) {
 	finished, _, err := e.settleRelease(ctx, id)
 	return finished, err
@@ -182,6 +186,13 @@ func (e *Env) finishRelease(ctx context.Context, id string) (bool, error) {
 // whose ref another run took meanwhile, that run as the holder: the hold is
 // dropped and nothing is pushed or deleted for it.
 func (e *Env) settleRelease(ctx context.Context, id string) (bool, *Holder, error) {
+	return e.settleReleaseAs(ctx, id, "", "")
+}
+
+// settleReleaseAs is settleRelease for a release --reason done by this run
+// with op and text: a done release whose display is still owed is written
+// with them, so that release finds its own record and answers replayed.
+func (e *Env) settleReleaseAs(ctx context.Context, id, op, text string) (bool, *Holder, error) {
 	if e.LockOff || e.Lock == nil {
 		return false, nil, nil
 	}
@@ -194,6 +205,14 @@ func (e *Env) settleRelease(ctx context.Context, id string) (bool, *Holder, erro
 		if err != nil {
 			return false, nil, err
 		}
+		if ref == nil && e.closed(ctx, id) {
+			// sweep closed it and deleted its landing ref: nothing is owed.
+			if err := e.Lock.Journal.Drop(id); err != nil {
+				return false, nil, err
+			}
+			e.event("release", id, "ref_check", "closed", "", nil)
+			return true, nil, nil
+		}
 		if ref == nil || ref.SHA != h.SHA {
 			if err := e.Lock.Journal.Drop(id); err != nil {
 				return false, nil, err
@@ -205,6 +224,9 @@ func (e *Env) settleRelease(ctx context.Context, id string) (bool, *Holder, erro
 			}
 			return true, holder, nil
 		}
+		if ref.State == lock.StateLanding {
+			return e.finishDone(ctx, id, h, op, text)
+		}
 		if err := e.pushLedger(ctx); err != nil {
 			return false, nil, fmt.Errorf("a release of %s is on this machine's ledger but not on the remote yet, so its claim ref stays until a ledger push lands: %w: %w", id, errReleasePush, err)
 		}
@@ -215,6 +237,58 @@ func (e *Env) settleRelease(ctx context.Context, id string) (bool, *Holder, erro
 	}
 	e.event("release", id, "ref_delete", "finished", h.SHA, nil)
 	return true, nil, nil
+}
+
+// finishDone finishes a release --reason done whose ledger writes did not all
+// land: it writes the release display if that is still owed, pushes, and
+// drops the hold. The landing ref stays for sweep. A display written here
+// carries op and text when a repeat of this run's release passed them;
+// otherwise no text (that was saved to a file) and the op id of a release
+// without one.
+func (e *Env) finishDone(ctx context.Context, id string, h runstate.Entry, op, text string) (bool, *Holder, error) {
+	if h.LedgerPending {
+		run := e.holdRun(id)
+		if op == "" || run != e.Run.ID {
+			var err error
+			if op, err = opID("", "release", id, run, "done", ""); err != nil {
+				return false, nil, err
+			}
+			text = ""
+		}
+		if err := e.releaseDisplayAs(ctx, id, run, "done", text, op, false); err != nil {
+			return false, nil, fmt.Errorf("the release --reason done of %s is not on the ledger yet: %w", id, err)
+		}
+		if e.Store != nil {
+			if err := e.Store.SetLedgerPending(id, false); err != nil {
+				return false, nil, &lock.Error{Code: lock.CodeJournal, Err: err}
+			}
+		}
+		e.event("release", id, "ledger", "written", h.SHA, nil)
+	}
+	if err := e.pushLedger(ctx); err != nil {
+		return false, nil, fmt.Errorf("the release --reason done of %s is on this machine's ledger but not on the remote yet: %w: %w", id, errReleasePush, err)
+	}
+	if err := e.Lock.Journal.Drop(id); err != nil {
+		return false, nil, err
+	}
+	e.event("release", id, "done", "finished", h.SHA, nil)
+	return true, nil, nil
+}
+
+// closed reports whether the ledger shows id closed; a failed read is no.
+func (e *Env) closed(ctx context.Context, id string) bool {
+	cur, err := e.show(ctx, id)
+	return err == nil && cur.Status == "closed"
+}
+
+// holdRun is the run in this clone holding id, this run when none does.
+func (e *Env) holdRun(id string) string {
+	for _, h := range e.holds() {
+		if h.ID == id {
+			return h.Run
+		}
+	}
+	return e.Run.ID
 }
 
 func (e *Env) sleepFor(d time.Duration) {
@@ -1083,6 +1157,14 @@ func (e *Env) sweepOne(ctx context.Context, c sweepCandidate, refs map[string]lo
 		return err
 	}
 	defer unlock()
+	// A done release of this clone still owing its display or push finishes
+	// first, so the bead is not closed with its claim still shown.
+	if _, err := e.finishRelease(ctx, id); err != nil {
+		out.Pending = append(out.Pending, id)
+		out.Warnings = append(out.Warnings, id+": "+lock.Scrub(err.Error()))
+		e.event("sweep", id, "release", eventDeferred, "", err)
+		return nil
+	}
 	// The refs were read before this lock was taken. A bead another session
 	// of this clone resumed or re-claimed since holds it at another ref: its
 	// hold stands, and sweep leaves it (bops-yph).

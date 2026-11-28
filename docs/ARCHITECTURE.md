@@ -102,7 +102,7 @@ The journal entry is written before the push, so a crash or a lost reply is sett
 
 `next` fetches every claim ref into `refs/bops/seen/*` in one round trip and skips the beads another run holds (lint rule W14), because the ledger lags the refs: a bead claimed on another machine reads open here until that ledger push lands and this clone pulls. Offline it warns and uses the last `sync`'s copy. It can still be out of date by the time you claim; `claim` is what decides, and `claim --next` walks on to the next candidate when it loses.
 
-Landing and closing are separate on purpose. `release --reason done` rewrites the ref to `state=landing` instead of deleting it, so nobody else can claim a bead whose PR is still open. Only `sweep` (once the forge says the PR merged) or a human closes it.
+Landing and closing are separate on purpose. `release --reason done` rewrites the ref to `state=landing` instead of deleting it, so nobody else can claim a bead whose PR is still open. Only `sweep` (once the forge says the PR merged) or a human closes it. Before its ledger writes, a done release marks its hold `release_pending` in the journal; a display write or push that fails keeps that hold, so `bops sync` (or the next command on the bead from this clone, or a `sweep` from it) writes and pushes the display, then drops the hold and leaves the landing ref for `sweep`. A hold whose live ref is already landing but which was never marked (the release stopped in between) is finished by `sync` the same way.
 
 ### Single-machine mode
 
