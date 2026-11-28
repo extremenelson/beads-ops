@@ -24,7 +24,12 @@
 #       <workdir> and the other workdirs kept its note, landed record and
 #       release (lost writes).
 #   measure report <workdir>...
-#       Latency and failure tables from one or more workdirs' results.
+#       Latency and failure tables from one or more workdirs' results: per
+#       command, the bd dolt push calls behind them, how long a claim's
+#       display took to reach the remote (a claim does not push under
+#       lock.mode ref), and what bops logged to each machine's events.jsonl
+#       (ledger_push outcomes and tries, failed claim-path pulls, bead-lock
+#       waits) and its final bops status (ledger_publish, ledger_pull_failed).
 #   measure pulls  <workdir> [case...]
 #       Same-row pulls: for each case, on a new local bare remote and two
 #       clones, clone A writes a claim display and does not push, clone B
@@ -266,6 +271,19 @@ run_machines() {
 	trap - INT TERM
 	date +%s >"$W/finished"
 	printf '%s\t%s\t%s\t%s\t%s\n' "$first" "$n" "$agents" "$iters" "$MEASURE_DELAY_MS" >"$W/shape"
+	# Once this host's agents have run sync: each machine's status, for
+	# whether its ledger is still unpublished (ledger_publish) or a claim's
+	# pull failed (ledger_pull_failed), with its exit in status.exit. Its bd
+	# calls are logged as op m<G>-a-i-status, which report leaves out of the
+	# per-command counts. In a multi-host run, other hosts may still be
+	# pushing, so "behind" can be stale.
+	g=$first
+	while [ "$g" -lt $((first + n)) ]; do
+		(cd "$W/m$g/clone" && BOPS_MACHINE="machine$g" BEADS_ACTOR="dev$g" XDG_STATE_HOME="$W/m$g/state" \
+			MEASURE_OP="m$g-a-i-status" bops status --json >"$W/m$g/status.json" 2>"$W/m$g/status.err")
+		echo $? >"$W/m$g/status.exit"
+		g=$((g + 1))
+	done
 }
 
 # verify REMOTE [WORKDIR...]: a fresh clone reads every bead a result row of
@@ -316,7 +334,7 @@ verify() {
 # behind them, and where the time goes. Ops are keyed by workdir too, so two
 # local runs' machine 0 never merge.
 report() {
-	local d results=() calls=()
+	local d f rc results=() calls=()
 	for d in "$@"; do
 		[ -d "$d" ] || die "no workdir $d"
 		results+=("$d"/m*/results.tsv)
@@ -346,7 +364,7 @@ report() {
 	echo
 	echo "ledger pushes per bops command (bd dolt push calls; retries = calls - 1;"
 	echo "gave up = the last push failed: five rejections, or the budget stopped it)"
-	awk -F'\t' '$2 == "-" {next}
+	awk -F'\t' '$2 == "-" || $2 ~ /-status$/ {next}
 	$1 == "bd" && $3 == "dolt push" {
 		split($2, f, "-"); c = f[4]; key = FILENAME ":" $2
 		calls[key]++; cmd[key] = c; last[key] = $6; if ($6 != 0) fail[c]++; if ($8 == 1) rej[c]++; tot[c]++
@@ -378,6 +396,86 @@ report() {
 		END { split("claim note land release", o, " ")
 			for (x = 1; x <= 4; x++) { c = o[x]; if (!(c in n)) continue
 				printf "%-8s %6.2f %6.2f %6.2f %6.2f\n", c, wall[c] / n[c], pl[c] / n[c], ps[c] / n[c], ot[c] / n[c] } }' "${results[@]}" "${calls[@]}"
+	# How long a claim's display takes to reach the remote: from the claim's
+	# end to the end of the first bd dolt push from the same machine (any
+	# agent, any command) that exited 0 and whose bd dolt commit (bops
+	# commits before every push try) started after the claim ended, so the
+	# push carried the display. A push that started earlier may have carried
+	# it too, so this is an upper bound. It is a timing match, not a read of
+	# the remote: verify does not read the claim display. A claim that came
+	# back ledger_pending did not finish its local write (bops sync wrote it
+	# later), so it is counted apart and not timed. In this loop the next
+	# push is usually the claiming agent's own land, a few seconds later; a
+	# real agent works minutes between claim and land.
+	echo
+	echo "claim display to remote (s): claims timed, matched, p50, p95, max, no later push; pending claims not timed"
+	awk -F'\t' 'FILENAME ~ /results.tsv$/ { if (FNR > 1 && $5 == "claim" && $9 == "claimed") {
+			if ($10 == 1) { pend++; next }
+			w = FILENAME; sub(/\/m[0-9]+\/results.tsv$/, "", w); n++; cw[n] = w; cg[n] = $1; ce[n] = $6 + $7 }; next }
+		$1 == "bd" && $3 == "dolt commit" { cs[FILENAME, $2] = $4; next }
+		# cs holds the latest commit of this op logged before the push row.
+		$1 == "bd" && $3 == "dolt push" && $6 == 0 && $2 != "-" { w = FILENAME; sub(/\/calls.tsv$/, "", w)
+			split($2, f, "-"); g = substr(f[1], 2); m++; pw[m] = w; pg[m] = g
+			ps[m] = ((FILENAME, $2) in cs && cs[FILENAME, $2] <= $4) ? cs[FILENAME, $2] : $4; pe[m] = $4 + $5 }
+		END { for (i = 1; i <= n; i++) { best = -1
+				for (j = 1; j <= m; j++) if (pw[j] == cw[i] && pg[j] == cg[i] && ps[j] >= ce[i] && (best < 0 || pe[j] < best)) best = pe[j]
+				if (best < 0) never++; else { k++; d[k] = best - ce[i] } }
+			for (i = 2; i <= k; i++) { v = d[i]; for (j = i - 1; j >= 1 && d[j] > v; j--) d[j + 1] = d[j]; d[j + 1] = v }
+			a = int(.5 * k + .999999); b = int(.95 * k + .999999); if (a < 1) a = 1; if (b < 1) b = 1
+			if (k > 0) printf "%d %d %.1f %.1f %.1f %d; %d\n", n, k, d[a], d[b], d[k], never, pend
+			else printf "%d 0 - - - %d; %d\n", n, never, pend }' "${results[@]}" "${calls[@]}"
+	# What bops logged itself (events.jsonl in each machine's state): every
+	# ledger push's outcome and tries, claim-path pulls that failed, the
+	# claim's local display write, and each machine's final status. A line
+	# that is not JSON is skipped and counted, not allowed to cut the counts
+	# short. Only events.jsonl and one rotated copy (1 MiB each) are kept.
+	local ev=()
+	for d in "$@"; do ev+=("$d"/m*/state/bops/*/events.jsonl.1 "$d"/m*/state/bops/*/events.jsonl); done
+	if [ "${#ev[@]}" -eq 0 ]; then
+		echo
+		echo "no events.jsonl under $*"
+	else
+		report_events "${ev[@]}"
+	fi
+	echo
+	echo "final status per machine (exit): ledger_publish (uncommitted; remote ahead/behind fetched), ledger_pull_failed"
+	for d in "$@"; do
+		for f in "$d"/m[0-9]*; do
+			[ -d "$f" ] || continue
+			printf '%s: ' "$f"
+			rc=$(cat "$f/status.exit" 2>/dev/null || echo "not recorded")
+			if [ ! -s "$f/status.json" ]; then
+				echo "status failed (exit $rc, no output; see $f/status.err)"
+				continue
+			fi
+			jq -rs --arg rc "$rc" '"exit \($rc); " + (last | (if .ledger_publish == null then "no ledger_publish (" + ((.warnings // []) | join(" | ")) + ")"
+				else "uncommitted \(.ledger_publish.uncommitted); " + ([.ledger_publish.remotes[]? | "\(.name // "-") ahead \(.ahead) behind \(.behind) fetched \(.fetched)"] | join(", ")) end)
+				+ "; pull failed: " + (if .ledger_pull_failed then (.ledger_pull_failed.command // "yes") else "no" end)
+				+ "; conflict: " + (if .ledger_conflict then "yes" else "no" end)
+				+ (if .ledger_publish != null and ((.warnings // []) | length) > 0 then "; warnings: " + (.warnings | join(" | ")) else "" end))' "$f/status.json" 2>/dev/null || echo "status unreadable (exit $rc)"
+		done
+	done
+}
+
+# report_events EVENTS...: the events.jsonl part of report.
+report_events() {
+	local bad
+	bad=$(cat "$@" | jq -R 'select(length > 0) | try (fromjson | objects | empty) catch "bad"' | wc -l | tr -d ' ')
+	[ "$bad" -eq 0 ] || echo "events.jsonl: $bad lines that are not JSON, skipped"
+	echo
+	echo "events.jsonl ledger_push by command: pushes, pushed, failed, tries 0 / 1 / 2-4 / 5, max tries"
+	cat "$@" | jq -Rr 'fromjson? | objects | select(.step == "ledger_push") | [.command, .outcome, (.tries // 0)] | @tsv' |
+		awk -F'\t' '{ c = $1; n[c]++; if ($2 == "pushed") p[c]++; else f[c]++
+			t = $3 + 0; if (t == 0) z[c]++; else if (t == 1) o[c]++; else if (t < 5) m[c]++; else x[c]++; if (t > mx[c]) mx[c] = t }
+			END { for (c in n) printf "%-10s %5d %6d %6d   %d / %d / %d / %d   %d\n", c, n[c], p[c], f[c], z[c], o[c], m[c], x[c], mx[c] }'
+	echo
+	echo "events.jsonl other ledger steps (command step outcome count):"
+	cat "$@" | jq -Rr 'fromjson? | objects | select(.step == "ledger_pull" or .step == "ledger") | "\(.command) \(.step) \(.outcome)"' | sort | uniq -c
+	echo
+	echo "bead lock wait (ms) by command: n, p50, p95, max"
+	cat "$@" | jq -Rr 'fromjson? | objects | select(.step == "bead_lock" and .waited_ms != null) | [.command, .waited_ms] | @tsv' | sort -k1,1 -k2,2n |
+		awk -F'\t' '{ c = $1; n[c]++; v[c, n[c]] = $2 }
+			END { for (c in n) { a = int(.5 * n[c] + .999999); b = int(.95 * n[c] + .999999); printf "%-10s %4d %7d %7d %7d\n", c, n[c], v[c, a], v[c, b], v[c, n[c]] } }'
 }
 
 # ------------------------------------------------------------ same-row pulls
