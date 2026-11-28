@@ -21,7 +21,7 @@ A claim is held by a git ref on `origin`, safe across machines; raw `bd update -
    cd .worktrees/<id>
    bops claim <id>
    ```
-   If `bd worktree create` refuses, use `git worktree add .worktrees/<id> -b {branch}` instead. If the outcome is `lost` or `refused`, run `git worktree remove .worktrees/<id>` and choose again: `next_candidate` names one. `held`: this run already has it; carry on. `ledger_pending: true` means you own the bead and `bops sync` will finish the bookkeeping. Never `--force` a claim that may be live: it works only after `stale_minutes` idle (`.bops.json`, default 120), and only a person decides that.
+   If `bd worktree create` refuses, use `git worktree add .worktrees/<id> -b {branch}` instead. If the outcome is `lost` or `refused`, run `git worktree remove .worktrees/<id>` and choose again: `next_candidate` names one. `held`: this run already has it; carry on. `ledger_pending: true` means you own the bead and `bops sync` will finish the bookkeeping. Never `--force` a claim: a takeover (only after `stale_minutes` idle, `.bops.json`, default 120) is a person's call.
 4. **Work.** Run `bops` commands from inside the worktree until you remove it in step 7. Put the bead id in commit titles.
 5. **Note your progress.** Run `bops note` at each milestone, **at least once an hour during long turns**, and before you stop. After `stale_minutes` with no note, a claim counts as abandoned on other machines. `note` refreshes the claim, and works offline:
    ```bash
@@ -54,7 +54,7 @@ Use `bops release <id> --reason <reason>`, with your explanation in a `bops note
 
 ## Closing
 
-Do not close beads yourself. `bops sweep` previews which landed beads have merged PRs, and `bops sweep --dry-run=false` closes them; a person or a scheduled job runs that. In beads-ops itself, run `(cd bops && go install ./cmd/bops)` after a `bops/` change merges; `bops doctor` warns when it is older.
+Do not close beads yourself. `bops sweep` previews which landed beads have merged PRs; `bops sweep --dry-run=false` closes them, run by a person or a scheduled job. In beads-ops itself, run `(cd bops && go install ./cmd/bops)` after a `bops/` change merges; `bops doctor` warns when it is older.
 
 ## When something goes wrong
 

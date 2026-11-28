@@ -2,6 +2,7 @@ package gen_test
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	bops "github.com/extremenelson/beads-ops/bops"
@@ -10,8 +11,9 @@ import (
 )
 
 // The tools are the commands with an mcp surface, in manifest order, minus
-// kind=write unless writes are enabled; readOnlyHint is the surface's
-// readOnly (SPEC §8).
+// kind=write unless writes are enabled or the command is preview-only;
+// readOnlyHint is the surface's readOnly (SPEC §8). A person-only argument
+// is no property.
 func TestMCPToolsAreTheManifestMinusWrites(t *testing.T) {
 	m, err := manifest.Parse(bops.ManifestJSON)
 	if err != nil {
@@ -20,7 +22,7 @@ func TestMCPToolsAreTheManifestMinusWrites(t *testing.T) {
 	for _, writes := range []bool{false, true} {
 		var want []string
 		for _, c := range m.Commands {
-			if _, ok := c.Surfaces["mcp"].(map[string]any); ok && (writes || c.Kind != "write") {
+			if _, ok := c.Surfaces["mcp"].(map[string]any); ok && (writes || c.Kind != "write" || c.PreviewOnly()) {
 				want = append(want, c.Name)
 			}
 		}
@@ -34,8 +36,8 @@ func TestMCPToolsAreTheManifestMinusWrites(t *testing.T) {
 			}
 			props := tool.InputSchema["properties"].(map[string]any)
 			for _, an := range c.ArgNames() {
-				if props[an] == nil {
-					t.Errorf("%s: no property for argument %s", tool.Name, an)
+				if person := c.Args[an].PersonOnly(); (props[an] == nil) != person {
+					t.Errorf("%s: property for argument %s is %v, person-only %v", tool.Name, an, props[an], person)
 				}
 			}
 			if props["cursor"] == nil {
@@ -47,8 +49,43 @@ func TestMCPToolsAreTheManifestMinusWrites(t *testing.T) {
 		}
 	}
 	read := gen.MCPTools(m, false)
-	if slices.ContainsFunc(read, func(t gen.MCPTool) bool { c, _ := m.Lookup(t.Name); return c.Kind == "write" }) {
+	if slices.ContainsFunc(read, func(t gen.MCPTool) bool { c, _ := m.Lookup(t.Name); return c.Kind == "write" && !c.PreviewOnly() }) {
 		t.Error("a write command is a tool without --enable-writes")
+	}
+}
+
+// reap, gc and sweep are served read-only, as their dry runs, without
+// --enable-writes; claim takes no force on MCP (PROCESS §12).
+func TestMCPPreviewsAreReadOnlyAndClaimTakesNoForce(t *testing.T) {
+	m, err := manifest.Parse(bops.ManifestJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, writes := range []bool{false, true} {
+		tools := map[string]gen.MCPTool{}
+		for _, tool := range gen.MCPTools(m, writes) {
+			tools[tool.Name] = tool
+		}
+		for _, name := range []string{"reap", "gc", "sweep"} {
+			tool, ok := tools[name]
+			if !ok {
+				t.Errorf("writes=%v: no %s tool", writes, name)
+				continue
+			}
+			if tool.Annotations["readOnlyHint"] != true || !strings.Contains(tool.Description, "Preview only here") {
+				t.Errorf("writes=%v: %s is not a read-only preview: %v", writes, name, tool)
+			}
+		}
+		if claim, ok := tools["claim"]; ok && claim.InputSchema["properties"].(map[string]any)["force"] != nil {
+			t.Errorf("writes=%v: claim tool takes force", writes)
+		}
+		if _, ok := tools["claim"]; ok != writes {
+			t.Errorf("writes=%v: claim tool served %v", writes, ok)
+		}
+	}
+	sweep, _ := m.Lookup("sweep")
+	if got := gen.RealRun(sweep); got != "bops sweep --dry-run=false" {
+		t.Errorf("RealRun(sweep) = %q", got)
 	}
 }
 

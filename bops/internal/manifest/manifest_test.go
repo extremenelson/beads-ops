@@ -23,17 +23,22 @@ func TestEmbeddedManifestIsValid(t *testing.T) {
 	}
 }
 
-// reap and gc take over or delete other runs' claims, so agents only preview
-// them (PROCESS §12).
-func TestReapAndGCArePreviewOnlyForAgents(t *testing.T) {
+// reap and gc take over or delete other runs' claims and sweep closes beads,
+// so agents only preview them, and claim's force is a person's (PROCESS §12).
+func TestAgentLimits(t *testing.T) {
 	m, err := manifest.Parse(bops.ManifestJSON)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range m.Commands {
-		want := c.Name == "reap" || c.Name == "gc"
+		want := c.Name == "reap" || c.Name == "gc" || c.Name == "sweep"
 		if c.PreviewOnly() != want {
 			t.Errorf("%s: PreviewOnly = %v, want %v", c.Name, c.PreviewOnly(), want)
+		}
+		for an, a := range c.Args {
+			if want := c.Name == "claim" && an == "force"; a.PersonOnly() != want {
+				t.Errorf("%s %s: PersonOnly = %v, want %v", c.Name, an, a.PersonOnly(), want)
+			}
 		}
 	}
 }
@@ -68,6 +73,11 @@ func TestValidateRejects(t *testing.T) {
 		"bad agents":              `{"contract":1,"commands":[{"name":"a","intent":"x","kind":"write","agents":"none","args":{"dry-run":{"type":"bool","default":true}},"output":{},"surfaces":{"cc":[]}}]}`,
 		"preview no dry-run":      `{"contract":1,"commands":[{"name":"a","intent":"x","kind":"write","agents":"preview","output":{},"surfaces":{"cc":[]}}]}`,
 		"preview dry-run default": `{"contract":1,"commands":[{"name":"a","intent":"x","kind":"write","agents":"preview","args":{"dry-run":{"type":"bool","default":false}},"output":{},"surfaces":{"cc":[]}}]}`,
+		"preview not ro":          `{"contract":1,"commands":[{"name":"a","intent":"x","kind":"write","agents":"preview","args":{"dry-run":{"type":"bool","default":true}},"output":{},"surfaces":{"mcp":{"readOnly":false}}}]}`,
+		"bad arg agents":          `{"contract":1,"commands":[{"name":"a","intent":"x","kind":"write","args":{"f":{"type":"bool","default":false,"agents":"preview"}},"output":{},"surfaces":{"cc":[]}}]}`,
+		"none no default":         `{"contract":1,"commands":[{"name":"a","intent":"x","kind":"write","args":{"f":{"type":"bool","agents":"none"}},"output":{},"surfaces":{"cc":[]}}]}`,
+		"none not bool":           `{"contract":1,"commands":[{"name":"a","intent":"x","kind":"write","args":{"f":{"type":"string","agents":"none"}},"output":{},"surfaces":{"cc":[]}}]}`,
+		"none id":                 `{"contract":1,"commands":[{"name":"a","intent":"x","kind":"write","args":{"id":{"type":"bool","default":false,"agents":"none"}},"output":{},"surfaces":{"cc":[]}}]}`,
 		"contract 0":              `{"contract":0,"commands":[{"name":"a","intent":"x","kind":"read","output":{},"surfaces":{"cc":[]}}]}`,
 	}
 	for name, src := range cases {

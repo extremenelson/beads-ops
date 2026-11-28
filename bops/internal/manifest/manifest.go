@@ -49,7 +49,15 @@ type Arg struct {
 	Default any      `json:"default,omitempty"`
 	Values  []string `json:"values,omitempty"`
 	Doc     string   `json:"doc,omitempty"`
+	// Agents is "none" when the agent surfaces (the cc and codex skills and
+	// the MCP tool) do not offer the argument: passing it is a person's
+	// decision, at the CLI (SPEC §4). Empty means no such limit.
+	Agents string `json:"agents,omitempty"`
 }
+
+// PersonOnly reports whether the agent surfaces leave the argument out
+// (Agents "none").
+func (a Arg) PersonOnly() bool { return a.Agents == "none" }
 
 // Flag names the command-line flag that carries the argument called name, or
 // "" when it is positional. The bead id is positional; text typed stdin|file
@@ -126,6 +134,16 @@ func (m *Manifest) Validate() error {
 			if a.Type == "enum" && len(a.Values) == 0 {
 				return fmt.Errorf("%s: enum arg %q has no values", where, an)
 			}
+			switch a.Agents {
+			case "":
+			case "none":
+				// An agent must still be able to run the command without it.
+				if an == "id" || a.Type != "bool" || a.Default != false {
+					return fmt.Errorf("%s: agents none needs a bool arg defaulting to false, not %q", where, an)
+				}
+			default:
+				return fmt.Errorf("%s: arg %q has bad agents %q", where, an, a.Agents)
+			}
 		}
 		switch c.Agents {
 		case "":
@@ -136,11 +154,15 @@ func (m *Manifest) Validate() error {
 		default:
 			return fmt.Errorf("%s: bad agents %q", where, c.Agents)
 		}
-		if c.Kind == "write" {
-			if mcp, ok := c.Surfaces["mcp"].(map[string]any); ok {
-				if ro, _ := mcp["readOnly"].(bool); ro {
-					return fmt.Errorf("%s: write command cannot be mcp readOnly", where)
-				}
+		if mcp, ok := c.Surfaces["mcp"].(map[string]any); ok {
+			// A preview-only command is served as its dry run, which writes
+			// nothing, so it is read-only on MCP; any other write is not.
+			ro, _ := mcp["readOnly"].(bool)
+			switch {
+			case c.PreviewOnly() && !ro:
+				return fmt.Errorf("%s: agents preview command must be mcp readOnly", where)
+			case c.Kind == "write" && !c.PreviewOnly() && ro:
+				return fmt.Errorf("%s: write command cannot be mcp readOnly", where)
 			}
 		}
 	}

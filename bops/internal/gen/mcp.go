@@ -23,17 +23,20 @@ type MCPTool struct {
 const MCPPageBytes = 20 * 1024
 
 // MCPTools lists the commands with an mcp surface as MCP tools, in manifest
-// order: kind=write commands only with enableWrites (SPEC §8). A tool's
-// arguments are the command's: the bead id, text as a string (bops reads it
-// on stdin), and every other argument by its own name. Each tool also takes
+// order: kind=write commands only with enableWrites (SPEC §8), except a
+// preview-only command (manifest agents "preview"), which is served as its
+// dry run, read-only, with or without writes. A tool's arguments are the
+// command's: the bead id, text as a string (bops reads it on stdin), and
+// every other argument by its own name, except a person-only one (manifest
+// arg agents "none"), which the tool leaves out. Each tool also takes
 // cursor, to fetch the next page of a result over MCPPageBytes. A
-// preview-only command (manifest agents "preview") keeps its dry-run
-// argument, documented as true only; serve-mcp refuses false.
+// preview-only command keeps its dry-run argument, documented as true only;
+// serve-mcp refuses false.
 func MCPTools(m *manifest.Manifest, enableWrites bool) []MCPTool {
 	var out []MCPTool
 	for _, c := range m.Commands {
 		mcp, ok := c.Surfaces["mcp"].(map[string]any)
-		if !ok || (c.Kind == "write" && !enableWrites) {
+		if !ok || (c.Kind == "write" && !enableWrites && !c.PreviewOnly()) {
 			continue
 		}
 		readOnly, _ := mcp["readOnly"].(bool)
@@ -41,6 +44,9 @@ func MCPTools(m *manifest.Manifest, enableWrites bool) []MCPTool {
 		required := []string{}
 		for _, an := range c.ArgNames() {
 			a := c.Args[an]
+			if a.PersonOnly() {
+				continue // a person's, at the CLI: serve-mcp refuses it too
+			}
 			p := mcpProperty(an, a)
 			if an == "dry-run" && c.PreviewOnly() {
 				p["description"] = "Only true (or absent) here: false is refused. A real run is a person's, at the CLI."
@@ -58,7 +64,7 @@ func MCPTools(m *manifest.Manifest, enableWrites bool) []MCPTool {
 		desc := c.Intent + ". Runs `bops " + c.Name + " --json` and returns its JSON document; exit 3 (a negative verdict, ok:false) is a result, not an error."
 		switch {
 		case c.PreviewOnly():
-			desc += " Preview only here: it changes neither the ledger nor the claim refs, and dry-run false is refused; hand a person the `bops " + c.Name + " --dry-run=false --only " + OnlyHint(&c) + "` command to run."
+			desc += " Preview only here: it changes neither the ledger nor the claim refs, and dry-run false is refused; hand a person the `" + RealRun(&c) + "` command to run."
 		case c.Kind == "write":
 			desc += " Writes: it changes the ledger or the claim refs on origin."
 		}
@@ -78,15 +84,21 @@ func MCPTools(m *manifest.Manifest, enableWrites bool) []MCPTool {
 	return out
 }
 
-// OnlyHint is what a person passes to a preview-only command's --only, built
-// from the preview: reap's would_release entries each carry it as only,
-// <id>@<run> to pin the holder the entry showed (so a claim taken over since
-// is skipped, not released), or the bare id when the run cannot be pinned.
-func OnlyHint(c *manifest.Command) string {
-	if c.Name == "reap" {
-		return "<only>,... (each would_release entry's only: <id>@<run>, or the bare id when its run cannot be pinned; skip an entry without one)"
+// RealRun is the command a person runs at the CLI for a preview-only
+// command's real run, built from the preview: reap's would_release entries
+// each carry its --only value as only, <id>@<run> to pin the holder the
+// entry showed (so a claim taken over since is skipped, not released), or
+// the bare id when the run cannot be pinned; gc takes the ids it listed;
+// sweep takes no --only and closes everything it would.
+func RealRun(c *manifest.Command) string {
+	run := "bops " + c.Name + " --dry-run=false"
+	switch {
+	case c.Name == "reap":
+		return run + " --only <only>,... (each would_release entry's only: <id>@<run>, or the bare id when its run cannot be pinned; skip an entry without one)"
+	case c.Args["only"].Type != "":
+		return run + " --only <id>,... (from the preview)"
 	}
-	return "<id>,... (from the preview)"
+	return run
 }
 
 // mcpProperty is the JSON Schema for one argument.

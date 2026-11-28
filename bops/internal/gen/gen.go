@@ -7,7 +7,8 @@
 // Code skill, hooks fragment and /bops-next command), codex (the same skill
 // and a Codex hooks fragment), clj (a Clojure namespace with Malli schemas)
 // and mcp (the tools/list result `bops serve-mcp` serves; `bops gen mcp
-// --enable-writes` adds the write tools). Hermes, which SPEC §8 also plans,
+// --enable-writes` adds the write tools; the preview-only ones are always
+// there, read-only). Hermes, which SPEC §8 also plans,
 // is not registered yet, and `bops gen hermes` exits 2 as an unknown target.
 package gen
 
@@ -127,7 +128,12 @@ func Docs(m *manifest.Manifest) ([]byte, error) {
 			b.WriteString("\n")
 		}
 		if c.PreviewOnly() {
-			b.WriteString("Agents: preview only. The MCP tool refuses `dry-run: false`, and the generated skills tell the agent to leave the real run to a person (instructions only: an agent with a shell can still type it). `--dry-run=false` is a person's, at the CLI.\n\n")
+			b.WriteString("Agents: preview only. The MCP tool is served read-only, without `--enable-writes`, and refuses `dry-run: false`; the generated skills tell the agent to leave the real run to a person (instructions only: an agent with a shell can still type it). `--dry-run=false` runs at the CLI, decided by a person (or a job a person scheduled).\n\n")
+		}
+		for _, an := range c.ArgNames() {
+			if c.Args[an].PersonOnly() {
+				fmt.Fprintf(&b, "Agents: `--%s` is a person's, at the CLI. The MCP tool does not take it and refuses `%s: true`, and the generated skills do not list it (instructions only: an agent with a shell can still type it).\n\n", an, an)
+			}
 		}
 		if len(c.Preconditions) > 0 {
 			b.WriteString("Preconditions: " + strings.Join(c.Preconditions, "; ") + ".\n\n")
