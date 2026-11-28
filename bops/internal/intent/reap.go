@@ -56,6 +56,10 @@ type ReapDone struct {
 	Outcome string `json:"outcome,omitempty"`
 	Detail  string `json:"detail,omitempty"`
 	SavedTo string `json:"saved_to,omitempty"`
+	// Only is the --only entry that names this claim, on would_release:
+	// id@run when the run can be pinned (see validRun), else the bare id;
+	// empty when the id is not a valid bead id.
+	Only string `json:"only,omitempty"`
 	// moved is a takeover refused or lost because the claim changed since
 	// it was judged.
 	moved bool
@@ -293,6 +297,7 @@ func Reap(ctx context.Context, env *Env, o ReapOpts) (*ReapOut, error) {
 			continue
 		}
 		if o.DryRun {
+			d.Only = OnlyEntry(d.ID, d.Run)
 			out.WouldRelease = append(out.WouldRelease, d)
 			continue
 		}
@@ -345,8 +350,8 @@ func parseOnly(entries []string) (ids []string, pins map[string]string, err erro
 		if err := lock.ValidateID(id); err != nil {
 			return nil, nil, err
 		}
-		if hasRun && !ValidRun(run) {
-			return nil, nil, &lock.Error{Code: lock.CodeBadID, Err: fmt.Errorf("%q does not name a run after @", e)}
+		if hasRun && !validRun(run) {
+			return nil, nil, &lock.Error{Code: lock.CodeBadID, Err: fmt.Errorf("%q does not name a run after @ that can be pinned (A-Z a-z 0-9 . _ : -); pass the bare id %s instead", e, id)}
 		}
 		if prev, seen := pinned[id]; seen {
 			if prev != run {
@@ -363,15 +368,30 @@ func parseOnly(entries []string) (ids []string, pins map[string]string, err erro
 	return ids, pins, nil
 }
 
-// ValidRun reports whether s can be pinned as id@run in --only: printable
-// ASCII other than space, comma and @, and not "-" (what an unknown run
-// prints as). A run that is not prints without a pin, so a preview never
-// offers a pin that a terminal would alter or that would not parse back as
-// the same single entry.
-func ValidRun(s string) bool {
-	return s != "" && s != "-" && !strings.ContainsFunc(s, func(r rune) bool {
-		return r <= ' ' || r >= 0x7f || r == ',' || r == '@'
+// validRun reports whether s can be pinned as id@run in --only: 1 to 128
+// of A-Z a-z 0-9 . _ : - (bops runs are ULIDs), and not "-" (what an unknown
+// run prints as). A run label is ledger text anyone with write access can
+// set, so a run outside that set prints without a pin: a preview never
+// offers a pin that a shell would expand, a terminal would alter, or that
+// would not parse back as the same single entry.
+func validRun(s string) bool {
+	return s != "" && s != "-" && len(s) <= 128 && !strings.ContainsFunc(s, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == ':' || r == '-')
 	})
+}
+
+// OnlyEntry is the --only entry naming claim id held by run: id@run when run
+// can be pinned, else the bare id (which releases whoever holds it then).
+// The id is ledger text too, so one that is not a valid bead id, which
+// --only would refuse anyway, gives "": nothing to paste.
+func OnlyEntry(id, run string) string {
+	if lock.ValidateID(id) != nil {
+		return ""
+	}
+	if validRun(run) {
+		return id + "@" + run
+	}
+	return id
 }
 
 func keptAs(c StaleClaim, ev []string) ReapKept {

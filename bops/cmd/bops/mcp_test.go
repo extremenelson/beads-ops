@@ -73,7 +73,7 @@ func TestMCPArgv(t *testing.T) {
 		{"deps", map[string]any{"id": 7}, "non-empty string"},
 		{"claim", map[string]any{"id": "--next"}, "must not start with -"},
 		// A real reap or gc is a person's, at the CLI (PROCESS §12).
-		{"reap", map[string]any{"dry-run": false, "only": "x-1@01ABC"}, "bops reap --dry-run=false --only <id>@<run>"},
+		{"reap", map[string]any{"dry-run": false, "only": "x-1@01ABC"}, "bops reap --dry-run=false --only <only>,... (each would_release entry's only: <id>@<run>, or the bare id when its run cannot be pinned; skip an entry without one)"},
 		{"reap", map[string]any{"dry-run": false}, "a real run is a person's decision"},
 		{"reap", map[string]any{"dry-run": "false"}, "dry-run must be true"},
 		{"gc", map[string]any{"dry-run": false, "only": "x-1"}, "bops gc --dry-run=false --only"},

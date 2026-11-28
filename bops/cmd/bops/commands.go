@@ -873,11 +873,18 @@ func reapDetails(w io.Writer, out *intent.ReapOut) {
 		fmt.Fprintf(w, "kept %s (%s, idle %dm): %s\n", clean(k.ID), where(k.Same), k.Age, clean(strings.Join(k.Evidence, "; ")))
 	}
 	for _, d := range out.WouldRelease {
-		name := d.ID // id@run, so --only can pin the holder shown here
-		if intent.ValidRun(d.Run) {
-			name += "@" + d.Run
+		// id@run, so --only can pin the holder shown here; the bare id, said
+		// so, when the run is not shell-safe to pin.
+		name, note := intent.OnlyEntry(d.ID, d.Run), ""
+		switch {
+		case name == "":
+			// single-quoted for a shell, so the copyable token is never the
+			// bare ledger text: a paste of it expands nothing
+			name, note = "'"+strings.ReplaceAll(d.ID, "'", `'\''`)+"'", "; not a valid bead id, so --only cannot name it"
+		case name == d.ID && d.Run != "" && d.Run != "-":
+			note = "; run not pinnable, check its holder first"
 		}
-		fmt.Fprintf(w, "would release %s (%s, %s, idle %dm)\n", clean(name), where(d.Same), clean(d.Actor), d.Age)
+		fmt.Fprintf(w, "would release %s (%s, %s, idle %dm%s)\n", clean(name), where(d.Same), clean(d.Actor), d.Age, note)
 	}
 	for _, d := range out.Released { // only what needs a follow-up: pending writes, saved text
 		if d.Detail != "" || d.SavedTo != "" {

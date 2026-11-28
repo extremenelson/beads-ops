@@ -83,7 +83,7 @@ func TestSkillListsReapAndGCAsPreviewOnly(t *testing.T) {
 				"| `bops reap [--forge] [--older-than] [--only]` | preview |",
 				"| `bops gc [--forge] [--only]` | preview |",
 				"| `bops sweep [--dry-run] [--forge]` | write |",
-				"Only a person acts (`--dry-run=false --only`, reap `<id>@<run>`, gc `<id>`)",
+				"Only a person acts (`--dry-run=false --only`, reap each `only`, gc `<id>`)",
 			} {
 				if !strings.Contains(s, want) {
 					t.Errorf("%s: SKILL.md lacks %q", name, want)
